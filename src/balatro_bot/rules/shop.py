@@ -559,6 +559,18 @@ class SellWeakJoker:
         INTEREST_CAP = 25
         current_interest = min(money // 5, 5)
 
+        # Score ALL shop jokers and pick the best upgrade
+        best_sell_target = None
+        best_shop_value = -1.0
+        best_shop_label = ""
+        best_threshold = 0.0
+
+        weakest_key = weakest_joker.get("key", "")
+        weakest_synergy = sum(
+            strat.hand_affinity(ht)
+            for ht in JOKER_HAND_AFFINITY.get(weakest_key, ([], 0))[0]
+        )
+
         for card in shop.get("cards", []):
             if card.get("set") != "JOKER":
                 continue
@@ -567,48 +579,42 @@ class SellWeakJoker:
             if cost > money_after_sell:
                 continue
 
-            # Check that BuyJokersInShop won't block this buy due to interest
-            # (mirrors its logic: skip if losing interest below cap, unless ante >= 5)
             if ante < 5 and money_after_sell < INTEREST_CAP:
                 interest_after_buy = min((money_after_sell - cost) // 5, 5)
                 if interest_after_buy < current_interest:
-                    continue  # buy would be blocked by interest threshold
+                    continue
 
-            # Score the shop joker WITHOUT coherence bonus (it has no allies yet)
             shop_value = self._joker_strategy_value(card, strat)
-
             shop_key = card.get("key", "")
             is_high_tier_xmult = shop_key in _HIGH_VALUE_XMULT
 
-            # Dynamic threshold: much harder to justify selling on-strategy
-            # jokers for off-strategy replacements
-            weakest_key = weakest_joker.get("key", "")
-            weakest_synergy = sum(
-                strat.hand_affinity(ht)
-                for ht in JOKER_HAND_AFFINITY.get(weakest_key, ([], 0))[0]
-            )
             shop_synergy = sum(
                 strat.hand_affinity(ht)
                 for ht in JOKER_HAND_AFFINITY.get(shop_key, ([], 0))[0]
             )
 
             if is_high_tier_xmult:
-                threshold = 0.5  # high-tier xMult: low bar to sell for it
+                threshold = 0.5
             elif weakest_synergy > 0 and shop_synergy == 0:
-                threshold = 3.0  # selling on-strategy for off-strategy: huge bar
+                threshold = 3.0
             elif weakest_synergy > 0 and shop_synergy > 0:
-                threshold = 1.5  # on-strategy swap: still needs clear improvement
+                threshold = 1.5
             else:
-                threshold = 1.0  # base
+                threshold = 1.0
 
-            if shop_value > weakest_value + threshold:
-                shop_label = card.get("label", "?")
-                return SellJoker(
-                    weakest_idx,
-                    reason=f"sell {weakest_joker.get('label', '?')} (value={weakest_value:.1f}) "
-                           f"for {shop_label} (value={shop_value:.1f}, threshold={threshold:.1f}) "
-                           f"[strategy: {', '.join(n for n, _ in strat.preferred_hands[:2])}]",
-                )
+            if shop_value > weakest_value + threshold and shop_value > best_shop_value:
+                best_sell_target = card
+                best_shop_value = shop_value
+                best_shop_label = card.get("label", "?")
+                best_threshold = threshold
+
+        if best_sell_target is not None:
+            return SellJoker(
+                weakest_idx,
+                reason=f"sell {weakest_joker.get('label', '?')} (value={weakest_value:.1f}) "
+                       f"for {best_shop_label} (value={best_shop_value:.1f}, threshold={best_threshold:.1f}) "
+                       f"[strategy: {', '.join(n for n, _ in strat.preferred_hands[:2])}]",
+            )
 
         return None
 
