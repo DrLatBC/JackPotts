@@ -134,6 +134,71 @@ def _utility_synergy(key: str, owned_keys: set[str], strat: Strategy) -> float:
     return bonus
 
 
+def _cross_synergy(candidate_key: str, owned_keys: set[str]) -> float:
+    """Multiplier for a candidate joker based on cross-joker synergies with owned jokers.
+
+    Detects when buying a scoring joker is amplified by an owned utility joker
+    (or vice versa). Synergies stack multiplicatively.
+    """
+    mult = 1.0
+
+    # Pareidolia makes face-card jokers unconditional (all cards = face)
+    _FACE_JOKERS = {"j_photograph", "j_scary_face", "j_smiley",
+                     "j_triboulet", "j_sock_and_buskin"}
+    if "j_pareidolia" in owned_keys and candidate_key in _FACE_JOKERS:
+        mult *= 2.5
+
+    # Smeared doubles suit pool for suit-conditional and flush jokers
+    _SUIT_JOKERS = {"j_greedy_joker", "j_lusty_joker", "j_wrathful_joker",
+                     "j_gluttenous_joker", "j_arrowhead", "j_onyx_agate",
+                     "j_bloodstone", "j_rough_gem"}
+    _FLUSH_JOKERS = {"j_tribe", "j_droll", "j_crafty"}
+    if "j_smeared" in owned_keys and candidate_key in (_SUIT_JOKERS | _FLUSH_JOKERS):
+        mult *= 1.5
+
+    # Four Fingers: 4-card straights/flushes — boosts straight and flush jokers
+    _SF_JOKERS = {"j_order", "j_tribe", "j_crazy", "j_droll",
+                   "j_crafty", "j_devious"}
+    if "j_four_fingers" in owned_keys and candidate_key in _SF_JOKERS:
+        mult *= 1.5
+
+    # Shortcut: gap straights — boosts straight jokers
+    _STRAIGHT_JOKERS = {"j_order", "j_crazy", "j_devious", "j_runner"}
+    if "j_shortcut" in owned_keys and candidate_key in _STRAIGHT_JOKERS:
+        mult *= 1.5
+
+    # Splash: all cards score — boosts per-card effect jokers
+    _PER_CARD_JOKERS = {"j_hiker", "j_fibonacci", "j_hack",
+                         "j_even_steven", "j_odd_todd"}
+    if "j_splash" in owned_keys and candidate_key in _PER_CARD_JOKERS:
+        mult *= 1.5
+
+    # Oops: doubled probabilities — boosts probability-based jokers
+    _PROB_JOKERS = {"j_bloodstone", "j_lucky_cat", "j_8_ball", "j_space"}
+    if "j_oops" in owned_keys and candidate_key in _PROB_JOKERS:
+        mult *= 1.5
+
+    # Blueprint/Brainstorm copy xMult sources — doubling xMult is huge
+    _COPY_JOKERS = {"j_blueprint", "j_brainstorm"}
+    _XMULT_JOKERS = {
+        "j_cavendish", "j_stencil", "j_duo", "j_trio", "j_family",
+        "j_order", "j_tribe", "j_acrobat", "j_blackboard", "j_flower_pot",
+        "j_madness", "j_vampire", "j_hologram", "j_constellation",
+        "j_campfire", "j_lucky_cat", "j_canio", "j_obelisk",
+        "j_card_sharp", "j_seeing_double",
+    }
+    if owned_keys & _COPY_JOKERS and candidate_key in _XMULT_JOKERS:
+        mult *= 1.3
+
+    # Ride the Bus: avoids faces — synergizes with number-rank jokers
+    _NUMBER_RANK_JOKERS = {"j_even_steven", "j_odd_todd", "j_hack",
+                            "j_fibonacci", "j_wee"}
+    if "j_ride_the_bus" in owned_keys and candidate_key in _NUMBER_RANK_JOKERS:
+        mult *= 1.3
+
+    return mult
+
+
 class SellInvisible:
     """Sell down to best joker + Invisible, then sell Invisible for a guaranteed dupe.
 
@@ -997,8 +1062,9 @@ class BuyJokersInShop:
                 else:
                     improvement = self._score_improvement(state, card)
 
-            # Weight by build composition: fill gaps, don't stack full categories
+            # Weight by build composition and cross-joker synergies
             improvement *= self._composition_multiplier(joker_slots.get("cards", []), key, ante)
+            improvement *= _cross_synergy(key, owned_keys)
 
             if improvement > best_improvement:
                 best_improvement = improvement
@@ -1009,10 +1075,12 @@ class BuyJokersInShop:
         if best_idx is not None:
             key = shop.get("cards", [])[best_idx].get("key", "")
             comp = self._composition_multiplier(joker_slots.get("cards", []), key, ante)
+            xsyn = _cross_synergy(key, owned_keys)
             tier = "ALWAYS_BUY" if key in self.ALWAYS_BUY else (
                 "HIGH_PRIORITY" if key in self.HIGH_PRIORITY else "scored")
-            log.info("[SHOP] %s($%d): %s, improvement=%.0f%%, comp=%.1fx — BUYING",
-                     best_label, best_cost, tier, best_improvement * 100, comp)
+            syn_str = f", synergy={xsyn:.1f}x" if xsyn > 1.0 else ""
+            log.info("[SHOP] %s($%d): %s, improvement=%.0f%%, comp=%.1fx%s — BUYING",
+                     best_label, best_cost, tier, best_improvement * 100, comp, syn_str)
             return BuyCard(
                 best_idx,
                 reason=f"buy joker: {best_label} for ${best_cost} "

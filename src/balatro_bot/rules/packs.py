@@ -289,6 +289,12 @@ class PickFromBuffoonPack:
                 if key in BuyJokersInShop.ALWAYS_BUY:
                     score += 10.0
 
+            # Cross-joker synergy: utility jokers boost scoring jokers and vice versa
+            from balatro_bot.rules.shop import _cross_synergy
+            xsyn = _cross_synergy(key, owned_keys)
+            if xsyn > 1.0:
+                score *= xsyn
+
             if score > best_score:
                 best_score = score
                 best_idx = i
