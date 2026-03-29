@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from balatro_bot.actions import UseConsumable, SellConsumable, Action
+from balatro_bot.actions import UseConsumable, SellConsumable, RearrangeHand, Action
 from balatro_bot.constants import (
     PLANET_KEYS, SAFE_CONSUMABLE_TAROTS, TARGETING_TAROTS,
     IMMEDIATE_TARGETING, TACTICAL_TARGETING,
@@ -110,6 +110,28 @@ class UseImmediateConsumables:
                 max_count, effect_type, extra = TARGETING_TAROTS[key]
                 if effect_type not in IMMEDIATE_TARGETING:
                     continue
+
+                # Death tarot: rearrange hand if needed so best is left of worst
+                if effect_type == "clone":
+                    from balatro_bot.rules._helpers import _find_clone_targets
+                    result = _find_clone_targets(hand_cards, strat)
+                    if result is None:
+                        continue
+                    best_idx, worst_idx = result
+                    if best_idx > worst_idx:
+                        order = list(range(len(hand_cards)))
+                        order.remove(best_idx)
+                        insert_pos = order.index(worst_idx)
+                        order.insert(insert_pos, best_idx)
+                        return RearrangeHand(
+                            order=order,
+                            reason=f"rearrange for Death: move {hand_cards[best_idx].get('label','?')} left of {hand_cards[worst_idx].get('label','?')}",
+                        )
+                    return UseConsumable(
+                        i, target_cards=[best_idx, worst_idx],
+                        reason=f"Death: clone {hand_cards[best_idx].get('label','?')} onto {hand_cards[worst_idx].get('label','?')}",
+                    )
+
                 targets, score = _find_tarot_targets(
                     effect_type, extra, max_count, hand_cards, jokers, strat,
                     current_best=current_best,
@@ -310,8 +332,13 @@ class UseTacticalConsumables:
         if needed > min(max_count, len(non_matching)):
             return None  # can't convert enough
 
-        # Pick the lowest-value non-matching cards to convert
-        non_matching.sort(key=lambda i: rank_value(card_rank(hand_cards[i]) or "2"))
+        # Pick low-affinity, low-value non-matching cards to convert
+        # (protect high-affinity ranks even if they're the wrong suit)
+        rank_aff = strat.rank_affinity_dict() if strat else {}
+        non_matching.sort(key=lambda i: (
+            rank_aff.get(card_rank(hand_cards[i]) or "", 0.0),
+            rank_value(card_rank(hand_cards[i]) or "2"),
+        ))
         targets = non_matching[:needed]
 
         # Simulate: what would the Flush score?

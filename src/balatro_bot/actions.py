@@ -123,6 +123,15 @@ class RearrangeJokers:
 
 
 @dataclass(frozen=True)
+class RearrangeHand:
+    order: list[int]
+    reason: str = ""
+
+    def to_rpc(self) -> tuple[str, dict]:
+        return "rearrange", {"hand": self.order}
+
+
+@dataclass(frozen=True)
 class UseConsumable:
     index: int
     target_cards: list[int] | None = None
@@ -153,7 +162,7 @@ class PackAction:
 Action = (
     PlayCards | DiscardCards | SelectBlind | SkipBlind | CashOut | NextRound
     | BuyCard | BuyPack | BuyVoucher | SellJoker | SellConsumable | Reroll
-    | RearrangeJokers | UseConsumable | PackAction
+    | RearrangeJokers | RearrangeHand | UseConsumable | PackAction
 )
 
 

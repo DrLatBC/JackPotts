@@ -71,14 +71,15 @@ def _find_gold_targets(hand_cards, count, current_best=None):
     return [i for i, _ in candidates[:count]]
 
 
-def _find_enhancement_targets(hand_cards, count):
+def _find_enhancement_targets(hand_cards, count, rank_affinity=None):
     candidates = []
     for i, c in enumerate(hand_cards):
         r = card_rank(c)
         if r and not _modifier(c).get("enhancement"):
-            candidates.append((i, rank_value(r)))
-    candidates.sort(key=lambda x: -x[1])
-    return [i for i, _ in candidates[:count]]
+            aff = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
+            candidates.append((i, -aff, -rank_value(r)))  # high affinity first, then high rank
+    candidates.sort(key=lambda x: (x[1], x[2]))
+    return [i for i, _, _ in candidates[:count]]
 
 
 def _find_suit_convert_targets(hand_cards, target_suit, count):
@@ -90,28 +91,30 @@ def _find_suit_convert_targets(hand_cards, target_suit, count):
     return candidates[:count]
 
 
-def _find_rank_up_targets(hand_cards, count):
+def _find_rank_up_targets(hand_cards, count, rank_affinity=None):
     candidates = []
     for i, c in enumerate(hand_cards):
         r = card_rank(c)
         if r:
-            candidates.append((i, rank_value(r)))
-    candidates.sort(key=lambda x: x[1])
-    return [i for i, _ in candidates[:count]]
-
-
-def _find_glass_targets(hand_cards, count):
-    candidates = []
-    for i, c in enumerate(hand_cards):
-        r = card_rank(c)
-        if r and not _modifier(c).get("enhancement"):
-            is_face = r in FACE_RANKS_TAROT
-            candidates.append((i, 0 if is_face else 1, -rank_value(r)))
+            aff = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
+            candidates.append((i, aff, rank_value(r)))  # low affinity first (don't upgrade away)
     candidates.sort(key=lambda x: (x[1], x[2]))
     return [i for i, _, _ in candidates[:count]]
 
 
-def _find_stone_targets(hand_cards, count, jokers):
+def _find_glass_targets(hand_cards, count, rank_affinity=None):
+    candidates = []
+    for i, c in enumerate(hand_cards):
+        r = card_rank(c)
+        if r and not _modifier(c).get("enhancement"):
+            aff = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
+            is_face = r in FACE_RANKS_TAROT
+            candidates.append((i, 0 if is_face else 1, -aff, -rank_value(r)))
+    candidates.sort(key=lambda x: (x[1], x[2], x[3]))
+    return [i for i, _, _, _ in candidates[:count]]
+
+
+def _find_stone_targets(hand_cards, count, jokers, rank_affinity=None):
     has_stone_joker = any(j.get("key") == "j_stone" for j in jokers)
     candidates = []
     for i, c in enumerate(hand_cards):
@@ -119,19 +122,21 @@ def _find_stone_targets(hand_cards, count, jokers):
         if r and not _modifier(c).get("enhancement"):
             rv = rank_value(r)
             if has_stone_joker or rv <= 4:
-                candidates.append((i, rv))
-    candidates.sort(key=lambda x: x[1])
-    return [i for i, _ in candidates[:count]]
+                aff = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
+                candidates.append((i, aff, rv))  # low affinity first
+    candidates.sort(key=lambda x: (x[1], x[2]))
+    return [i for i, _, _ in candidates[:count]]
 
 
-def _find_destroy_targets(hand_cards, count):
+def _find_destroy_targets(hand_cards, count, rank_affinity=None):
     candidates = []
     for i, c in enumerate(hand_cards):
         r = card_rank(c)
         if r and not _modifier(c).get("enhancement"):
-            candidates.append((i, rank_value(r)))
-    candidates.sort(key=lambda x: x[1])
-    return [i for i, _ in candidates[:count]]
+            aff = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
+            candidates.append((i, aff, rank_value(r)))  # low/negative affinity first
+    candidates.sort(key=lambda x: (x[1], x[2]))
+    return [i for i, _, _ in candidates[:count]]
 
 
 def _find_clone_targets(hand_cards, strategy=None):
@@ -168,6 +173,7 @@ def _find_clone_targets(hand_cards, strategy=None):
             s = card_suit(c)
             if s:
                 score += strategy.suit_affinity(s) * 3
+            score += strategy.rank_affinity(r) * 2
         scored.append((i, score))
     if len(scored) < 2:
         return None
@@ -176,15 +182,7 @@ def _find_clone_targets(hand_cards, strategy=None):
     best_idx, best_sc = scored[-1]
     if best_sc - worst_sc < 4:
         return None
-    if worst_idx < best_idx:
-        return [worst_idx, best_idx]
-    for idx, sc in scored:
-        if idx < best_idx and best_sc - sc >= 4:
-            return [idx, best_idx]
-    for idx, sc in reversed(scored):
-        if idx > worst_idx and sc - worst_sc >= 4:
-            return [worst_idx, idx]
-    return None
+    return (best_idx, worst_idx)
 
 
 def _find_seal_targets(hand_cards, count):
@@ -233,11 +231,12 @@ def _find_clone_deck_targets(hand_cards, count, current_best):
 
 
 def _find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, strat, current_best=None):
+    rank_aff = strat.rank_affinity_dict() if strat else None
     if effect_type == "gold":
         targets = _find_gold_targets(hand_cards, max_count, current_best)
         return (targets, 4.0) if targets else (None, 0)
     if effect_type == "enhance":
-        targets = _find_enhancement_targets(hand_cards, max_count)
+        targets = _find_enhancement_targets(hand_cards, max_count, rank_affinity=rank_aff)
         return (targets, 3.0) if targets else (None, 0)
     if effect_type == "suit_convert":
         if not extra or strat.suit_affinity(extra) <= 0:
@@ -245,16 +244,16 @@ def _find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, strat
         targets = _find_suit_convert_targets(hand_cards, extra, max_count)
         return (targets, 2.0 + strat.suit_affinity(extra)) if targets else (None, 0)
     if effect_type == "rank_up":
-        targets = _find_rank_up_targets(hand_cards, max_count)
+        targets = _find_rank_up_targets(hand_cards, max_count, rank_affinity=rank_aff)
         return (targets, 2.0) if targets else (None, 0)
     if effect_type == "glass":
-        targets = _find_glass_targets(hand_cards, max_count)
+        targets = _find_glass_targets(hand_cards, max_count, rank_affinity=rank_aff)
         return (targets, 4.0) if targets else (None, 0)
     if effect_type == "stone":
-        targets = _find_stone_targets(hand_cards, max_count, jokers)
+        targets = _find_stone_targets(hand_cards, max_count, jokers, rank_affinity=rank_aff)
         return (targets, 1.5) if targets else (None, 0)
     if effect_type == "destroy":
-        targets = _find_destroy_targets(hand_cards, max_count)
+        targets = _find_destroy_targets(hand_cards, max_count, rank_affinity=rank_aff)
         return (targets, 1.0) if targets else (None, 0)
     if effect_type == "clone":
         targets = _find_clone_targets(hand_cards, strat)
