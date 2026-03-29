@@ -650,27 +650,7 @@ class ReorderJokersForCeremonial:
             return None
 
         # Classify each non-Ceremonial joker as valuable or fodder.
-        # Only truly disposable jokers are fodder — utility jokers with
-        # strong gameplay effects (Mr. Bones, Chicot, etc.) are kept.
-        VALUABLE_UTILITY = {
-            "j_mr_bones",       # prevents death — never sacrifice
-            "j_chicot",         # destroys boss blind effect
-            "j_perkeo",         # duplicates consumable in shop
-            "j_cartomancer",    # creates tarot on blind select
-            "j_invisible",      # copies joker after 2 rounds
-            "j_certificate",    # gives random card with seal each round
-            "j_luchador",       # destroys boss blind for money
-            "j_diet_cola",      # free reroll (sell to use)
-            "j_merry_andy",     # +3 discards, -1 hand size
-            "j_drunkard",       # +1 discard per round
-            "j_burnt",          # +1 discard per round (via discarded cards)
-            "j_juggler",        # +1 hand size
-            "j_troubadour",     # +2 hand size, -1 hand per round
-            "j_smeared",        # hearts/diamonds mix, clubs/spades mix
-            "j_four_fingers",   # allows 4-card straights and flushes
-            "j_shortcut",       # straights with gaps
-            "j_splash",         # all cards score
-        }
+        # Any utility joker with base value >= 1.0 is too useful to sacrifice.
         valuable = []
         fodder = []
         blueprint_idx = None
@@ -688,7 +668,7 @@ class ReorderJokersForCeremonial:
                 valuable.append(i)
             elif key in ({"j_madness"} | SCALING_JOKERS):
                 valuable.append(i)
-            elif key in VALUABLE_UTILITY:
+            elif _UTILITY_VALUE.get(key, 0.0) >= 1.0:
                 valuable.append(i)
             elif effect is None or effect is _noop:
                 fodder.append(i)
