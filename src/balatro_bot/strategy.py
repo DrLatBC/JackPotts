@@ -148,6 +148,23 @@ def compute_strategy(
             suit, weight = JOKER_SUIT_AFFINITY[key]
             suit_scores[suit] = suit_scores.get(suit, 0) + weight
 
+    # Synthesize composite hand affinities: jokers that boost sub-hands
+    # should also contribute to hands that CONTAIN those sub-hands.
+    # Full House = Three of a Kind + Pair
+    # Straight Flush = Straight + Flush
+    # Flush House = Full House + Flush
+    # Flush Five = Five of a Kind + Flush
+    composites = {
+        "Full House":      [("Three of a Kind", 0.5), ("Pair", 0.5)],
+        "Straight Flush":  [("Straight", 0.7), ("Flush", 0.7)],
+        "Flush House":     [("Full House", 0.5), ("Flush", 0.5), ("Three of a Kind", 0.3), ("Pair", 0.3)],
+        "Flush Five":      [("Five of a Kind", 0.5), ("Flush", 0.5)],
+    }
+    for composite, components in composites.items():
+        bonus = sum(hand_scores.get(sub, 0) * weight for sub, weight in components)
+        if bonus > 0:
+            hand_scores[composite] = hand_scores.get(composite, 0) + bonus
+
     if hand_levels:
         for ht, score in hand_scores.items():
             level = hand_levels.get(ht, {}).get("level", 1)

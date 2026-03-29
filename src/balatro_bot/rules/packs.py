@@ -140,8 +140,10 @@ class PickFromPlanetPack:
                 return PackAction(card_index=i, reason=f"planet: Black Hole (levels ALL hand types!)")
 
         jokers = state.get("jokers", {}).get("cards", [])
+        joker_keys = {j.get("key") for j in jokers}
         hand_levels = state.get("hands", {})
         strat = compute_strategy(jokers, hand_levels)
+        has_constellation = "j_constellation" in joker_keys
 
         # Balance of playability (how often you get this hand) and scaling
         # potential (how well the base chips×mult grows with levels).
@@ -172,6 +174,10 @@ class PickFromPlanetPack:
             affinity = strat.hand_affinity(hand_type)
             if affinity > 0:
                 score += affinity * 10
+
+            # Constellation: every planet used = +0.1 xmult, even off-strategy
+            if has_constellation and affinity == 0:
+                score = max(score, 8.0)  # guarantee pick over skip
 
             # Level bonus: compound growth on already-leveled types
             level_info = hand_levels.get(hand_type, {})
@@ -227,14 +233,28 @@ class PickFromBuffoonPack:
             return PackAction(card_index=None, reason="skip buffoon pack (joker slots full)")
 
         owned_jokers = joker_slots.get("cards", [])
+        owned_keys = {j.get("key") for j in owned_jokers}
         hand_levels = state.get("hands", {})
         strat = compute_strategy(owned_jokers, hand_levels)
+        has_madness = "j_madness" in owned_keys
 
         best_idx = 0
         best_score = -1.0
 
+        from balatro_bot.scaling import check_anti_synergy
         for i, card in enumerate(cards):
             key = card.get("key", "")
+
+            # Madness interaction (bidirectional)
+            if has_madness and key in SCALING_JOKERS:
+                continue
+            if key == "j_madness" and owned_keys & SCALING_JOKERS:
+                continue
+
+            # General anti-synergy check
+            if check_anti_synergy(key, owned_keys):
+                continue
+
             effect = JOKER_EFFECTS.get(key)
             has_effect = effect is not None and effect is not _noop
 

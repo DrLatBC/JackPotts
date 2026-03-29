@@ -81,8 +81,22 @@ def _supernova(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += played
 
 def _green_joker(ctx: ScoreContext, j: dict) -> None:
+    """Green Joker increments in context.before (before scoring), so add hand_add."""
     ab = _ability(j)
     ctx.mult += _ab_mult(j, fallback=5) + ab.get("hand_add", 1)
+
+def _ride_the_bus(ctx: ScoreContext, j: dict) -> None:
+    """Ride the Bus: +extra per hand without face cards. Resets on face cards.
+    Increments in context.before, so snapshot is stale by +extra when no faces."""
+    ab = _ability(j)
+    base = _ab_mult(j, fallback=5)
+    has_face = any(card_rank(c) in FACE_RANKS for c in ctx.scoring_cards if card_rank(c))
+    if has_face:
+        # Resets to 0 in context.before — game scores 0
+        pass
+    else:
+        # Gains +extra in context.before, then scores the new total
+        ctx.mult += base + ab.get("extra", 1)
 
 def _blackboard(ctx: ScoreContext, j: dict) -> None:
     if ctx.held_cards and all(
@@ -138,8 +152,10 @@ def _seeing_double(ctx: ScoreContext, j: dict) -> None:
         ctx.mult *= _ability(j).get("extra", 2.0)
 
 def _flower_pot(ctx: ScoreContext, j: dict) -> None:
+    # Game checks scoring_hand, not all played cards. Only scoring cards
+    # contribute suits toward the 4-suit requirement.
     suits_present: set[str] = set()
-    for c in ctx.played_cards:
+    for c in ctx.scoring_cards:
         if not is_debuffed(c):
             suits_present |= card_suits(c)
     if len(suits_present) >= 4:
@@ -246,6 +262,7 @@ COMPLEX_EFFECTS: dict[str, object] = {
     "j_scholar": _scholar,
     "j_supernova": _supernova,
     "j_green_joker": _green_joker,
+    "j_ride_the_bus": _ride_the_bus,
     "j_blackboard": _blackboard,
     "j_baron": _baron,
     "j_photograph": _photograph,

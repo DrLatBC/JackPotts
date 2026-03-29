@@ -7,10 +7,9 @@ import re
 import sys
 from pathlib import Path
 
-import httpx
 from balatrobot import BalatroClient
 
-from balatro_bot.bot import run_bot, setup_logging, restart_balatro_server, wait_for_server
+from balatro_bot.bot import run_bot, setup_logging, wait_for_server
 from balatro_bot.engine import RuleEngine
 
 import logging
@@ -29,9 +28,6 @@ def main() -> None:
     parser.add_argument("--games", type=int, default=1, help="Number of games to play")
     parser.add_argument("--games-offset", type=int, default=0, help="Games already completed (for progress tracking on restart)")
     parser.add_argument("--log", default=None, help="Log file (default: growing_{port}.txt)")
-    parser.add_argument("--love-path", default=None, help="Path to Balatro.exe (enables auto-restart)")
-    parser.add_argument("--lovely-path", default=None, help="Path to version.dll (enables auto-restart)")
-    parser.add_argument("--uvx", default="uvx", help="Path to uvx executable")
     args = parser.parse_args()
 
     log_dir = Path("bot_log") / str(args.port)
@@ -60,7 +56,7 @@ def main() -> None:
         next_num = max(session_num, max(port_nums)) if port_nums else session_num
         log_file = str(log_dir / f"game_{next_num:03d}.log")
 
-    wins_file = str(wins_dir / f"wins_{args.port}.log")
+    wins_file = str(wins_dir / f"wins_{args.port}_{next_num:03d}.log")
     scoring_file = str(log_dir / f"scoring_{next_num:03d}.log")
     progress_file = log_dir / "progress.txt"
     setup_logging(args.verbose, log_file=log_file, wins_file=wins_file, scoring_file=scoring_file)
@@ -71,8 +67,6 @@ def main() -> None:
 
         wait_for_server(client)
 
-        can_restart = bool(args.love_path and args.lovely_path)
-
         wins = 0
         offset = args.games_offset
         total_games = offset + args.games
@@ -81,25 +75,13 @@ def main() -> None:
         while i < args.games:
             if args.games > 1:
                 log.info("=== Game %d/%d ===", offset + i + 1, total_games)
-            try:
-                won = run_bot(
-                    client, engine,
-                    start_game=args.start,
-                    deck=args.deck,
-                    stake=args.stake,
-                    seed=args.seed,
-                )
-            except httpx.TimeoutException as e:
-                log.error("Balatro server timed out (game server crashed): %s", e)
-                if can_restart:
-                    restart_balatro_server(
-                        args.port, args.uvx, args.love_path, args.lovely_path,
-                    )
-                    wait_for_server(client, timeout=60.0)
-                    log.info("Server back up — retrying game %d", offset + i + 1)
-                    continue
-                else:
-                    raise
+            won = run_bot(
+                client, engine,
+                start_game=args.start,
+                deck=args.deck,
+                stake=args.stake,
+                seed=args.seed,
+            )
             if won:
                 wins += 1
             progress_file.write_text(f"{offset + i + 1}/{total_games}")

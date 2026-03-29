@@ -93,7 +93,7 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
 
     # Simple scaling (parsed value)
     ("j_ceremonial",    "parsed_mult",  {"fallback": 10}),
-    ("j_ride_the_bus",  "parsed_mult",  {"fallback": 5}),
+    # j_ride_the_bus — moved to complex.py (needs face card check + pre-scoring increment)
     ("j_red_card",      "parsed_mult",  {"fallback": 6}),
     ("j_fortune_teller","parsed_mult",  {"fallback": 3}),
     ("j_flash",         "parsed_mult",  {"fallback": 6}),

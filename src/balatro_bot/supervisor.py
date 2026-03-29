@@ -184,7 +184,7 @@ def compute_session_number() -> int:
 # ---------------------------------------------------------------------------
 
 class Supervisor:
-    def __init__(self, n: int, games: int, deck: str, stake: str,
+    def __init__(self, n: int, games: int, decks: list[str], stake: str,
                  seed: str | None):
         taken: set[str] = set()
         slots = []
@@ -194,7 +194,7 @@ class Supervisor:
             slots.append(Slot(port=BASE_PORT + i, name=name))
         self.slots = slots
         self.games = games
-        self.deck = deck
+        self.decks = decks  # rotated across slots
         self.stake = stake
         self.seed = seed
         self.running = True
@@ -248,18 +248,20 @@ class Supervisor:
             pass
         return self.games
 
+    def _deck_for_slot(self, slot: Slot) -> str:
+        idx = self.slots.index(slot)
+        return self.decks[idx % len(self.decks)]
+
     def launch_bot(self, slot: Slot) -> None:
         games = self._remaining_games(slot)
         completed = self.games - games
+        deck = self._deck_for_slot(slot)
         cmd = [
             PYTHON, "-m", BOT_MODULE,
             "--start", "--port", str(slot.port),
             "--games", str(games),
             "--games-offset", str(completed),
-            "--uvx", UVX,
-            "--love-path", LOVE_PATH,
-            "--lovely-path", LOVELY_PATH,
-            "--deck", self.deck,
+            "--deck", deck,
             "--stake", self.stake,
         ]
         if self.seed:
@@ -269,7 +271,7 @@ class Supervisor:
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         slot.state = "running"
-        log.info("%s (port %d): launching with %d games remaining", slot.name, slot.port, games)
+        log.info("%s (port %d): launching with %d games remaining [%s deck]", slot.name, slot.port, games, deck)
 
     def wait_for_health(self, slot: Slot, timeout: float = 30.0) -> bool:
         deadline = time.time() + timeout
@@ -367,8 +369,9 @@ class Supervisor:
                 "done": "*",
                 "dead": "X",
             }.get(slot.state, "?")
+            deck = self._deck_for_slot(slot)
             name_pad = f"{slot.name:<12}"
-            print(f"  [{state_icon}] {name_pad} {prog:>12}  {slot.state}{restarts}")
+            print(f"  [{state_icon}] {name_pad} {deck:<8} {prog:>12}  {slot.state}{restarts}")
         print()
         active = sum(1 for s in self.slots if s.state in ("running", "starting"))
         done = sum(1 for s in self.slots if s.state == "done")
@@ -434,7 +437,8 @@ def main() -> None:
                         help="Number of bot instances (default: 6)")
     parser.add_argument("--games", type=int, default=1000,
                         help="Games per instance (default: 1000)")
-    parser.add_argument("--deck", default="RED", help="Deck type")
+    parser.add_argument("--deck", default="RED",
+                        help="Deck type(s). Comma-separated to rotate across instances (e.g. RED,BLUE)")
     parser.add_argument("--stake", default="WHITE", help="Stake level")
     parser.add_argument("--seed", default=None, help="Game seed")
     parser.add_argument("--kill", action="store_true",
@@ -447,10 +451,11 @@ def main() -> None:
         print(f"Killed {killed} processes")
         return
 
+    decks = [d.strip() for d in args.deck.split(",")]
     sup = Supervisor(
         n=args.instances,
         games=args.games,
-        deck=args.deck,
+        decks=decks,
         stake=args.stake,
         seed=args.seed,
     )

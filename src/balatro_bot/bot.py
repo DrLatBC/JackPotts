@@ -6,7 +6,6 @@ import logging
 import logging.handlers
 import random
 import string
-import subprocess
 import time
 from typing import TYPE_CHECKING
 
@@ -84,63 +83,6 @@ def setup_logging(
         sh = logging.FileHandler(scoring_file, mode="a", encoding="utf-8")
         sh.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
         scoring_log.addHandler(sh)
-
-
-_server_proc: subprocess.Popen | None = None
-
-
-def restart_balatro_server(
-    port: int,
-    uvx: str,
-    love_path: str,
-    lovely_path: str,
-    wait_secs: float = 15.0,
-) -> None:
-    """Kill the dead balatrobot process on this port and spawn a fresh one."""
-    global _server_proc
-    log.info("Restarting balatrobot server on port %d...", port)
-
-    # Kill the tracked process directly (handles crashed servers that netstat can't find)
-    if _server_proc is not None:
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(_server_proc.pid)],
-                capture_output=True,
-            )
-            log.info("Killed tracked server PID %s", _server_proc.pid)
-        except Exception:
-            pass
-        _server_proc = None
-
-    # Also sweep netstat for anything else on the port (orphans from previous sessions)
-    try:
-        result = subprocess.run(
-            ["netstat", "-ano"],
-            capture_output=True, text=True,
-        )
-        for line in result.stdout.splitlines():
-            if f":{port}" in line and ("LISTENING" in line or "ESTABLISHED" in line):
-                parts = line.split()
-                pid = parts[-1]
-                if pid.isdigit() and pid != "0":
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True)
-                    log.info("Killed PID %s on port %d", pid, port)
-    except Exception as e:
-        log.warning("Could not kill old process: %s", e)
-
-    time.sleep(2.0)
-
-    _server_proc = subprocess.Popen(
-        [uvx, "balatrobot", "serve",
-         "--port", str(port),
-         "--headless", "--fast",
-         "--love-path", love_path,
-         "--lovely-path", lovely_path],
-        creationflags=subprocess.CREATE_NEW_CONSOLE,
-    )
-    log.info("Spawned new balatrobot server on port %d (PID %s), waiting %.0fs...",
-             port, _server_proc.pid, wait_secs)
-    time.sleep(wait_secs)
 
 
 def wait_for_server(client: BalatroClient, timeout: float = 30.0) -> None:
@@ -274,7 +216,7 @@ def run_bot(
     last_round = None
     current_blind_name = None
     current_blind_target = None
-    pre_blind_chips = 0
+    max_chips_this_blind = 0
 
     SUIT_SYM = {"H": "\u2665", "D": "\u2666", "C": "\u2663", "S": "\u2660"}
     RANK_SYM = {
@@ -287,8 +229,31 @@ def run_bot(
         val = c.get("value", {})
         return RANK_SYM.get(val.get("rank", ""), "?") + SUIT_SYM.get(val.get("suit", ""), "?")
 
+    won_logged = False
+    actually_won = False  # True only when bot reaches ante 9+ (beat the ante 8 boss)
+
     while state.get("state") != "GAME_OVER":
         game_state = state.get("state", "")
+
+        # Detect real win: bot advanced past ante 8 (beat the boss)
+        # Don't trust state.won — Hieroglyph voucher inflates ante counter
+        cur_ante = state.get("ante_num", 0)
+        if cur_ante >= 9 and not actually_won:
+            actually_won = True
+            log.info(
+                "VICTORY at ante %s round %s (seed=%s) — beat Ante 8 boss, entering endless",
+                cur_ante, state.get("round_num", "?"),
+                state.get("seed", "?"),
+            )
+
+        # Log when state.won fires (may be premature due to Hieroglyph)
+        if state.get("won") and not won_logged:
+            if not actually_won:
+                log.info(
+                    "state.won=true at ante %s (Hieroglyph?) — not a real win until ante 9+",
+                    state.get("ante_num", "?"),
+                )
+            won_logged = True
 
         ante_num = state.get("ante_num")
         round_num = state.get("round_num")
@@ -301,16 +266,19 @@ def run_bot(
                 ", ".join(roster) if roster else "none",
             )
             last_ante = ante_num
+        # Track highest chips seen during this blind
+        if current_blind_name:
+            cur_chips = state.get("round", {}).get("chips", 0)
+            if cur_chips > max_chips_this_blind:
+                max_chips_this_blind = cur_chips
         if last_round is not None and round_num != last_round and current_blind_name:
-            final_chips = state.get("round", {}).get("chips", 0)
-            scored = final_chips - pre_blind_chips
             log.info(
                 "Blind cleared: %s | scored %s / needed %s",
-                current_blind_name, scored, current_blind_target,
+                current_blind_name, max_chips_this_blind, current_blind_target,
             )
             current_blind_name = None
             current_blind_target = None
-            pre_blind_chips = 0
+            max_chips_this_blind = 0
         last_round = round_num
 
         if game_state in ("HAND_PLAYED", "DRAW_TO_HAND", "NEW_ROUND", "SPLASH", "TUTORIAL"):
@@ -361,13 +329,13 @@ def run_bot(
             )
             if blind_id != last_logged_blind:
                 for key, b in blinds.items():
-                    if isinstance(b, dict) and b.get("status") == "CURRENT":
+                    if isinstance(b, dict) and b.get("status") in ("SELECT", "CURRENT"):
                         name = b.get("name", "?")
                         score = b.get("score", "?")
                         log.info("Blind: %s (need %s chips)", name, score)
                         current_blind_name = name
                         current_blind_target = score
-                        pre_blind_chips = state.get("round", {}).get("chips", 0)
+                        max_chips_this_blind = 0
                         break
                 last_logged_blind = blind_id
 
@@ -469,15 +437,24 @@ def run_bot(
                 time.sleep(poll_interval)
                 state = client.call("gamestate")
 
-    won = state.get("won", False)
     ante = state.get("ante_num", "?")
     round_num = state.get("round_num", "?")
     seed = state.get("seed", "?")
-    log.info(
-        "Game over: %s | seed=%s ante=%s round=%s | %d actions taken",
-        "VICTORY" if won else "DEFEAT",
-        seed, ante, round_num, actions_taken,
-    )
+    if actually_won:
+        log.info(
+            "Game over: VICTORY (died in endless) | seed=%s ante=%s round=%s | %d actions taken",
+            seed, ante, round_num, actions_taken,
+        )
+    elif state.get("won", False):
+        log.info(
+            "Game over: DEFEAT (state.won=true but never reached ante 9) | seed=%s ante=%s round=%s | %d actions taken",
+            seed, ante, round_num, actions_taken,
+        )
+    else:
+        log.info(
+            "Game over: DEFEAT | seed=%s ante=%s round=%s | %d actions taken",
+            seed, ante, round_num, actions_taken,
+        )
     joker_names = [j.get("label", "?") for j in state.get("jokers", {}).get("cards", [])]
     log.info(
         "Summary: $%d | jokers: [%s] | hands=%d discards=%d",
@@ -487,9 +464,9 @@ def run_bot(
     )
 
     if _win_handler:
-        if won:
+        if actually_won:
             _win_handler.flush_win(seed)
         else:
             _win_handler.reset()
 
-    return won
+    return actually_won
