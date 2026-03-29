@@ -83,7 +83,14 @@ _UTILITY_VALUE: dict[str, float] = {
     "j_dna":           0.5,   # copies first played card
     "j_certificate":   0.5,   # random card + gold seal
     "j_midas_mask":    0.5,   # face cards → Gold
-    # Tier 6: triggered utility (action rules handle these)
+    # Tier 6: retrigger jokers (scoring via retrigger_count, not direct effects)
+    "j_hack":          1.5,   # retrigger 2,3,4,5 — rank affinity build
+    "j_hanging_chad":  1.0,   # retrigger first scored card
+    "j_dusk":          1.5,   # retrigger all on last hand
+    "j_sock_and_buskin":1.0,  # retrigger face cards
+    "j_seltzer":       1.5,   # retrigger all scored cards (limited uses)
+    "j_mime":          1.0,   # retrigger held cards
+    # Tier 7: triggered utility (action rules handle these)
     "j_luchador":      1.0,   # sell to disable boss blind
     "j_invisible":     1.0,   # sell to dupe after 2 rounds
     "j_diet_cola":     0.5,   # sell for free reroll

@@ -404,7 +404,7 @@ class DiscardToImprove:
             if extra_count > 0 and ctx.chips_remaining > 0:
                 coverage = ctx.best.total / ctx.chips_remaining
                 if coverage < 0.15:
-                    extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices))
+                    extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), rank_affinity=ctx.strategy.rank_affinity_dict())
                     to_discard = extras[:min(extra_count, ctx.discards_left)]
                     if to_discard:
                         return DiscardCards(
@@ -491,7 +491,7 @@ class PlayBestAvailable:
         if (ctx.best and ctx.best.total < ctx.chips_remaining
                 and ctx.discards_left > 0 and len(ctx.best.card_indices) < 5):
             keep = set(ctx.best.card_indices)
-            to_discard = cards_not_in(ctx.hand_cards, keep)[:min(5, ctx.discards_left)]
+            to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict())[:min(5, ctx.discards_left)]
             if to_discard:
                 return DiscardCards(to_discard, reason="last resort discard (hand too weak, searching for better)")
         if ctx.best:

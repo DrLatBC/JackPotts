@@ -15,7 +15,7 @@ JOKER_EFFECTS.update(SIMPLE_EFFECTS)
 JOKER_EFFECTS.update(COMPLEX_EFFECTS)
 
 # --- Retrigger jokers (scoring handled in retrigger_count) ---
-for key in ("j_hack", "j_dusk", "j_sock_and_buskin", "j_hanging_chad", "j_selzer", "j_mime"):
+for key in ("j_hack", "j_dusk", "j_sock_and_buskin", "j_hanging_chad", "j_seltzer", "j_mime"):
     JOKER_EFFECTS[key] = _noop
 
 # --- Economy jokers (no scoring effect, but recognized as "known") ---
