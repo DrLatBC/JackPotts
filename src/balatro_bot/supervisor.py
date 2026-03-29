@@ -1,13 +1,7 @@
-"""
-Supervisor for Balatro bot instances.
+"""Supervisor for Balatro bot instances.
 
 Manages N (balatrobot serve + bot.py) pairs with health monitoring,
 automatic restart, and clean shutdown.
-
-Usage:
-    python supervisor.py              # 6 instances, 1000 games each
-    python supervisor.py -n 8         # 8 instances
-    python supervisor.py --kill       # kill all existing processes and exit
 """
 
 from __future__ import annotations
@@ -15,8 +9,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import random
 import re
-import json
 import signal
 import socket
 import subprocess
@@ -25,29 +19,33 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from balatro_bot.config import SupervisorConfig
+
 # ---------------------------------------------------------------------------
-# Config
+# Defaults
 # ---------------------------------------------------------------------------
 
-BASE_PORT = 12346
-BASE_DIR = Path(__file__).parent
-BOT_SCRIPT = BASE_DIR / "bot.py"
-LOG_DIR = BASE_DIR / "bot_log"
-WINS_DIR = LOG_DIR / "wins"
+cfg = SupervisorConfig()
 
-LOVE_PATH = r"G:\SteamLibrary\steamapps\common\Balatro\Balatro.exe"
-LOVELY_PATH = r"G:\SteamLibrary\steamapps\common\Balatro\version.dll"
-UVX = r"C:\Users\Tyler\AppData\Roaming\Python\Python311\Scripts\uvx.exe"
-PYTHON = str(BASE_DIR / ".venv" / "Scripts" / "python.exe")
+BASE_PORT = cfg.base_port
+BASE_DIR = Path(__file__).parent.parent.parent
+BOT_MODULE = "balatro_bot.cli"
+LOG_DIR = cfg.log_dir
+WINS_DIR = cfg.wins_dir
 
-HEALTH_TIMEOUT = 30  # seconds before declaring server dead
-RESTART_COOLDOWN = 30  # seconds to wait after 3+ rapid restarts
-RAPID_RESTART_WINDOW = 60  # seconds window for counting rapid restarts
-RAPID_RESTART_LIMIT = 3
-SERVER_STARTUP_WAIT = 15  # seconds to wait for server after launch
-SERVER_STAGGER = 3  # seconds between server launches
-BOT_STAGGER = 2  # seconds between bot launches
-POLL_INTERVAL = 5  # seconds between monitor ticks
+LOVE_PATH = cfg.love_path
+LOVELY_PATH = cfg.lovely_path
+UVX = cfg.uvx_path
+PYTHON = cfg.python_path or str(BASE_DIR / ".venv" / "Scripts" / "python.exe")
+
+HEALTH_TIMEOUT = cfg.health_timeout
+RESTART_COOLDOWN = cfg.restart_cooldown
+RAPID_RESTART_WINDOW = cfg.rapid_restart_window
+RAPID_RESTART_LIMIT = cfg.rapid_restart_limit
+SERVER_STARTUP_WAIT = cfg.server_startup_wait
+SERVER_STAGGER = cfg.server_stagger
+BOT_STAGGER = cfg.bot_stagger
+POLL_INTERVAL = cfg.poll_interval
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -65,15 +63,36 @@ def setup_supervisor_logging() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Disney princess names
+# ---------------------------------------------------------------------------
+
+PRINCESS_NAMES = [
+    "Rapunzel", "Cinderella", "Aurora", "Ariel", "Belle", "Jasmine",
+    "Pocahontas", "Mulan", "Tiana", "Merida", "Moana", "Elsa", "Anna",
+    "Snow White", "Raya", "Mirabel", "Asha", "Vanellope", "Giselle",
+    "Megara", "Esmeralda", "Nala", "Kida", "Eilonwy", "Tinker Bell",
+]
+
+
+def _pick_princess_name(taken: set[str]) -> str:
+    """Pick a random princess name not already in use."""
+    available = [n for n in PRINCESS_NAMES if n not in taken]
+    if not available:
+        available = list(PRINCESS_NAMES)  # all taken, allow duplicates
+    return random.choice(available)
+
+
+# ---------------------------------------------------------------------------
 # Slot
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Slot:
     port: int
+    name: str = ""
     server_proc: subprocess.Popen | None = None
     bot_proc: subprocess.Popen | None = None
-    state: str = "stopped"  # stopped, starting, running, restarting, done, cooldown
+    state: str = "stopped"
     restarts: int = 0
     restart_times: list[float] = field(default_factory=list)
     last_health: float = 0.0
@@ -83,30 +102,30 @@ class Slot:
         return proc is not None and proc.poll() is None
 
     def kill_pair(self) -> None:
-        """Kill both server and bot processes."""
+        """Kill both server and bot process trees, including child consoles."""
         for proc in (self.bot_proc, self.server_proc):
             if proc and proc.poll() is None:
+                # taskkill /F /T kills the entire process tree (including
+                # Balatro.exe spawned by uvx in a separate console window)
                 try:
-                    proc.terminate()
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True,
+                    )
                 except OSError:
                     pass
-        # Give them a moment, then force kill
-        deadline = time.time() + 3.0
+        # Give processes a moment to die, then force-kill any stragglers
+        time.sleep(1.0)
         for proc in (self.bot_proc, self.server_proc):
             if proc and proc.poll() is None:
-                remaining = max(0, deadline - time.time())
                 try:
-                    proc.wait(timeout=remaining)
-                except subprocess.TimeoutExpired:
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
+                    proc.kill()
+                except OSError:
+                    pass
         self.server_proc = None
         self.bot_proc = None
 
     def check_health(self) -> bool:
-        """Check if the balatrobot server is accepting connections."""
         try:
             with socket.create_connection(("localhost", self.port), timeout=2):
                 self.last_health = time.time()
@@ -116,7 +135,6 @@ class Slot:
         return False
 
     def read_progress(self) -> str:
-        """Read progress from the bot's progress.txt."""
         try:
             p = LOG_DIR / str(self.port) / "progress.txt"
             if p.exists():
@@ -131,7 +149,6 @@ class Slot:
 # ---------------------------------------------------------------------------
 
 def kill_port_processes(ports: list[int]) -> int:
-    """Kill all processes listening on the given ports. Returns count killed."""
     killed = 0
     try:
         result = subprocess.run(
@@ -154,7 +171,6 @@ def kill_port_processes(ports: list[int]) -> int:
 
 
 def compute_session_number() -> int:
-    """Find the next available session number across all port log dirs."""
     nums = []
     for f in LOG_DIR.glob("*/game_*.log"):
         m = re.match(r"game_(\d+)\.log", f.name)
@@ -170,7 +186,13 @@ def compute_session_number() -> int:
 class Supervisor:
     def __init__(self, n: int, games: int, deck: str, stake: str,
                  seed: str | None):
-        self.slots = [Slot(port=BASE_PORT + i) for i in range(n)]
+        taken: set[str] = set()
+        slots = []
+        for i in range(n):
+            name = _pick_princess_name(taken)
+            taken.add(name)
+            slots.append(Slot(port=BASE_PORT + i, name=name))
+        self.slots = slots
         self.games = games
         self.deck = deck
         self.stake = stake
@@ -179,12 +201,10 @@ class Supervisor:
         self.session_num = 0
 
     def setup(self) -> None:
-        """Create log dirs, compute session number, kill orphans."""
         WINS_DIR.mkdir(parents=True, exist_ok=True)
         for slot in self.slots:
             (LOG_DIR / str(slot.port)).mkdir(parents=True, exist_ok=True)
 
-        # Kill anything on our ports
         ports = [s.port for s in self.slots]
         killed = kill_port_processes(ports)
         if killed:
@@ -192,11 +212,15 @@ class Supervisor:
             time.sleep(2)
 
         self.session_num = compute_session_number()
-        # Write session number for bot.py to read
         (LOG_DIR / "next_num.txt").write_text(str(self.session_num))
 
+        # Clear stale progress files from previous sessions
+        for slot in self.slots:
+            p = LOG_DIR / str(slot.port) / "progress.txt"
+            if p.exists():
+                p.unlink()
+
     def launch_server(self, slot: Slot) -> None:
-        """Start a balatrobot serve process for this slot."""
         slot.server_proc = subprocess.Popen(
             [UVX, "balatrobot", "serve",
              "--port", str(slot.port),
@@ -206,14 +230,32 @@ class Supervisor:
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         slot.state = "starting"
-        slot.last_health = time.time()  # grace period starts now
+        slot.last_health = time.time()
+
+    def _remaining_games(self, slot: Slot) -> int:
+        """Parse progress.txt to find how many games are left."""
+        try:
+            p = LOG_DIR / str(slot.port) / "progress.txt"
+            if p.exists():
+                text = p.read_text().strip()
+                if "/" in text:
+                    done, _ = text.split("/", 1)
+                    completed = int(done)
+                    remaining = self.games - completed
+                    if remaining > 0:
+                        return remaining
+        except (OSError, ValueError):
+            pass
+        return self.games
 
     def launch_bot(self, slot: Slot) -> None:
-        """Start a bot.py process for this slot."""
+        games = self._remaining_games(slot)
+        completed = self.games - games
         cmd = [
-            PYTHON, str(BOT_SCRIPT),
+            PYTHON, "-m", BOT_MODULE,
             "--start", "--port", str(slot.port),
-            "--games", str(self.games),
+            "--games", str(games),
+            "--games-offset", str(completed),
             "--uvx", UVX,
             "--love-path", LOVE_PATH,
             "--lovely-path", LOVELY_PATH,
@@ -227,9 +269,9 @@ class Supervisor:
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         slot.state = "running"
+        log.info("%s (port %d): launching with %d games remaining", slot.name, slot.port, games)
 
     def wait_for_health(self, slot: Slot, timeout: float = 30.0) -> bool:
-        """Block until the server's health endpoint responds."""
         deadline = time.time() + timeout
         while time.time() < deadline and self.running:
             if slot.check_health():
@@ -240,42 +282,45 @@ class Supervisor:
         return False
 
     def start_slot(self, slot: Slot) -> None:
-        """Launch server + bot for a slot."""
         self.launch_server(slot)
-        log.info("Port %d: server starting (pid=%s)", slot.port,
+        log.info("%s (port %d): server starting (pid=%s)", slot.name, slot.port,
                  slot.server_proc.pid if slot.server_proc else "?")
         if self.wait_for_health(slot, timeout=SERVER_STARTUP_WAIT):
             self.launch_bot(slot)
-            log.info("Port %d: bot started (pid=%s)", slot.port,
+            log.info("%s (port %d): bot started (pid=%s)", slot.name, slot.port,
                      slot.bot_proc.pid if slot.bot_proc else "?")
         else:
-            log.warning("Port %d: server slow to start, launching bot anyway", slot.port)
+            log.warning("%s (port %d): server slow to start, launching bot anyway", slot.name, slot.port)
             self.launch_bot(slot)
             slot.last_health = time.time()
 
     def restart_slot(self, slot: Slot, reason: str = "unknown") -> None:
-        """Kill and relaunch a slot."""
         now = time.time()
-        # Track restart times for backoff
         slot.restart_times = [t for t in slot.restart_times
                               if now - t < RAPID_RESTART_WINDOW]
         if len(slot.restart_times) >= RAPID_RESTART_LIMIT:
             slot.state = "cooldown"
-            log.warning("Port %d: cooldown — %d restarts in %ds (last: %s)",
-                        slot.port, len(slot.restart_times), RAPID_RESTART_WINDOW, reason)
+            log.warning("%s (port %d): cooldown — %d restarts in %ds (last: %s)",
+                        slot.name, slot.port, len(slot.restart_times), RAPID_RESTART_WINDOW, reason)
             return
 
         slot.restart_times.append(now)
         slot.restarts += 1
         slot.state = "restarting"
-        log.warning("Port %d: restart #%d — %s", slot.port, slot.restarts, reason)
+
+        # Rotate to a new princess name
+        taken = {s.name for s in self.slots if s is not slot}
+        old_name = slot.name
+        taken.add(old_name)  # don't reuse the same name
+        slot.name = _pick_princess_name(taken)
+        log.warning("%s (port %d): restart #%d as %s — %s",
+                    old_name, slot.port, slot.restarts, slot.name, reason)
 
         slot.kill_pair()
         time.sleep(2)
         self.start_slot(slot)
 
     def check_slot(self, slot: Slot) -> None:
-        """Check a single slot's health and restart if needed."""
         if slot.state == "done" or slot.state == "stopped":
             return
 
@@ -285,31 +330,28 @@ class Supervisor:
                 self.restart_slot(slot)
             return
 
-        # Check if bot exited cleanly (finished all games)
         if slot.bot_proc and slot.bot_proc.poll() is not None:
             rc = slot.bot_proc.returncode
             if rc == 0:
                 slot.state = "done"
                 slot.read_progress()
-                log.info("Port %d: finished (%s)", slot.port, slot.progress)
+                log.info("%s (port %d): finished (%s)", slot.name, slot.port, slot.progress)
                 slot.kill_pair()
                 return
             else:
-                log.error("Port %d: bot exited rc=%d", slot.port, rc)
+                log.error("%s (port %d): bot exited rc=%d", slot.name, slot.port, rc)
                 self.restart_slot(slot, reason=f"bot exited rc={rc}")
                 return
 
-        # Check if server process died
         if not slot.is_alive(slot.server_proc):
             server_rc = slot.server_proc.returncode if slot.server_proc else "?"
-            log.error("Port %d: server died rc=%s", slot.port, server_rc)
+            log.error("%s (port %d): server died rc=%s", slot.name, slot.port, server_rc)
             self.restart_slot(slot, reason=f"server died rc={server_rc}")
             return
 
     def print_status(self) -> None:
-        """Print a status table to the console."""
         os.system("cls" if os.name == "nt" else "clear")
-        print("  Balatro Bot Supervisor")
+        print("  Mother Gothel")
         print("  " + "=" * 50)
         print()
         for slot in self.slots:
@@ -325,7 +367,8 @@ class Supervisor:
                 "done": "*",
                 "dead": "X",
             }.get(slot.state, "?")
-            print(f"  [{state_icon}] Port {slot.port}: {prog:>12}  {slot.state}{restarts}")
+            name_pad = f"{slot.name:<12}"
+            print(f"  [{state_icon}] {name_pad} {prog:>12}  {slot.state}{restarts}")
         print()
         active = sum(1 for s in self.slots if s.state in ("running", "starting"))
         done = sum(1 for s in self.slots if s.state == "done")
@@ -333,15 +376,15 @@ class Supervisor:
         print(f"  Ctrl+C to stop all")
 
     def run(self) -> None:
-        """Main supervisor loop."""
         setup_supervisor_logging()
         self.setup()
-        log.info("=== Supervisor started: %d instances, %d games each ===",
+        log.info("=== Mother Gothel started: %d princesses, %d games each ===",
                  len(self.slots), self.games)
+        names = ", ".join(s.name for s in self.slots)
+        print(f"  Mother Gothel is sending {len(self.slots)} princesses to play Balatro")
+        print(f"  ({names})\n")
+        print(f"  Session {self.session_num}, {self.games} games each\n")
 
-        print(f"Starting {len(self.slots)} instances (session {self.session_num})...\n")
-
-        # Staggered startup
         for i, slot in enumerate(self.slots):
             if not self.running:
                 break
@@ -349,7 +392,6 @@ class Supervisor:
             if i < len(self.slots) - 1:
                 time.sleep(SERVER_STAGGER)
 
-        # Monitor loop
         last_status = 0.0
         while self.running:
             for slot in self.slots:
@@ -359,26 +401,27 @@ class Supervisor:
                 self.print_status()
                 last_status = time.time()
 
-            # Exit if all slots are finished or permanently failed
             active_states = {"starting", "running", "restarting", "cooldown"}
             if not any(s.state in active_states for s in self.slots):
                 self.print_status()
                 done = sum(1 for s in self.slots if s.state == "done")
-                print(f"\n  All instances stopped ({done} finished).")
+                print(f"\n  All princesses have returned ({done} finished).")
                 break
 
             time.sleep(1.0)
 
     def shutdown(self) -> None:
-        """Clean shutdown of all slots."""
         self.running = False
         log.info("Shutdown requested")
         print("\n  Shutting down...")
         for slot in self.slots:
             slot.kill_pair()
+        # Sweep ports for any orphans that escaped process tree kill
+        ports = [s.port for s in self.slots]
+        kill_port_processes(ports)
         total_restarts = sum(s.restarts for s in self.slots)
         log.info("Shutdown complete. Total restarts: %d", total_restarts)
-        print("  All processes terminated.")
+        print("  All princesses recalled.")
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +429,7 @@ class Supervisor:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Balatro bot supervisor")
+    parser = argparse.ArgumentParser(description="Mother Gothel — Balatro bot supervisor")
     parser.add_argument("-n", "--instances", type=int, default=6,
                         help="Number of bot instances (default: 6)")
     parser.add_argument("--games", type=int, default=1000,
@@ -412,7 +455,6 @@ def main() -> None:
         seed=args.seed,
     )
 
-    # Handle Ctrl+C gracefully
     def on_sigint(sig, frame):
         sup.shutdown()
         sys.exit(0)

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "balatro-bot"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx",
+    "balatrobot",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+balatro-bot = "balatro_bot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

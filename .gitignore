@@ -2,12 +2,18 @@
 __pycache__/
 *.pyc
 .venv/
+*.egg-info/
+dist/
+build/
 
 # Logs
 bot_log/
 score_debug.txt
 growing_*.txt
+growing.txt
 wins_*.txt
+output*.txt
+logs/
 
 # IDE
 .vscode/
