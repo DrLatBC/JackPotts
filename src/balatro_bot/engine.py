@@ -6,9 +6,10 @@ from typing import TYPE_CHECKING
 
 from balatro_bot.actions import Action, Rule
 from balatro_bot.rules import (
-    VerdantLeafUnlock, MilkScalingJokers, PlayWinningHand,
+    VerdantLeafUnlock, MilkScalingJokers, SellLuchador, PlayWinningHand,
     PlayHighValueHand, DiscardToImprove, PlayBestAvailable,
     AlwaysSelectBlind, SkipForTag,
+    SellInvisible, SellDietCola,
     SellWeakJoker, FeedCampfire, ReorderJokersForCeremonial,
     BuyJokersInShop, BuyConsumablesInShop, BuyPacksInShop,
     BuyVouchersInShop, RerollShop, LeaveShop,
@@ -30,6 +31,7 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
         MilkScalingJokers(),
         ReorderJokersForCeremonial(),
         UseTacticalConsumables(),
+        SellLuchador(),
         PlayWinningHand(),
         DiscardToImprove(),
         PlayHighValueHand(),
@@ -40,6 +42,7 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
         AlwaysSelectBlind(),
     ],
     "SHOP": [
+        SellInvisible(),
         SellWeakJoker(),
         FeedCampfire(),
         ReorderJokersForCeremonial(),
@@ -47,6 +50,7 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
         BuyConsumablesInShop(),
         BuyPacksInShop(),
         BuyVouchersInShop(),
+        SellDietCola(),
         RerollShop(),
         LeaveShop(),
     ],

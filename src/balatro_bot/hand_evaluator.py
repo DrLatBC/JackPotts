@@ -43,36 +43,47 @@ def _rank_counts(cards: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _is_flush(cards: list[dict]) -> bool:
+def _is_flush(cards: list[dict], smeared: bool = False) -> bool:
     """True if all cards share at least one common suit."""
     if not cards:
         return False
-    common = card_suits(cards[0])
+    common = card_suits(cards[0], smeared=smeared)
     for c in cards[1:]:
-        common &= card_suits(c)
+        common &= card_suits(c, smeared=smeared)
         if not common:
             return False
     return bool(common)
 
 
-def _is_straight(cards: list[dict], four_fingers: bool = False) -> bool:
-    """True if the ranked cards form a straight (A-low allowed)."""
+def _is_straight(cards: list[dict], four_fingers: bool = False, shortcut: bool = False) -> bool:
+    """True if the ranked cards form a straight (A-low allowed).
+
+    With shortcut=True, each adjacent pair of ranks can differ by up to 2
+    (e.g. 2-4-6-8-T is a valid straight).
+    """
     ranks = sorted({rank_value(card_rank(c)) for c in cards if card_rank(c)})
     min_len = 4 if four_fingers else 5
     if len(ranks) < min_len:
         return False
-    if ranks[-1] - ranks[0] == len(ranks) - 1:
+    max_gap = 2 if shortcut else 1
+    # Check if ranks form a run (each gap <= max_gap)
+    if all(ranks[i + 1] - ranks[i] <= max_gap for i in range(len(ranks) - 1)):
         return True
+    # Ace-low: treat Ace as 1
     if 14 in ranks:
         low = [r for r in ranks if r != 14]
-        if (len(low) >= min_len - 1
-                and low[0] == 2
-                and low[-1] - low[0] == len(low) - 1):
-            return True
+        if len(low) >= min_len - 1 and low[0] <= (3 if shortcut else 2):
+            if all(low[i + 1] - low[i] <= max_gap for i in range(len(low) - 1)):
+                return True
     return False
 
 
-def classify_hand(cards: list[dict], four_fingers: bool = False) -> str:
+def classify_hand(
+    cards: list[dict],
+    four_fingers: bool = False,
+    shortcut: bool = False,
+    smeared: bool = False,
+) -> str:
     """Return the best Balatro hand name for a set of cards."""
     n = len(cards)
     if n == 0:
@@ -81,8 +92,8 @@ def classify_hand(cards: list[dict], four_fingers: bool = False) -> str:
     rc = _rank_counts(cards)
     counts_sorted = sorted(rc.values(), reverse=True)
     min_sf = 4 if four_fingers else 5
-    flush    = _is_flush(cards) and n >= min_sf
-    straight = _is_straight(cards, four_fingers) and n >= min_sf
+    flush    = _is_flush(cards, smeared=smeared) and n >= min_sf
+    straight = _is_straight(cards, four_fingers, shortcut=shortcut) and n >= min_sf
 
     max_kind = counts_sorted[0] if counts_sorted else 0
 
@@ -117,51 +128,51 @@ def classify_hand(cards: list[dict], four_fingers: bool = False) -> str:
 
     return "High Card"
 
-def flush_draw(hand_cards):
+def flush_draw(hand_cards, smeared: bool = False):
     """If 4+ cards share a suit, return their indices."""
     suits_to_indices: dict[str, list[int]] = {}
     for i, card in enumerate(hand_cards):
-        for suit in card_suits(card):
+        for suit in card_suits(card, smeared=smeared):
             if suit not in suits_to_indices:
                 suits_to_indices[suit] = []
             if i not in suits_to_indices[suit]:
                 suits_to_indices[suit].append(i)
 
     for suit, indices in suits_to_indices.items():
-        if len(indices) >=4:
+        if len(indices) >= 4:
             return indices[:4]
 
     return None
 
-def straight_draw(hand_cards):
-    """If 4 cards are in sequence, return their indices."""
+def straight_draw(hand_cards, shortcut: bool = False):
+    """If 4 cards are in sequence (or near-sequence with shortcut), return their indices."""
     rank_to_indices: dict[str, list[int]] = {}
     for i, card in enumerate(hand_cards):
-        rank  = card_rank(card)
+        rank = card_rank(card)
         if rank is None:
             continue
         if rank not in rank_to_indices:
-           rank_to_indices[rank] = []
+            rank_to_indices[rank] = []
         rank_to_indices[rank].append(i)
 
-    rank_values = sorted(rank_to_indices.keys(), key=rank_value)
+    rank_keys = sorted(rank_to_indices.keys(), key=rank_value)
+    max_gap = 2 if shortcut else 1
 
-    for i in range(len(rank_values) - 3):
-        window = rank_values[i:i+4]
-        lo = rank_value(window[0])
-        hi = rank_value(window[-1])
-        if hi - lo == 3:
-            indices = []
-            for r in window:
-                indices.append(rank_to_indices[r][0])
-            return indices
+    for i in range(len(rank_keys) - 3):
+        window = rank_keys[i:i + 4]
+        vals = [rank_value(r) for r in window]
+        if all(vals[j + 1] - vals[j] <= max_gap for j in range(3)):
+            return [rank_to_indices[r][0] for r in window]
 
-    # Ace-low: check for A-2-3-4
-    rank_val_set = {rank_value(r) for r in rank_to_indices}
-    if {14, 2, 3, 4} <= rank_val_set:
-        val_to_rank = {rank_value(r): r for r in rank_to_indices}
-        indices = [rank_to_indices[val_to_rank[v]][0] for v in (14, 2, 3, 4)]
-        return indices
+    # Ace-low: check for A-2-3-4 (or A-2-4-6 etc. with shortcut)
+    if "A" in rank_to_indices or any(rank_value(r) == 14 for r in rank_to_indices):
+        low_ranks = [r for r in rank_keys if rank_value(r) <= (7 if shortcut else 5) and rank_value(r) != 14]
+        if len(low_ranks) >= 3:
+            window = low_ranks[:3]
+            vals = [rank_value(r) for r in window]
+            if vals[0] <= (3 if shortcut else 2) and all(vals[j + 1] - vals[j] <= max_gap for j in range(2)):
+                ace_rank = next(r for r in rank_to_indices if rank_value(r) == 14)
+                return [rank_to_indices[ace_rank][0]] + [rank_to_indices[r][0] for r in window]
 
     return None
 
@@ -201,12 +212,12 @@ def _prob_hit(good: int, deck_size: int, draws: int) -> float:
 
 
 def flush_draw_quality(
-    hand_cards: list[dict], deck_cards: list[dict],
+    hand_cards: list[dict], deck_cards: list[dict], smeared: bool = False,
 ) -> tuple[list[int], float, str] | None:
     """If 4+ cards share a suit, return (keep_indices, probability, suit)."""
     suits_to_indices: dict[str, list[int]] = {}
     for i, card in enumerate(hand_cards):
-        for suit in card_suits(card):
+        for suit in card_suits(card, smeared=smeared):
             if suit not in suits_to_indices:
                 suits_to_indices[suit] = []
             if i not in suits_to_indices[suit]:
@@ -220,7 +231,7 @@ def flush_draw_quality(
             continue
         keep = indices[:4]
         cards_to_draw = len(hand_cards) - len(keep)
-        suit_in_deck = sum(1 for c in deck_cards if suit in card_suits(c))
+        suit_in_deck = sum(1 for c in deck_cards if suit in card_suits(c, smeared=smeared))
         deck_size = len(deck_cards)
         prob = _prob_hit(suit_in_deck, deck_size, cards_to_draw)
         if prob > best_prob:
@@ -231,9 +242,9 @@ def flush_draw_quality(
 
 
 def straight_draw_quality(
-    hand_cards: list[dict], deck_cards: list[dict],
+    hand_cards: list[dict], deck_cards: list[dict], shortcut: bool = False,
 ) -> tuple[list[int], float] | None:
-    """If 4 cards are in sequence, return (keep_indices, probability)."""
+    """If 4 cards are in sequence (or near-sequence with shortcut), return (keep_indices, probability)."""
     rank_to_indices: dict[str, list[int]] = {}
     for i, card in enumerate(hand_cards):
         rank = card_rank(card)
@@ -244,6 +255,7 @@ def straight_draw_quality(
         rank_to_indices[rank].append(i)
 
     rank_values_list = sorted(rank_to_indices.keys(), key=rank_value)
+    max_gap = 2 if shortcut else 1
 
     best: tuple[list[int], float] | None = None
     best_prob = -1.0
@@ -251,15 +263,22 @@ def straight_draw_quality(
     windows: list[list[str]] = []
     for i in range(len(rank_values_list) - 3):
         window = rank_values_list[i:i + 4]
-        lo = rank_value(window[0])
-        hi = rank_value(window[-1])
-        if hi - lo == 3:
+        vals = [rank_value(r) for r in window]
+        if all(vals[j + 1] - vals[j] <= max_gap for j in range(3)):
             windows.append(window)
 
     rank_val_set = {rank_value(r) for r in rank_to_indices}
     if {14, 2, 3, 4} <= rank_val_set:
         val_to_rank = {rank_value(r): r for r in rank_to_indices}
         windows.append([val_to_rank[v] for v in (14, 2, 3, 4)])
+    elif shortcut and 14 in rank_val_set:
+        # Shortcut ace-low: A + 3 low cards with gaps ≤ 2
+        val_to_rank = {rank_value(r): r for r in rank_to_indices}
+        low_vals = sorted(v for v in rank_val_set if v <= 7 and v != 14)
+        if len(low_vals) >= 3 and low_vals[0] <= 3:
+            w = low_vals[:3]
+            if all(w[j + 1] - w[j] <= max_gap for j in range(2)):
+                windows.append([val_to_rank[14]] + [val_to_rank[v] for v in w])
 
     for window in windows:
         lo = rank_value(window[0])
@@ -678,13 +697,18 @@ def enumerate_hands(
     joker_keys = {j.get("key") for j in (jokers or [])}
     four_fingers = "j_four_fingers" in joker_keys
     has_splash   = "j_splash" in joker_keys
+    shortcut     = "j_shortcut" in joker_keys
+    smeared      = "j_smeared" in joker_keys
 
     for size in range(min_select, min(max_select, n) + 1):
         for indices in combinations(range(n), size):
             if required_card_indices and not required_card_indices.issubset(set(indices)):
                 continue
             subset = [hand_cards[i] for i in indices]
-            hand_name = classify_hand(subset, four_fingers=four_fingers)
+            hand_name = classify_hand(
+                subset, four_fingers=four_fingers,
+                shortcut=shortcut, smeared=smeared,
+            )
 
             scoring = subset if has_splash else _scoring_cards_for(hand_name, subset)
             held = [hand_cards[i] for i in indices_set - set(indices)] if jokers else []
@@ -776,6 +800,11 @@ def discard_candidates(
     if not best:
         return [(list(range(min(max_discard, len(hand_cards)))), "no hand found")]
 
+    # Extract utility joker flags for draw detection
+    joker_keys = {j.get("key") for j in (jokers or [])}
+    shortcut = "j_shortcut" in joker_keys
+    smeared = "j_smeared" in joker_keys
+
     strategies: list[tuple[str, list[int], float, str]] = []
 
     if chips_remaining > 0 and best.total < chips_remaining * 0.10:
@@ -798,7 +827,7 @@ def discard_candidates(
 
     if HAND_INFO["Flush"][2] < HAND_INFO[best.hand_name][2]:
         if deck_cards:
-            fdq = flush_draw_quality(hand_cards, deck_cards)
+            fdq = flush_draw_quality(hand_cards, deck_cards, smeared=smeared)
             if fdq:
                 indices, prob, suit = fdq
                 strategies.append((
@@ -808,7 +837,7 @@ def discard_candidates(
                     f"chase Flush ({prob:.0%} to hit, {suit}), discard {len(hand_cards) - len(indices)} cards",
                 ))
         else:
-            flush_indices = flush_draw(hand_cards)
+            flush_indices = flush_draw(hand_cards, smeared=smeared)
             if flush_indices:
                 strategies.append((
                     "Flush",
@@ -819,7 +848,7 @@ def discard_candidates(
 
     if HAND_INFO["Straight"][2] < HAND_INFO[best.hand_name][2]:
         if deck_cards:
-            sdq = straight_draw_quality(hand_cards, deck_cards)
+            sdq = straight_draw_quality(hand_cards, deck_cards, shortcut=shortcut)
             if sdq:
                 indices, prob = sdq
                 strategies.append((
@@ -829,7 +858,7 @@ def discard_candidates(
                     f"chase Straight ({prob:.0%} to hit), discard {len(hand_cards) - len(indices)} cards",
                 ))
         else:
-            straight_indices = straight_draw(hand_cards)
+            straight_indices = straight_draw(hand_cards, shortcut=shortcut)
             if straight_indices:
                 strategies.append((
                     "Straight",

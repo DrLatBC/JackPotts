@@ -55,18 +55,22 @@ HAND_INFO: dict[str, tuple[int, int, int]] = {
 # Joker sets used by decision rules
 # ---------------------------------------------------------------------------
 
-SCALING_JOKERS = {
-    "j_campfire", "j_constellation", "j_vampire", "j_hologram",
-    "j_lucky_cat", "j_canio", "j_hit_the_road", "j_red_card", "j_green_joker",
-}
+# Import scaling sets from the central registry
+from balatro_bot.scaling import (
+    ALL_SCALING as SCALING_JOKERS,
+    PLAY_SCALERS,
+    DISCARD_SCALERS,
+    FINAL_HAND_JOKERS,
+    SELL_PROTECTED,
+    SHOP_SCALERS,
+    ANTI_DISCARD,
+    DECAY_JOKERS,
+    SCALING_XMULT,
+)
 
 FEWER_CARDS_JOKERS = {"j_half"}
 ALL_SCORE_JOKERS = {"j_splash"}
 EXACT_4_JOKERS = {"j_square"}
-
-PLAY_SCALERS = {"j_green_joker", "j_supernova", "j_ride_the_bus", "j_trousers", "j_runner", "j_square"}
-FINAL_HAND_JOKERS = {"j_acrobat", "j_dusk"}
-DISCARD_SCALERS = {"j_castle", "j_hit_the_road"}
 FACE_RANKS_SET = {"J", "Q", "K"}
 
 # ---------------------------------------------------------------------------

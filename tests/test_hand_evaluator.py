@@ -317,6 +317,89 @@ class TestParseEffectValue:
         assert total_fallback == 240
 
 
+# ---------------------------------------------------------------------------
+# Shortcut joker tests
+# ---------------------------------------------------------------------------
+
+class TestShortcut:
+    def test_shortcut_straight_gaps_of_2(self):
+        """2-4-6-8-T with gaps of 2 is a Straight with Shortcut."""
+        cards = [card("2", "H"), card("4", "D"), card("6", "C"), card("8", "S"), card("T", "H")]
+        assert classify_hand(cards, shortcut=True) == "Straight"
+        assert classify_hand(cards, shortcut=False) == "High Card"
+
+    def test_shortcut_straight_odd_gaps(self):
+        """3-5-7-9-J with gaps of 2 is a Straight with Shortcut."""
+        cards = [card("3", "H"), card("5", "D"), card("7", "C"), card("9", "S"), card("J", "H")]
+        assert classify_hand(cards, shortcut=True) == "Straight"
+
+    def test_shortcut_gap_of_3_fails(self):
+        """2-4-7-9-J has a gap of 3 (4→7) — NOT a Straight even with Shortcut."""
+        cards = [card("2", "H"), card("4", "D"), card("7", "C"), card("9", "S"), card("J", "H")]
+        assert classify_hand(cards, shortcut=True) == "High Card"
+
+    def test_shortcut_mixed_gaps(self):
+        """3-4-6-8-T: gaps of 1,2,2,2 — valid Shortcut straight."""
+        cards = [card("3", "H"), card("4", "D"), card("6", "C"), card("8", "S"), card("T", "H")]
+        assert classify_hand(cards, shortcut=True) == "Straight"
+
+    def test_shortcut_ace_low(self):
+        """A-2-4 with more cards — ace-low Shortcut straight."""
+        cards = [card("A", "H"), card("2", "D"), card("4", "C"), card("6", "S"), card("8", "H")]
+        assert classify_hand(cards, shortcut=True) == "Straight"
+
+    def test_shortcut_normal_straight_still_works(self):
+        """Normal consecutive straight still works with Shortcut enabled."""
+        cards = [card("5", "H"), card("6", "D"), card("7", "C"), card("8", "S"), card("9", "H")]
+        assert classify_hand(cards, shortcut=True) == "Straight"
+
+    def test_four_fingers_plus_shortcut(self):
+        """4 cards with gaps of 2 — Straight with both Four Fingers + Shortcut."""
+        cards = [card("2", "H"), card("4", "D"), card("6", "C"), card("8", "S")]
+        assert classify_hand(cards, four_fingers=True, shortcut=True) == "Straight"
+        assert classify_hand(cards, four_fingers=True, shortcut=False) == "High Card"
+
+
+# ---------------------------------------------------------------------------
+# Smeared joker tests
+# ---------------------------------------------------------------------------
+
+class TestSmeared:
+    def test_smeared_hearts_diamonds_flush(self):
+        """3H + 2D = Flush when Hearts and Diamonds are merged."""
+        cards = [card("2", "H"), card("5", "H"), card("8", "D"), card("J", "D"), card("A", "H")]
+        assert classify_hand(cards, smeared=True) == "Flush"
+        assert classify_hand(cards, smeared=False) == "High Card"
+
+    def test_smeared_clubs_spades_flush(self):
+        """Mixed Clubs + Spades = Flush when merged."""
+        cards = [card("3", "C"), card("7", "S"), card("T", "S"), card("Q", "C"), card("A", "C")]
+        assert classify_hand(cards, smeared=True) == "Flush"
+        assert classify_hand(cards, smeared=False) == "High Card"
+
+    def test_smeared_no_cross_group(self):
+        """Hearts + Clubs do NOT merge — different groups."""
+        cards = [card("2", "H"), card("5", "H"), card("8", "C"), card("J", "C"), card("A", "H")]
+        assert classify_hand(cards, smeared=True) == "High Card"
+
+    def test_smeared_straight_flush(self):
+        """Smeared can enable Straight Flush with merged suits."""
+        cards = [card("5", "H"), card("6", "D"), card("7", "H"), card("8", "D"), card("9", "H")]
+        assert classify_hand(cards, smeared=True) == "Straight Flush"
+        assert classify_hand(cards, smeared=False) == "Straight"
+
+    def test_four_fingers_plus_smeared(self):
+        """4-card flush with merged suits."""
+        cards = [card("3", "H"), card("7", "D"), card("T", "D"), card("K", "H")]
+        assert classify_hand(cards, four_fingers=True, smeared=True) == "Flush"
+        assert classify_hand(cards, four_fingers=True, smeared=False) == "High Card"
+
+    def test_smeared_pure_suit_still_works(self):
+        """All same suit still works with Smeared enabled."""
+        cards = [card("2", "H"), card("5", "H"), card("8", "H"), card("J", "H"), card("A", "H")]
+        assert classify_hand(cards, smeared=True) == "Flush"
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])

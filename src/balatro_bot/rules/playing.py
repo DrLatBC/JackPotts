@@ -5,12 +5,13 @@ from typing import TYPE_CHECKING
 
 from balatro_bot.actions import PlayCards, DiscardCards, SellJoker, Action
 from balatro_bot.context import RoundContext
-from balatro_bot.constants import (
-    SCALING_JOKERS, PLAY_SCALERS, FINAL_HAND_JOKERS,
-    DISCARD_SCALERS, FACE_RANKS_SET,
+from balatro_bot.scaling import (
+    SCALING_REGISTRY, PLAY_SCALERS, DISCARD_SCALERS,
+    FINAL_HAND_JOKERS, SELL_PROTECTED, ANTI_DISCARD, DECAY_JOKERS,
 )
+from balatro_bot.constants import FACE_RANKS_SET
 from balatro_bot.cards import card_rank, rank_value, is_debuffed
-from balatro_bot.hand_evaluator import best_hand, cards_not_in, discard_candidates
+from balatro_bot.hand_evaluator import best_hand, classify_hand, cards_not_in, discard_candidates
 from balatro_bot.rules._helpers import _pad_with_junk
 
 if TYPE_CHECKING:
@@ -38,7 +39,7 @@ class VerdantLeafUnlock:
         # Find the weakest joker to sacrifice (lowest sell value, non-scaling first)
         candidates = [
             (i, j) for i, j in enumerate(ctx.jokers)
-            if j.get("key") not in SCALING_JOKERS
+            if j.get("key") not in SELL_PROTECTED
         ]
         if not candidates:
             # All jokers are scaling — sell the cheapest one anyway
@@ -51,96 +52,226 @@ class VerdantLeafUnlock:
 
 
 class MilkScalingJokers:
-    """If we can already win, play weak hands first to scale jokers."""
-    name = "milk_scaling_jokers"
+    """If we can already win, exploit spare hands/discards to scale jokers.
 
-    # Only milk if winning hand covers this much of the blind
-    COMFORT_MARGIN = 1.5
-    # Keep at least this many hands as safety buffer
-    MIN_HANDS_RESERVE = 2
+    Uses the scaling registry to pick optimal milk actions per trigger type
+    and computes a milk budget (free hands available before winning).
+    """
+    name = "milk_scaling_jokers"
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         ctx = RoundContext.from_state(state)
-        if not ctx.best:
+        effective = ctx.best.total * ctx.score_discount if ctx.best else 0
+        if not ctx.best or effective < ctx.chips_remaining:
             return None
 
-        # Can we already win?
-        if ctx.best.total < ctx.chips_remaining:
+        # The Mouth: milking plays a different hand type, which locks us out
+        # of our winning hand. Never milk against The Mouth.
+        if ctx.mouth_locked_hand is not None or ctx.blind_name == "The Mouth":
             return None
 
         joker_keys = {j.get("key") for j in ctx.jokers}
-        has_play_scalers = bool(joker_keys & PLAY_SCALERS)
+        owned_scalers = {k: SCALING_REGISTRY[k] for k in joker_keys if k in SCALING_REGISTRY}
+        active = {k: p for k, p in owned_scalers.items() if p.milk_priority > 0}
+        if not active:
+            return None
+
+        # --- Milk budget: how many free hands do we have? ---
+        # Acrobat/Dusk: winning hand should be the LAST hand. No safety buffer.
         has_final_hand = bool(joker_keys & FINAL_HAND_JOKERS)
-        has_discard_scalers = bool(joker_keys & DISCARD_SCALERS)
-
-        if not (has_play_scalers or has_final_hand or has_discard_scalers):
+        safety = 0 if has_final_hand else 1
+        free_hands = ctx.hands_left - 1 - safety  # 1 for the winning hand
+        if free_hands <= 0:
             return None
 
-        # Need comfortable margin — don't milk if barely winning
-        if ctx.best.total < ctx.chips_remaining * self.COMFORT_MARGIN:
+        # Comfort check: don't milk if barely winning (need some margin for variance)
+        margin = 1.25 if free_hands >= 3 else 1.5
+        if effective < ctx.chips_remaining * margin:
             return None
 
-        # Need spare hands to milk with
-        if ctx.hands_left <= self.MIN_HANDS_RESERVE:
-            return None
+        # --- Phase 1: Discard milking (free, doesn't cost hands) ---
+        # Resolve anti-discard conflicts: Banner (+30 chips/discard) vs
+        # Mystic Summit (+15 mult at 0 discards) vs discard scalers (Castle/Yorick).
+        has_banner = "j_banner" in joker_keys
+        has_mystic = "j_mystic_summit" in joker_keys
+        has_green = "j_green_joker" in joker_keys  # loses -1 mult per discard
 
-        # Milk via discard first (doesn't cost a hand play)
-        if has_discard_scalers and ctx.discards_left > 0:
-            # Hit the Road: discard Jacks
-            if "j_hit_the_road" in joker_keys:
-                for i, c in enumerate(ctx.hand_cards):
-                    if card_rank(c) == "J":
-                        return DiscardCards(
-                            [i], reason=f"milk: discard Jack for Hit the Road scaling",
-                        )
-            # Castle: discard any card (all contribute)
-            if "j_castle" in joker_keys and ctx.hand_cards:
-                # Discard lowest-value card
-                worst = min(range(len(ctx.hand_cards)),
-                           key=lambda i: rank_value(card_rank(ctx.hand_cards[i]) or "2"))
+        # Mystic Summit's +15 mult almost always beats Banner's +30 chips/discard.
+        # Only preserve discards for Banner when Mystic Summit is NOT owned.
+        should_preserve_discards = (has_banner and not has_mystic) or has_green
+
+        if not should_preserve_discards and ctx.discards_left > 0:
+            discard_action = self._milk_discard(ctx, joker_keys, active)
+            if discard_action:
+                return discard_action
+
+        # --- Phase 2: Mystic Summit — burn all discards to activate +15 mult ---
+        if has_mystic and ctx.discards_left > 0 and not has_green:
+            keep = set(ctx.best.card_indices) if ctx.best else set()
+            burnable = [
+                (i, rank_value(card_rank(ctx.hand_cards[i]) or "2"))
+                for i in range(len(ctx.hand_cards)) if i not in keep
+            ]
+            burnable.sort(key=lambda x: x[1])
+            n = min(5, ctx.discards_left, len(burnable))
+            if n > 0:
+                indices = [i for i, _ in burnable[:n]]
                 return DiscardCards(
-                    [worst], reason=f"milk: discard for Castle scaling",
+                    indices,
+                    reason=f"milk: burn {n} for Mystic Summit ({ctx.discards_left} discards left)",
                 )
 
-        # Milk via weak hand play
-        if has_play_scalers or has_final_hand:
-            # Avoid face cards if Ride the Bus is in play
-            avoid_faces = "j_ride_the_bus" in joker_keys
+        # --- Phase 3: Play milking (costs a hand) ---
+        play_scalers = {k: p for k, p in active.items()
+                       if p.trigger.startswith("play")}
+        final_hand_scalers = {k: p for k, p in active.items()
+                             if p.trigger == "final_hand"}
 
-            # Sort hand cards by rank (weakest first), filtering faces if needed
-            playable = []
-            for i, c in enumerate(ctx.hand_cards):
-                r = card_rank(c)
-                if not r:
-                    continue
-                if avoid_faces and r in FACE_RANKS_SET:
-                    continue
-                playable.append((i, rank_value(r)))
-            playable.sort(key=lambda x: x[1])
+        if play_scalers or final_hand_scalers:
+            return self._milk_play(ctx, joker_keys, play_scalers, final_hand_scalers, free_hands)
 
-            if not playable:
-                return None
+        return None
 
-            scalers = (joker_keys & PLAY_SCALERS) | (joker_keys & FINAL_HAND_JOKERS)
+    def _milk_discard(self, ctx: RoundContext, joker_keys: set,
+                      active: dict[str, ScalingProfile]) -> Action | None:
+        """Try to milk via discards (doesn't cost a hand play)."""
 
-            # Square Joker: play exactly 4 cards to trigger +4 chips scaling
-            if "j_square" in joker_keys and len(playable) >= 4:
-                milk_indices = [i for i, _ in playable[:4]]
+        # Hit the Road: discard Jacks (highest priority discard scaler)
+        if "j_hit_the_road" in active:
+            jacks = [i for i, c in enumerate(ctx.hand_cards) if card_rank(c) == "J"]
+            if jacks:
+                n = min(len(jacks), ctx.discards_left, 5)
+                return DiscardCards(
+                    jacks[:n],
+                    reason=f"milk: discard {n} Jack(s) for Hit the Road",
+                )
+
+        # Castle / Yorick: discard low-value cards
+        if any(k in active for k in ("j_castle", "j_yorick")):
+            n = min(5, ctx.discards_left, len(ctx.hand_cards))
+            if n > 0:
+                # Discard weakest cards, but keep the winning hand's cards
+                keep = set(ctx.best.card_indices) if ctx.best else set()
+                discardable = [
+                    (i, rank_value(card_rank(ctx.hand_cards[i]) or "2"))
+                    for i in range(len(ctx.hand_cards)) if i not in keep
+                ]
+                discardable.sort(key=lambda x: x[1])
+                indices = [i for i, _ in discardable[:n]]
+                if indices:
+                    names = [k for k in ("j_castle", "j_yorick") if k in active]
+                    return DiscardCards(
+                        indices,
+                        reason=f"milk: discard {len(indices)} cards for {', '.join(names)}",
+                    )
+
+        return None
+
+    def _milk_play(self, ctx: RoundContext, joker_keys: set,
+                   play_scalers: dict, final_hand_scalers: dict,
+                   free_hands: int) -> Action | None:
+        """Pick the optimal milk hand to play."""
+
+        avoid_faces = "j_ride_the_bus" in joker_keys
+
+        # Build list of playable cards (weakest first, optionally avoiding faces)
+        playable = []
+        for i, c in enumerate(ctx.hand_cards):
+            r = card_rank(c)
+            if not r:
+                continue
+            if avoid_faces and r in FACE_RANKS_SET:
+                continue
+            playable.append((i, rank_value(r)))
+        playable.sort(key=lambda x: x[1])
+
+        if not playable:
+            return None
+
+        scaler_names = sorted(set(play_scalers) | set(final_hand_scalers))
+        hands_after = ctx.hands_left - 1
+
+        # --- Trigger-specific milk hands (best to worst) ---
+
+        # Square Joker: play exactly 4 cards
+        if "j_square" in play_scalers and len(playable) >= 4:
+            indices = [i for i, _ in playable[:4]]
+            return PlayCards(
+                indices,
+                reason=f"milk: 4 cards for Square (+4 chips) ({hands_after} hands left)",
+                hand_name=classify_hand([ctx.hand_cards[i] for i in indices]),
+            )
+
+        # Wee Joker: try to include a 2 in the milk hand
+        if "j_wee" in play_scalers:
+            twos = [(i, v) for i, v in playable if v == 2]
+            if twos:
                 return PlayCards(
-                    milk_indices,
-                    reason=f"milk: play 4 cards for Square Joker (+4 chips) ({ctx.hands_left - 1} hands left after)",
+                    [twos[0][0]],
+                    reason=f"milk: play 2 for Wee Joker (+8 chips) ({hands_after} hands left)",
                     hand_name="High Card",
                 )
 
-            # Default: play single weakest card as High Card
-            best_milk_idx = playable[0][0]
-            return PlayCards(
-                [best_milk_idx],
-                reason=f"milk: play weak card to scale {', '.join(sorted(scalers))} ({ctx.hands_left - 1} hands left after)",
-                hand_name="High Card",
-            )
+        # Default: single weakest card
+        return PlayCards(
+            [playable[0][0]],
+            reason=f"milk: weak card for {', '.join(scaler_names)} ({hands_after} hands left)",
+            hand_name="High Card",
+        )
 
-        return None
+
+class SellLuchador:
+    """Sell Luchador to disable a boss blind effect — last resort when losing.
+
+    Only fires when:
+    - Luchador is owned
+    - Current blind is a boss blind
+    - At least one hand has been played (let milking happen first)
+    - Projected score can't beat the blind (we're going to die)
+    """
+    name = "sell_luchador"
+
+    # Boss blind names — Luchador only matters against these
+    BOSS_BLINDS = {
+        "The Needle", "The Eye", "The Mouth", "The Psychic",
+        "Crimson Heart", "The Flint", "The Plant", "The Head",
+        "The Water", "The Window", "The Hook", "The Wall",
+        "The Wheel", "The Arm", "The Club", "The Fish",
+        "The Tooth", "The Mark", "The Ox", "The House",
+        "The Pillar", "The Serpent", "The Goad", "Amber Acorn",
+        "Verdant Leaf", "Violet Vessel", "Cerulean Bell",
+    }
+
+    def evaluate(self, state: dict[str, Any]) -> Action | None:
+        ctx = RoundContext.from_state(state)
+
+        # Only act against boss blinds
+        if ctx.blind_name not in self.BOSS_BLINDS:
+            return None
+
+        # Find Luchador
+        luchador_idx = next(
+            (i for i, j in enumerate(ctx.jokers) if j.get("key") == "j_luchador"), None
+        )
+        if luchador_idx is None:
+            return None
+
+        # Don't sell on the very first hand — let milking happen first
+        if ctx.chips_scored == 0 and ctx.hands_left > 1:
+            return None
+
+        # Project whether we can win: best hand * remaining hands vs chips needed
+        best_score = ctx.best.total * ctx.score_discount if ctx.best else 0
+        projected = best_score * ctx.hands_left
+        if projected >= ctx.chips_remaining:
+            return None  # we can still win, don't sell
+
+        # We're going to die — sell Luchador to disable the boss
+        return SellJoker(
+            luchador_idx,
+            reason=f"Luchador: sell to disable {ctx.blind_name} "
+                   f"(projected {projected:.0f} < {ctx.chips_remaining} needed)",
+        )
 
 
 class PlayWinningHand:
@@ -227,11 +358,13 @@ class DiscardToImprove:
     # the hand is desperate enough to use the last discard.
     DESPERATE_THRESHOLD = 0.15
 
-    # Jokers that benefit from keeping discards — don't waste discards when these are active
+    # Jokers that LOSE value when discards are used — be conservative with discards.
+    # Only discard when the hand is truly hopeless (< 20% coverage).
     KEEP_DISCARDS_JOKERS = {
-        "j_mystic_summit",  # +15 mult at 0 discards remaining
-        "j_banner",         # +30 chips per discard remaining
-        "j_delayed_grat",   # $2 per unused discard at end of round
+        "j_banner",         # +30 chips per discard remaining — direct score loss
+        "j_delayed_grat",   # $2 per unused discard — economy loss
+        "j_green_joker",    # -1 mult per discard — permanent scaling loss
+        "j_ramen",          # -0.01 xmult per card discarded — xmult decay
     }
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:

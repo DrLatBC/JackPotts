@@ -9,7 +9,7 @@ from balatro_bot.actions import (
 )
 from balatro_bot.context import RoundContext
 from balatro_bot.constants import (
-    SCALING_JOKERS, PLANET_KEYS, SAFE_CONSUMABLE_TAROTS,
+    SCALING_JOKERS, SCALING_XMULT, PLANET_KEYS, SAFE_CONSUMABLE_TAROTS,
     TARGETING_TAROTS, SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
 )
 from balatro_bot.hand_evaluator import best_hand
@@ -20,6 +20,218 @@ if TYPE_CHECKING:
     from typing import Any
 
 log = logging.getLogger("balatro_bot")
+
+# --- Module-level priority sets (used by both SellWeakJoker and BuyJokersInShop) ---
+
+# Jokers worth force-buying at any ante — instant xMult or strong unconditional value
+_ALWAYS_BUY = {
+    "j_cavendish", "j_stencil",
+    "j_duo", "j_trio", "j_family", "j_order", "j_tribe",
+    "j_gros_michel", "j_popcorn",
+    "j_acrobat", "j_blackboard", "j_flower_pot",
+    "j_madness",
+}
+
+# Scaling xMult jokers — force-buy with relaxed ante gate (ante <= 5)
+_HIGH_PRIORITY = {
+    "j_constellation",  # +X0.1 per planet used
+    "j_campfire",       # +X0.25 per sell, resets at boss
+}
+
+# xMult jokers worth aggressively selling flat jokers to acquire
+_HIGH_VALUE_XMULT = {
+    "j_cavendish", "j_stencil",
+    "j_duo", "j_trio", "j_family", "j_order", "j_tribe",
+    "j_acrobat", "j_blackboard", "j_flower_pot",
+    "j_madness",
+    "j_constellation", "j_campfire",
+}
+
+
+class SellInvisible:
+    """Sell down to best joker + Invisible, then sell Invisible for a guaranteed dupe.
+
+    Invisible duplicates a RANDOM owned joker when sold (after 2+ rounds held).
+    To guarantee hitting the best one, we sell all other jokers first until only
+    [best, Invisible] remain. Then selling Invisible = 100% dupe.
+
+    Decision gates before starting a sell-down:
+    1. Target must be DUPE_WORTHY (xMult, copy jokers, etc.)
+    2. Target's score must exceed an ante-scaled threshold — at Ante 3 anything
+       decent qualifies, at Ante 7+ only stacked X3+ or Blueprint
+    3. Don't start selling if a boss blind is next — beat it first, sell after
+    4. Once committed (mid-sequence), always finish
+    """
+    name = "sell_invisible"
+
+    DUPE_WORTHY = _ALWAYS_BUY | _HIGH_PRIORITY | {
+        "j_vampire", "j_hologram", "j_lucky_cat", "j_canio", "j_obelisk",
+        "j_yorick", "j_hit_the_road",
+        "j_card_sharp", "j_seeing_double",
+        "j_blueprint", "j_brainstorm",
+    }
+
+    # Copy jokers get a fixed high score — always worth duping
+    COPY_JOKERS = {"j_blueprint", "j_brainstorm"}
+
+    def __init__(self) -> None:
+        self._first_seen_round: int | None = None
+        self._selling_down: bool = False
+
+    def _score_target(self, joker: dict) -> float:
+        """Score how valuable this joker is as a dupe target."""
+        key = joker.get("key", "")
+
+        if key in self.COPY_JOKERS:
+            return 15.0  # copy jokers are always tier-1
+
+        effect_text = joker.get("value", {}).get("effect", "")
+        parsed = parse_effect_value(effect_text) if effect_text else {}
+
+        if parsed.get("xmult"):
+            return parsed["xmult"] * 3.0  # X3 → 9.0, X2 → 6.0
+        if parsed.get("mult"):
+            return parsed["mult"] / 5.0
+        return 2.0  # default for DUPE_WORTHY without parsed values
+
+    def _best_dupe_target(self, owned: list[dict], invisible_idx: int) -> tuple[int | None, float]:
+        """Return (index, score) of the best dupe target, or (None, 0)."""
+        best_idx = None
+        best_score = -1.0
+
+        for i, j in enumerate(owned):
+            if i == invisible_idx:
+                continue
+            if j.get("key", "") not in self.DUPE_WORTHY:
+                continue
+            score = self._score_target(j)
+            if score > best_score:
+                best_score = score
+                best_idx = i
+
+        return best_idx, best_score
+
+    @staticmethod
+    def _min_target_score(ante: int) -> float:
+        """Minimum target score to justify selling down at this ante."""
+        if ante <= 3:
+            return 3.0
+        return 3.0 + (ante - 3) * 1.5
+
+    @staticmethod
+    def _boss_next(round_num: int) -> bool:
+        """True if the next blind is a boss (we just beat the big blind)."""
+        round_in_ante = ((round_num - 1) % 3) + 1
+        return round_in_ante == 2
+
+    def evaluate(self, state: dict[str, Any]) -> Action | None:
+        round_num = state.get("round_num", 0)
+        ante = state.get("ante_num", 1)
+        owned = state.get("jokers", {}).get("cards", [])
+
+        invisible_idx = next(
+            (i for i, j in enumerate(owned) if j.get("key") == "j_invisible"), None
+        )
+        if invisible_idx is None:
+            self._first_seen_round = None
+            self._selling_down = False
+            return None
+
+        if self._first_seen_round is None:
+            self._first_seen_round = round_num
+            return None
+
+        if round_num - self._first_seen_round < 2:
+            return None
+
+        if len(owned) < 2:
+            return None
+
+        target_idx, target_score = self._best_dupe_target(owned, invisible_idx)
+        if target_idx is None:
+            self._selling_down = False
+            return None
+
+        # Gate: is the target good enough for this ante?
+        threshold = self._min_target_score(ante)
+        if target_score < threshold:
+            self._selling_down = False
+            return None
+
+        # Gate: don't START selling down before a boss blind
+        if not self._selling_down and self._boss_next(round_num):
+            return None  # beat the boss first, sell after
+
+        target_label = owned[target_idx].get("label", "?")
+
+        # Final step: only [target, Invisible] remain → sell Invisible
+        if len(owned) == 2:
+            self._selling_down = False
+            return SellJoker(
+                invisible_idx,
+                reason=f"Invisible: guaranteed dupe of {target_label} "
+                       f"(score={target_score:.1f}, ante {ante})",
+            )
+
+        # Commit to sell-down sequence
+        self._selling_down = True
+
+        # Sell the worst non-target, non-Invisible joker
+        worst_idx = None
+        worst_score = float("inf")
+        for i, j in enumerate(owned):
+            if i in (invisible_idx, target_idx):
+                continue
+            sell_val = j.get("cost", {}).get("sell", 0)
+            effect_text = j.get("value", {}).get("effect", "")
+            parsed = parse_effect_value(effect_text) if effect_text else {}
+            score = float(sell_val)
+            if parsed.get("xmult") and parsed["xmult"] > 1.0:
+                score += parsed["xmult"] * 10
+            elif parsed.get("mult") and parsed["mult"] > 0:
+                score += parsed["mult"]
+            if score < worst_score:
+                worst_score = score
+                worst_idx = i
+
+        if worst_idx is None:
+            return None
+
+        fodder_label = owned[worst_idx].get("label", "?")
+        remaining = len(owned) - 2
+        return SellJoker(
+            worst_idx,
+            reason=f"Invisible setup: sell {fodder_label} to isolate {target_label} "
+                   f"({remaining} more to go, target score={target_score:.1f})",
+        )
+
+
+class SellDietCola:
+    """Sell Diet Cola for a free shop reroll when nothing good is available.
+
+    Diet Cola gives a free reroll when sold. Worth using when the current
+    shop has no high-priority jokers and we have open joker slots.
+    """
+    name = "sell_diet_cola"
+
+    def evaluate(self, state: dict[str, Any]) -> Action | None:
+        owned = state.get("jokers", {}).get("cards", [])
+
+        diet_idx = next(
+            (i for i, j in enumerate(owned) if j.get("key") == "j_diet_cola"), None
+        )
+        if diet_idx is None:
+            return None
+
+        # Don't sell if shop already has a good joker
+        shop = state.get("shop", {})
+        for card in shop.get("cards", []):
+            if card.get("set") == "JOKER":
+                key = card.get("key", "")
+                if key in _ALWAYS_BUY or key in _HIGH_PRIORITY:
+                    return None  # good joker available, buy it instead
+
+        return SellJoker(diet_idx, reason="Diet Cola: sell for free shop reroll")
 
 
 class SellWeakJoker:
@@ -155,9 +367,25 @@ class SellWeakJoker:
         if not strat.preferred_hands:
             return None
 
-        # Score each owned joker — never sell scaling jokers, Madness, or
-        # Ceremonial Dagger itself
-        protected = {"j_madness", "j_ceremonial"} | SCALING_JOKERS
+        # Check if the shop has a high-tier xMult joker — if so, we're more
+        # willing to sell flat jokers (including normally-protected flat scalers)
+        shop = state.get("shop", {})
+        ante = state.get("ante_num", 1)
+        shop_has_xmult_buy = any(
+            card.get("key") in _HIGH_VALUE_XMULT
+            for card in shop.get("cards", [])
+            if card.get("set") == "JOKER"
+        )
+
+        # Score each owned joker — never sell Madness or Ceremonial.
+        # When a high-tier xMult is in the shop, allow selling flat scaling
+        # jokers (chips/mult scalers) that are normally protected.
+        always_protected = {"j_madness", "j_ceremonial"} | SCALING_XMULT
+        if shop_has_xmult_buy:
+            protected = always_protected  # flat scalers become sellable
+        else:
+            protected = always_protected | SCALING_JOKERS
+
         owned_values = [
             (i, self._joker_strategy_value(j, strat, owned_jokers=owned), j)
             for i, j in enumerate(owned)
@@ -170,13 +398,11 @@ class SellWeakJoker:
         weakest_idx, weakest_value, weakest_joker = min(owned_values, key=lambda x: x[1])
 
         # Check if the shop has a better joker available
-        shop = state.get("shop", {})
         money = state.get("money", 0)
         sell_value = weakest_joker.get("cost", {}).get("sell", 0)
 
         INTEREST_CAP = 25
         current_interest = min(money // 5, 5)
-        ante = state.get("ante_num", 1)
 
         for card in shop.get("cards", []):
             if card.get("set") != "JOKER":
@@ -196,6 +422,9 @@ class SellWeakJoker:
             # Score the shop joker WITHOUT coherence bonus (it has no allies yet)
             shop_value = self._joker_strategy_value(card, strat)
 
+            shop_key = card.get("key", "")
+            is_high_tier_xmult = shop_key in _HIGH_VALUE_XMULT
+
             # Dynamic threshold: much harder to justify selling on-strategy
             # jokers for off-strategy replacements
             weakest_key = weakest_joker.get("key", "")
@@ -203,17 +432,19 @@ class SellWeakJoker:
                 strat.hand_affinity(ht)
                 for ht in JOKER_HAND_AFFINITY.get(weakest_key, ([], 0))[0]
             )
-            shop_key = card.get("key", "")
             shop_synergy = sum(
                 strat.hand_affinity(ht)
                 for ht in JOKER_HAND_AFFINITY.get(shop_key, ([], 0))[0]
             )
 
-            threshold = 1.0  # base: shop joker must be 1.0 better
-            if weakest_synergy > 0 and shop_synergy == 0:
+            if is_high_tier_xmult:
+                threshold = 0.5  # high-tier xMult: low bar to sell for it
+            elif weakest_synergy > 0 and shop_synergy == 0:
                 threshold = 3.0  # selling on-strategy for off-strategy: huge bar
             elif weakest_synergy > 0 and shop_synergy > 0:
                 threshold = 1.5  # on-strategy swap: still needs clear improvement
+            else:
+                threshold = 1.0  # base
 
             if shop_value > weakest_value + threshold:
                 shop_label = card.get("label", "?")
@@ -314,6 +545,9 @@ class ReorderJokersForCeremonial:
     """
     name = "reorder_jokers_for_ceremonial"
 
+    def __init__(self) -> None:
+        self._last_order: list[int] | None = None
+
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         ctx = RoundContext.from_state(state)
         # Amber Acorn reshuffles jokers every hand — reordering is immediately undone
@@ -329,42 +563,86 @@ class ReorderJokersForCeremonial:
             (i for i, j in enumerate(owned) if j.get("key") == "j_ceremonial"), None
         )
         if ceremonial_idx is None:
+            self._last_order = None
             return None
 
-        # Classify each non-Ceremonial joker as valuable or fodder
-        # Fodder: no scoring effect, or economy-only jokers
+        # Classify each non-Ceremonial joker as valuable or fodder.
+        # Only truly disposable jokers are fodder — utility jokers with
+        # strong gameplay effects (Mr. Bones, Chicot, etc.) are kept.
+        VALUABLE_UTILITY = {
+            "j_mr_bones",       # prevents death — never sacrifice
+            "j_chicot",         # destroys boss blind effect
+            "j_perkeo",         # duplicates consumable in shop
+            "j_cartomancer",    # creates tarot on blind select
+            "j_invisible",      # copies joker after 2 rounds
+            "j_certificate",    # gives random card with seal each round
+            "j_luchador",       # destroys boss blind for money
+            "j_diet_cola",      # free reroll (sell to use)
+            "j_merry_andy",     # +3 discards, -1 hand size
+            "j_drunkard",       # +1 discard per round
+            "j_burnt",          # +1 discard per round (via discarded cards)
+            "j_juggler",        # +1 hand size
+            "j_troubadour",     # +2 hand size, -1 hand per round
+            "j_smeared",        # hearts/diamonds mix, clubs/spades mix
+            "j_four_fingers",   # allows 4-card straights and flushes
+            "j_shortcut",       # straights with gaps
+            "j_splash",         # all cards score
+        }
         valuable = []
         fodder = []
+        blueprint_idx = None
+        brainstorm_idx = None
         for i, j in enumerate(owned):
             if j.get("key") == "j_ceremonial":
                 continue
             key = j.get("key", "")
             effect = JOKER_EFFECTS.get(key)
-            # Protected jokers are always valuable
-            if key in ({"j_madness"} | SCALING_JOKERS):
+            if key == "j_blueprint":
+                blueprint_idx = i
+                valuable.append(i)
+            elif key == "j_brainstorm":
+                brainstorm_idx = i
+                valuable.append(i)
+            elif key in ({"j_madness"} | SCALING_JOKERS):
+                valuable.append(i)
+            elif key in VALUABLE_UTILITY:
                 valuable.append(i)
             elif effect is None or effect is _noop:
-                fodder.append(i)  # no scoring effect — safe to sacrifice
+                fodder.append(i)
             else:
-                valuable.append(i)  # has a scoring effect — keep it
+                valuable.append(i)
 
-        # Desired layout: [valuable] [ceremonial] [one fodder if available]
+        # Pick fodder deterministically by joker key (not position) to avoid
+        # oscillation when multiple fodder jokers swap positions each rearrange.
         if fodder:
-            desired_order = valuable + [ceremonial_idx] + [fodder[0]]
-            # Remaining fodder (if multiple) go before ceremonial
-            desired_order = valuable + fodder[1:] + [ceremonial_idx] + [fodder[0]]
+            fodder.sort(key=lambda i: owned[i].get("key", ""))
+            sacrifice_idx = fodder[0]
+            rest_fodder = fodder[1:]
+            desired_order = valuable + rest_fodder + [ceremonial_idx] + [sacrifice_idx]
         else:
-            # No fodder — park Ceremonial rightmost, eats nothing
             desired_order = valuable + [ceremonial_idx]
+
+        # Blueprint: ensure it's not immediately left of Ceremonial or fodder.
+        # Move it to the start of valuable (so it copies the joker to its right).
+        if blueprint_idx is not None and len(valuable) >= 2:
+            desired_order = [i for i in desired_order if i != blueprint_idx]
+            # Place Blueprint at position 0 (copies position 1, a valuable joker)
+            desired_order.insert(0, blueprint_idx)
 
         current_order = list(range(len(owned)))
         if desired_order == current_order:
+            self._last_order = None
             return None
 
-        fodder_label = owned[fodder[0]].get("label", "?") if fodder else "none"
+        # Cycle guard: if we just rearranged to this exact order, don't do it again
+        if self._last_order == desired_order:
+            return None
+        self._last_order = desired_order
+
+        sacrifice_label = owned[fodder[0]].get("label", "?") if fodder else "none"
         return RearrangeJokers(
             order=desired_order,
-            reason=f"reorder for Ceremonial Dagger: fodder={fodder_label}",
+            reason=f"reorder for Ceremonial Dagger: fodder={sacrifice_label}",
         )
 
 
@@ -376,28 +654,8 @@ class BuyJokersInShop:
     # Minimum score improvement (%) to justify a purchase that loses interest
     MIN_IMPROVEMENT = 0.10
 
-    # Jokers worth buying regardless of money — these are run-defining.
-    # xmult jokers and strong unconditional mult/chips.
-    ALWAYS_BUY = {
-        # Unconditional xmult
-        "j_cavendish",      # X3
-        "j_stencil",        # X1 per empty slot
-        # Hand-type xmult
-        "j_duo",            # X2 on Pair
-        "j_trio",           # X3 on Three of a Kind
-        "j_family",         # X4 on Four of a Kind
-        "j_order",          # X3 on Straight
-        "j_tribe",          # X2 on Flush
-        # Strong unconditional
-        "j_gros_michel",    # +15 mult
-        "j_popcorn",        # +20 mult (decays but huge early)
-        # Strong conditional xmult
-        "j_acrobat",        # X3 on final hand
-        "j_blackboard",     # X3 if held cards spades/clubs
-        "j_flower_pot",     # X3 if all 4 suits
-        # Scaling xmult
-        "j_madness",        # +X0.5 per blind, eats a joker (needs fodder)
-    }
+    ALWAYS_BUY = _ALWAYS_BUY
+    HIGH_PRIORITY = _HIGH_PRIORITY
 
     # Primary scoring category for each joker — used for build composition weighting.
     # Jokers not listed here (utility, economy, copy) return a neutral 1.0 multiplier.
@@ -452,16 +710,15 @@ class BuyJokersInShop:
         },
     }
 
-    def _composition_multiplier(self, owned_jokers: list, candidate_key: str) -> float:
+    def _composition_multiplier(self, owned_jokers: list, candidate_key: str, ante: int = 1) -> float:
         """Weight candidate by how much it fills a scoring gap in the current build.
 
         Returns >1.0 if candidate fills an underrepresented category,
         <1.0 if it stacks an already-full category, 1.0 if neutral/utility.
 
-        Formula: need(category) = 1/(1+count), normalized against the average
-        need across all three categories. A perfectly balanced build (1/1/1) yields
-        1.0 for all candidates. A build with 0 xmult and 2 mult/chips yields ~1.5
-        for xmult candidates and ~0.75 for mult/chips candidates.
+        At higher antes, xMult need is amplified and flat mult/chips need is
+        dampened — reflecting that blinds scale exponentially but flat bonuses
+        don't.
         """
         candidate_cat = None
         for cat, keys in self.JOKER_SCORE_CATEGORY.items():
@@ -481,13 +738,24 @@ class BuyJokersInShop:
                     break
 
         needs = {cat: 1.0 / (1.0 + counts[cat]) for cat in counts}
+
+        # Ante-based urgency: xMult becomes critical as blinds scale exponentially
+        # Ante 1-3: no adjustment. Ante 4+: xmult amplified, flat dampened.
+        if ante >= 4:
+            urgency = min(1.0 + (ante - 3) * 0.5, 3.0)    # 1.5 @ ante 4 → 3.0 @ ante 7+
+            dampen = max(1.0 - (ante - 3) * 0.125, 0.5)    # 0.875 @ ante 4 → 0.5 @ ante 7+
+            needs["xmult"] *= urgency
+            needs["mult"] *= dampen
+            needs["chips"] *= dampen
+
         avg_need = sum(needs.values()) / len(needs)
 
         if avg_need == 0:
             return 1.0
 
         raw = needs[candidate_cat] / avg_need
-        return max(0.5, min(2.0, raw))
+        cap = 3.5 if candidate_cat == "xmult" else 2.0
+        return max(0.5, min(cap, raw))
 
     def _interest_after(self, money: int, cost: int) -> int:
         return min((money - cost) // 5, 5)
@@ -567,6 +835,14 @@ class BuyJokersInShop:
 
             key = card.get("key", "")
             joker_count = joker_slots.get("count", 0)
+            owned_keys = {j.get("key") for j in joker_slots.get("cards", [])}
+
+            # Anti-synergy: don't buy jokers that conflict with owned jokers
+            from balatro_bot.scaling import check_anti_synergy
+            blocker = check_anti_synergy(key, owned_keys)
+            if blocker:
+                passed_on.append(f"{label}(${cost}, conflicts with {blocker})")
+                continue
 
             # S-tier jokers: buy immediately, ignore interest thresholds
             # Exception: don't buy Madness if we own a scaling joker it could eat
@@ -581,15 +857,17 @@ class BuyJokersInShop:
                 if "j_madness" in owned_keys:
                     passed_on.append(f"{label}(${cost}, Madness would eat it)")
                     continue
-            # Slow scaling jokers (start at X1.0, grow over many rounds) are
-            # worthless late game — they won't compound fast enough to matter.
-            # Ceremonial Dagger also needs many rounds of fodder to pay off.
-            SLOW_SCALERS = SCALING_JOKERS | {"j_madness", "j_ceremonial"}
+            # Slow flat scalers (chips/mult) are worthless late game.
+            # xMult scalers still compound meaningfully — let them through
+            # to be evaluated by the ante-aware composition multiplier.
+            SLOW_SCALERS = (SCALING_JOKERS | {"j_madness", "j_ceremonial"}) - SCALING_XMULT
             if key in SLOW_SCALERS and ante >= 6:
                 passed_on.append(f"{label}(${cost}, too late for slow scaler at ante {ante})")
                 continue
             if key in self.ALWAYS_BUY:
                 improvement = 1.0  # force-buy
+            elif key in self.HIGH_PRIORITY and ante <= 5:
+                improvement = 0.8  # scaling xMult — strong buy early
             # Stencil restriction: filling slots reduces its ×mult
             elif any(j.get("key") == "j_stencil" for j in joker_slots.get("cards", [])):
                 joker_limit = joker_slots.get("limit", 5)
@@ -634,7 +912,7 @@ class BuyJokersInShop:
                     improvement = self._score_improvement(state, card)
 
             # Weight by build composition: fill gaps, don't stack full categories
-            improvement *= self._composition_multiplier(joker_slots.get("cards", []), key)
+            improvement *= self._composition_multiplier(joker_slots.get("cards", []), key, ante)
 
             if improvement > best_improvement:
                 best_improvement = improvement
@@ -720,10 +998,13 @@ class BuyConsumablesInShop:
             # Planet cards — on-strategy priority 1, off-strategy skip
             if key in self.PLANET_KEYS or card_set == "PLANET":
                 hand_type = self.PLANET_KEYS.get(key)
+                has_constellation = any(j.get("key") == "j_constellation" for j in jokers)
                 if hand_type == "ALL":
                     priority = 1  # Black Hole — always buy
                 elif hand_type and strat.hand_affinity(hand_type) > 0:
                     priority = 1  # levels a hand we care about
+                elif has_constellation:
+                    priority = 2  # Constellation: every planet = +0.1 xmult
                 else:
                     passed_on.append(f"{label}({hand_type}, off-strategy)")
                     continue
@@ -800,6 +1081,7 @@ class BuyPacksInShop:
         joker_slots = state.get("jokers", {})
         owned_jokers = joker_slots.get("cards", [])
         has_red_card = any(j.get("key") == "j_red_card" for j in owned_jokers)
+        has_constellation = any(j.get("key") == "j_constellation" for j in owned_jokers)
 
         best_idx = None
         best_priority = 999
@@ -822,6 +1104,9 @@ class BuyPacksInShop:
                 else:
                     passed_on.append(f"{label}(${cost}, Red Card but too expensive)")
                     continue
+            # Constellation: Celestial packs are top priority (every planet = +0.1 xMult)
+            elif has_constellation and "Celestial" in label:
+                priority = 0
             else:
                 priority = self._pack_priority(label)
                 if priority is None:
@@ -838,7 +1123,9 @@ class BuyPacksInShop:
                     continue
 
             # Interest check — never drop below the next $5 threshold
-            if not has_red_card:
+            # Bypass for Red Card (buying to skip) and Constellation + Celestial
+            skip_interest = has_red_card or (has_constellation and "Celestial" in label)
+            if not skip_interest:
                 current_interest = min(money // 5, 5)
                 interest_after = self._interest_after(money, cost)
                 loses_interest = interest_after < current_interest

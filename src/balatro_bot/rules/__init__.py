@@ -1,11 +1,12 @@
 """Rule classes for each game state."""
 
 from balatro_bot.rules.playing import (
-    VerdantLeafUnlock, MilkScalingJokers, PlayWinningHand,
+    VerdantLeafUnlock, MilkScalingJokers, SellLuchador, PlayWinningHand,
     PlayHighValueHand, DiscardToImprove, PlayBestAvailable,
 )
 from balatro_bot.rules.blind import AlwaysSelectBlind, SkipForTag
 from balatro_bot.rules.shop import (
+    SellInvisible, SellDietCola,
     SellWeakJoker, FeedCampfire, ReorderJokersForCeremonial,
     BuyJokersInShop, BuyConsumablesInShop, BuyPacksInShop,
     BuyVouchersInShop, RerollShop, LeaveShop,
@@ -18,9 +19,10 @@ from balatro_bot.rules.packs import (
 from balatro_bot.rules.consumables import UseImmediateConsumables, UseTacticalConsumables
 
 __all__ = [
-    "VerdantLeafUnlock", "MilkScalingJokers", "PlayWinningHand",
+    "VerdantLeafUnlock", "MilkScalingJokers", "SellLuchador", "PlayWinningHand",
     "PlayHighValueHand", "DiscardToImprove", "PlayBestAvailable",
     "AlwaysSelectBlind", "SkipForTag",
+    "SellInvisible", "SellDietCola",
     "SellWeakJoker", "FeedCampfire", "ReorderJokersForCeremonial",
     "BuyJokersInShop", "BuyConsumablesInShop", "BuyPacksInShop",
     "BuyVouchersInShop", "RerollShop", "LeaveShop",

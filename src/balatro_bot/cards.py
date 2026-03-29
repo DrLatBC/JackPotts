@@ -40,13 +40,20 @@ def card_suit(card: dict[str, Any]) -> str | None:
     return card.get("value", {}).get("suit")
 
 
-def card_suits(card: dict[str, Any]) -> set[str]:
-    """Return all suits this card counts as (Wild = all four)."""
+def card_suits(card: dict[str, Any], smeared: bool = False) -> set[str]:
+    """Return all suits this card counts as (Wild = all four, Smeared = merged pairs)."""
     enhancement = _modifier(card).get("enhancement")
     if enhancement == "WILD":
         return set(ALL_SUITS)
     suit = card_suit(card)
-    return {suit} if suit else set()
+    if not suit:
+        return set()
+    if smeared:
+        # Hearts and Diamonds merge; Clubs and Spades merge
+        if suit in ("H", "D"):
+            return {"H", "D"}
+        return {"C", "S"}
+    return {suit}
 
 
 def is_stone(card: dict[str, Any]) -> bool:
@@ -61,16 +68,16 @@ def card_chip_value(card: dict[str, Any]) -> int:
         return 50
     mod = _modifier(card)
     enhancement = mod.get("enhancement", "")
-    edition = mod.get("edition", "")
     bonus = 30 if enhancement == "BONUS" else 0
-    foil = 50 if edition == "FOIL" else 0
+    # Edition chips: prefer numeric field from API, fall back to type string
+    edition_chips = mod.get("edition_chips") or (50 if mod.get("edition") == "FOIL" else 0)
     rank = card_rank(card)
     base = RANK_CHIPS.get(rank, 0) if rank else 0
     perma = card.get("value", {}).get("perma_bonus", 0) or 0
-    return base + bonus + foil + perma
+    return base + bonus + edition_chips + perma
 
 
-def card_mult_value(card: dict[str, Any]) -> int:
+def card_mult_value(card: dict[str, Any]) -> float:
     """Additive mult this card contributes when it scores in a played hand."""
     if is_debuffed(card):
         return 0
@@ -78,11 +85,14 @@ def card_mult_value(card: dict[str, Any]) -> int:
         return 0
     mod = _modifier(card)
     enhancement = mod.get("enhancement", "")
-    edition = mod.get("edition", "")
-    total = 0
+    total = 0.0
     if enhancement == "MULT":
         total += 4
-    if edition in ("HOLO", "HOLOGRAPHIC"):
+    # Edition mult: prefer numeric field from API, fall back to type string
+    edition_mult = mod.get("edition_mult")
+    if edition_mult:
+        total += edition_mult
+    elif mod.get("edition") in ("HOLO", "HOLOGRAPHIC"):
         total += 10
     if enhancement == "LUCKY":
         total += 4
@@ -97,11 +107,14 @@ def card_xmult_value(card: dict[str, Any]) -> float:
         return 1.0
     mod = _modifier(card)
     enhancement = mod.get("enhancement", "")
-    edition = mod.get("edition", "")
     result = 1.0
     if enhancement == "GLASS":
         result *= 2.0
-    if edition == "POLYCHROME":
+    # Edition xmult: prefer numeric field from API, fall back to type string
+    edition_xmult = mod.get("edition_x_mult")
+    if edition_xmult:
+        result *= edition_xmult
+    elif mod.get("edition") == "POLYCHROME":
         result *= 1.5
     return result
 
