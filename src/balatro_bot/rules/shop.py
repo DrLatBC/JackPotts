@@ -542,27 +542,25 @@ class SellWeakJoker:
         else:
             protected = always_protected | SCALING_JOKERS
 
-        def _is_stale_scaler(j: dict) -> bool:
+        def _is_stale_scaler(j: dict, cur_ante: int) -> bool:
             """Check if a scaling joker has barely accumulated value for its ante."""
             key = j.get("key", "")
             if key not in SCALING_JOKERS or key in always_protected:
                 return False
             effect_text = j.get("value", {}).get("effect", "")
             parsed = parse_effect_value(effect_text) if effect_text else {}
-            chips = parsed.get("chips", 0)
-            mult = parsed.get("mult", 0)
-            # Stale threshold: by ante 4+ a scaler should have meaningful value
-            # +20 chips or +5 mult is the floor — below that it hasn't scaled
-            if ante >= 4 and chips <= 20 and mult <= 5:
+            chips = parsed.get("chips") or 0
+            mult = parsed.get("mult") or 0
+            if cur_ante >= 4 and chips <= 20 and mult <= 5:
                 return True
-            if ante >= 6 and chips <= 50 and mult <= 10:
+            if cur_ante >= 6 and chips <= 50 and mult <= 10:
                 return True
             return False
 
         owned_values = [
             (i, self._joker_strategy_value(j, strat, owned_jokers=owned), j)
             for i, j in enumerate(owned)
-            if j.get("key") not in protected or _is_stale_scaler(j)
+            if j.get("key") not in protected or _is_stale_scaler(j, ante)
         ]
         if not owned_values:
             return None
