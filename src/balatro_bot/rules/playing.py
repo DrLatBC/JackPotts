@@ -170,11 +170,26 @@ class MilkScalingJokers:
     def _milk_play(self, ctx: RoundContext, joker_keys: set,
                    play_scalers: dict, final_hand_scalers: dict,
                    free_hands: int) -> Action | None:
-        """Pick the optimal milk hand to play."""
+        """Pick the optimal milk hand to play.
+
+        Three categories of milk play:
+        1. Card-property triggers: need a specific card (enhanced, rank=2, etc.)
+        2. Hand-type triggers: need a specific poker hand (Straight, Two Pair, etc.)
+        3. Generic triggers: any hand works — dump max junk for deck cycling
+
+        All milk plays protect the winning hand's cards and play as many
+        non-winning junk cards as possible for deck cycling.
+        """
+        from balatro_bot.cards import _modifier
+        from balatro_bot.hand_evaluator import (
+            enumerate_hands, discard_candidates as _dc,
+        )
 
         avoid_faces = "j_ride_the_bus" in joker_keys
+        hands_after = ctx.hands_left - 1
+        keep = set(ctx.best.card_indices) if ctx.best else set()
 
-        # Build list of playable cards (weakest first, optionally avoiding faces)
+        # Build playable card list (weakest first, optionally avoiding faces)
         playable = []
         for i, c in enumerate(ctx.hand_cards):
             r = card_rank(c)
@@ -188,36 +203,121 @@ class MilkScalingJokers:
         if not playable:
             return None
 
-        scaler_names = sorted(set(play_scalers) | set(final_hand_scalers))
-        hands_after = ctx.hands_left - 1
+        # Junk = playable cards NOT in the winning hand
+        junk = [(i, rv) for i, rv in playable if i not in keep]
 
-        # --- Trigger-specific milk hands (best to worst) ---
+        # --- Category 1: Card-property triggers ---
 
-        # Square Joker: play exactly 4 cards
-        if "j_square" in play_scalers and len(playable) >= 4:
-            indices = [i for i, _ in playable[:4]]
+        # Square Joker: exactly 4 junk cards
+        if "j_square" in play_scalers and len(junk) >= 4:
+            indices = [i for i, _ in junk[:4]]
             return PlayCards(
                 indices,
-                reason=f"milk: 4 cards for Square (+4 chips) ({hands_after} hands left)",
+                reason=f"milk: cycle 4 junk for Square (+4 chips) ({hands_after} hands left)",
                 hand_name=classify_hand([ctx.hand_cards[i] for i in indices]),
             )
 
-        # Wee Joker: try to include a 2 in the milk hand
-        if "j_wee" in play_scalers:
-            twos = [(i, v) for i, v in playable if v == 2]
-            if twos:
+        # Vampire: must include an enhanced card, pad with junk for cycling
+        if "j_vampire" in play_scalers:
+            enhanced = [
+                (i, rv) for i, rv in junk
+                if _modifier(ctx.hand_cards[i]).get("enhancement")
+            ]
+            if enhanced:
+                required = enhanced[0][0]
+                filler = [i for i, _ in junk if i != required][:4]
+                indices = [required] + filler
+                hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
                 return PlayCards(
-                    [twos[0][0]],
-                    reason=f"milk: play 2 for Wee Joker (+8 chips) ({hands_after} hands left)",
-                    hand_name="High Card",
+                    indices,
+                    reason=f"milk: enhanced card + {len(filler)} junk for Vampire (+X0.1) ({hands_after} hands left)",
+                    hand_name=hand_name,
                 )
 
-        # Default: single weakest card
-        return PlayCards(
-            [playable[0][0]],
-            reason=f"milk: weak card for {', '.join(scaler_names)} ({hands_after} hands left)",
-            hand_name="High Card",
-        )
+        # Wee Joker: must include a 2, pad with junk for cycling
+        if "j_wee" in play_scalers:
+            twos = [(i, v) for i, v in junk if v == 2]
+            if twos:
+                required = twos[0][0]
+                filler = [i for i, _ in junk if i != required][:4]
+                indices = [required] + filler
+                hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
+                return PlayCards(
+                    indices,
+                    reason=f"milk: 2 + {len(filler)} junk for Wee (+8 chips) ({hands_after} hands left)",
+                    hand_name=hand_name,
+                )
+
+        # --- Category 2: Hand-type triggers ---
+        # Collect target hand types, try to form from current cards, chase if needed.
+
+        targets: list[tuple[str, str]] = []  # (hand_type, joker_name)
+
+        if "j_runner" in play_scalers:
+            targets.extend([("Straight", "j_runner"), ("Straight Flush", "j_runner")])
+        if "j_trousers" in play_scalers:
+            targets.append(("Two Pair", "j_trousers"))
+        if "j_supernova" in play_scalers:
+            preferred = ctx.strategy.top_hand()
+            if preferred:
+                targets.append((preferred, "j_supernova"))
+        if "j_hiker" in play_scalers:
+            # Hiker buffs every SCORED card — want hands where all cards score
+            for ht in ("Flush", "Straight", "Full House", "Straight Flush",
+                        "Two Pair", "Three of a Kind", "Four of a Kind"):
+                targets.append((ht, "j_hiker"))
+
+        if targets:
+            # Try to form any target from current hand
+            candidates = enumerate_hands(
+                ctx.hand_cards, ctx.hand_levels,
+                jokers=ctx.jokers, joker_limit=len(ctx.jokers),
+            )
+            for ht, jname in targets:
+                match = next((c for c in candidates if c.hand_name == ht), None)
+                if match:
+                    return PlayCards(
+                        match.card_indices,
+                        reason=f"milk: {ht} for {jname} ({hands_after} hands left)",
+                        hand_name=ht,
+                    )
+
+            # Can't form any target — chase with a discard if affordable
+            if ctx.discards_left > 0 and free_hands >= 2:
+                for ht, jname in targets:
+                    chases = _dc(
+                        ctx.hand_cards, ctx.hand_levels,
+                        jokers=ctx.jokers, required_hand=ht,
+                        deck_cards=ctx.deck_cards,
+                    )
+                    if chases:
+                        indices, reason = chases[0]
+                        return DiscardCards(
+                            indices,
+                            reason=f"milk: chase {ht} for {jname} ({reason})",
+                        )
+
+        # --- Category 3: Generic triggers — dump max junk for cycling ---
+        generic = {k for k, p in play_scalers.items()
+                   if p.trigger in ("play", "play_no_face")}
+        generic |= set(final_hand_scalers)
+        # Supernova/Hiker fall through here if they couldn't form their target type
+        if "j_supernova" in play_scalers:
+            generic.add("j_supernova")
+        if "j_hiker" in play_scalers:
+            generic.add("j_hiker")
+
+        if generic:
+            dump = junk[:5] if junk else playable[:1]
+            indices = [i for i, _ in dump]
+            hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
+            return PlayCards(
+                indices,
+                reason=f"milk: cycle {len(indices)} junk for {', '.join(sorted(generic))} ({hands_after} hands left)",
+                hand_name=hand_name,
+            )
+
+        return None
 
 
 class SellLuchador:
