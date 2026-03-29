@@ -1134,11 +1134,16 @@ class BuyConsumablesInShop:
         "c_high_priestess",   # creates 2 random Planets
         "c_hermit",           # doubles money (max $20)
         "c_emperor",          # creates 2 random Tarots
+        "c_wheel_of_fortune", # free edition on random joker
+        "c_temperance",       # money = total joker sell value (up to $20)
+        "c_fool",             # copy of last tarot/planet used
     }
 
     # Targeting Tarots worth buying — Glass and suit conversions are high value
     GOOD_TARGETING_TAROTS = {
         "c_justice": 3,    # Glass — ×2 mult on face cards, very strong
+        "c_death": 3,      # Clone best card onto worst — strong deck improvement
+        "c_hanged_man": 4, # Destroy 2 cards — deck thinning, rank-affinity aware
         "c_star": 4,       # Suit conversions — strategy-dependent
         "c_moon": 4,
         "c_sun": 4,
