@@ -57,6 +57,9 @@ class UseImmediateConsumables:
                 if key == "c_judgement":
                     if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
                         continue
+                if key == "c_wheel_of_fortune":
+                    if joker_slots.get("count", 0) == 0:
+                        continue  # needs at least 1 joker to add edition to
                 return UseConsumable(
                     i, reason=f"use tarot: {card.get('label', '?')}",
                 )
