@@ -308,6 +308,9 @@ def run_bot(
         # Track highest chips seen during this blind
         # Track highest chips seen during this blind (capture before round resets)
         cur_chips = state.get("round", {}).get("chips", 0)
+        if cur_chips > 0 or game_state in ("SELECTING_HAND", "HAND_PLAYED", "ROUND_EVAL"):
+            log.debug("[CHIPS_DBG] state=%s round=%s chips=%s max=%s blind=%s",
+                      game_state, round_num, cur_chips, max_chips_this_blind, current_blind_name)
         if cur_chips > max_chips_this_blind:
             max_chips_this_blind = cur_chips
         if last_round is not None and round_num != last_round and current_blind_name:
