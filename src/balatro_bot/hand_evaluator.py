@@ -772,13 +772,20 @@ def best_hand(
 # ---------------------------------------------------------------------------
 
 def cards_not_in(
-    hand_cards: list[dict], keep_indices: set[int], blackboard: bool = False
+    hand_cards: list[dict], keep_indices: set[int], blackboard: bool = False,
+    rank_affinity: dict[str, float] | None = None,
 ) -> list[int]:
-    """Return indices of cards NOT in the keep set — candidates for discard."""
+    """Return indices of cards NOT in the keep set — candidates for discard.
+
+    When rank_affinity is provided, high-affinity ranks are protected (sorted
+    last) and negative-affinity ranks are prioritized for discard (sorted first).
+    """
     candidates = [i for i in range(len(hand_cards)) if i not in keep_indices]
     candidates.sort(key=lambda i: (
         0 if is_debuffed(hand_cards[i]) else 1,
         0 if blackboard and card_suit(hand_cards[i]) in ("H", "D") else 1,
+        # Rank affinity: high → sort last (keep), negative → sort first (discard)
+        rank_affinity.get(card_rank(hand_cards[i]) or "", 0.0) if rank_affinity else 0,
         rank_value(card_rank(hand_cards[i]) or "2"),
     ))
     return candidates
@@ -804,6 +811,11 @@ def discard_candidates(
     joker_keys = {j.get("key") for j in (jokers or [])}
     shortcut = "j_shortcut" in joker_keys
     smeared = "j_smeared" in joker_keys
+
+    # Compute rank affinity for discard protection
+    from balatro_bot.strategy import compute_strategy
+    strat = compute_strategy(jokers or [], hand_levels)
+    rank_aff = strat.rank_affinity_dict() or None
 
     strategies: list[tuple[str, list[int], float, str]] = []
 
@@ -919,7 +931,7 @@ def discard_candidates(
     has_blackboard = any(j.get("key") == "j_blackboard" for j in (jokers or []))
 
     for chase_name, keep, _prob, reason in strategies:
-        to_discard = cards_not_in(hand_cards, set(keep), blackboard=has_blackboard)[:max_discard]
+        to_discard = cards_not_in(hand_cards, set(keep), blackboard=has_blackboard, rank_affinity=rank_aff)[:max_discard]
         if to_discard:
             results.append((to_discard, reason))
 

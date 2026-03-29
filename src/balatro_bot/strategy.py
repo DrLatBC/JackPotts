@@ -72,6 +72,26 @@ JOKER_HAND_AFFINITY: dict[str, tuple[list[str], int]] = {
     "j_flower_pot": (["Flush"], 3),
 }
 
+# Joker key -> (ranks, weight)
+# Weight reflects impact: retrigger=5, +mult=3, +chips=2, utility trigger=2
+JOKER_RANK_AFFINITY: dict[str, tuple[list[str], int]] = {
+    # Retrigger specific ranks (double scoring on these cards)
+    "j_hack":       (["2", "3", "4", "5"], 5),
+    "j_fibonacci":  (["A", "2", "3", "5", "8"], 5),
+
+    # +mult on rank group
+    "j_even_steven": (["2", "4", "6", "8", "T"], 3),
+    "j_odd_todd":    (["A", "3", "5", "7", "9"], 2),  # +chips, lower weight
+
+    # Utility triggers on specific ranks
+    "j_8_ball":      (["8"], 2),          # score an 8 → tarot
+    "j_sixth_sense": (["6"], 2),          # play a 6 → spectral
+    "j_wee":         (["2"], 2),          # +chips when 2 scored, scaling
+
+    # Anti-affinity for face cards (negative weight)
+    "j_ride_the_bus": (["J", "Q", "K"], -3),  # resets mult on face cards
+}
+
 # Joker key -> (suit, weight)
 JOKER_SUIT_AFFINITY: dict[str, tuple[str, int]] = {
     "j_greedy_joker": ("D", 2),
@@ -95,6 +115,7 @@ class Strategy:
 
     preferred_hands: list[tuple[str, float]]
     preferred_suits: list[tuple[str, float]]
+    preferred_ranks: list[tuple[str, float]] = field(default_factory=list)
 
     def top_hand(self) -> str | None:
         return self.preferred_hands[0][0] if self.preferred_hands else None
@@ -114,6 +135,16 @@ class Strategy:
                 return score
         return 0.0
 
+    def rank_affinity(self, rank: str) -> float:
+        for r, score in self.preferred_ranks:
+            if r == rank:
+                return score
+        return 0.0
+
+    def rank_affinity_dict(self) -> dict[str, float]:
+        """Return rank affinity as a dict for fast lookup in hot paths."""
+        return dict(self.preferred_ranks) if self.preferred_ranks else {}
+
     def describes(self) -> str:
         parts = []
         if self.preferred_hands:
@@ -122,6 +153,9 @@ class Strategy:
         if self.preferred_suits:
             top2 = [f"{s}({score:.0f})" for s, score in self.preferred_suits[:2]]
             parts.append("suits=" + ",".join(top2))
+        if self.preferred_ranks:
+            top3 = [f"{r}({score:.0f})" for r, score in self.preferred_ranks[:3]]
+            parts.append("ranks=" + ",".join(top3))
         return " | ".join(parts) if parts else "no preference"
 
 
@@ -135,6 +169,7 @@ def compute_strategy(
 ) -> Strategy:
     hand_scores: dict[str, float] = {}
     suit_scores: dict[str, float] = {}
+    rank_scores: dict[str, float] = {}
 
     for joker in jokers:
         key = joker.get("key", "")
@@ -147,6 +182,11 @@ def compute_strategy(
         if key in JOKER_SUIT_AFFINITY:
             suit, weight = JOKER_SUIT_AFFINITY[key]
             suit_scores[suit] = suit_scores.get(suit, 0) + weight
+
+        if key in JOKER_RANK_AFFINITY:
+            ranks, weight = JOKER_RANK_AFFINITY[key]
+            for r in ranks:
+                rank_scores[r] = rank_scores.get(r, 0) + weight
 
     # Synthesize composite hand affinities: jokers that boost sub-hands
     # should also contribute to hands that CONTAIN those sub-hands.
@@ -179,8 +219,14 @@ def compute_strategy(
         [(s, score) for s, score in suit_scores.items() if score > 0],
         key=lambda x: -x[1],
     )
+    # Include negative affinity (anti-affinity) — consumers use it to penalize
+    preferred_ranks = sorted(
+        [(r, score) for r, score in rank_scores.items() if score != 0],
+        key=lambda x: -x[1],
+    )
 
     return Strategy(
         preferred_hands=preferred_hands,
         preferred_suits=preferred_suits,
+        preferred_ranks=preferred_ranks,
     )

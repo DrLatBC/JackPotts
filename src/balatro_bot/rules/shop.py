@@ -47,6 +47,85 @@ _HIGH_VALUE_XMULT = {
     "j_constellation", "j_campfire",
 }
 
+# --- Utility joker values (non-scoring jokers with gameplay impact) ---
+
+_UTILITY_VALUE: dict[str, float] = {
+    # Tier 1: survival/game-changing
+    "j_chicot":        4.0,   # destroys boss blind effect
+    "j_mr_bones":      3.5,   # prevents death
+    "j_perkeo":        3.0,   # duplicates consumable in shop
+    # Tier 2: hand construction (understood by hand evaluator)
+    "j_four_fingers":  2.5,   # 4-card straights/flushes
+    "j_smeared":       2.5,   # merged suit groups
+    "j_shortcut":      2.0,   # gap straights
+    "j_splash":        2.0,   # all cards score
+    "j_pareidolia":    2.0,   # all cards count as face
+    # Tier 3: resource generation
+    "j_cartomancer":   2.0,   # tarot on blind select
+    "j_hallucination": 1.5,   # tarot from packs
+    "j_space":         1.5,   # chance to level hand type
+    "j_8_ball":        1.5,   # score 8 → tarot
+    "j_sixth_sense":   1.0,   # play 6 → spectral
+    "j_seance":        1.0,   # spectral from hand types
+    "j_superposition": 1.0,   # Ace + Straight → tarot
+    "j_riff_raff":     1.0,   # 2 common jokers on blind select
+    "j_oops":          1.5,   # doubles all probabilities
+    # Tier 4: hand size/discards
+    "j_merry_andy":    1.5,   # +3 discards, -1 hand size
+    "j_turtle_bean":   1.5,   # +5 hand size (decays)
+    "j_drunkard":      1.0,   # +1 discard
+    "j_burnt":         1.0,   # +1 discard
+    "j_juggler":       1.0,   # +1 hand size
+    "j_troubadour":    1.0,   # +2 hand size, -1 hand
+    # Tier 5: economy/deck manipulation
+    "j_vagabond":      0.5,   # tarot when money < $5
+    "j_marble":        0.5,   # Stone card on blind select
+    "j_dna":           0.5,   # copies first played card
+    "j_certificate":   0.5,   # random card + gold seal
+    "j_midas_mask":    0.5,   # face cards → Gold
+    # Tier 6: triggered utility (action rules handle these)
+    "j_luchador":      1.0,   # sell to disable boss blind
+    "j_invisible":     1.0,   # sell to dupe after 2 rounds
+    "j_diet_cola":     0.5,   # sell for free reroll
+    "j_burglar":       0.5,   # +3 hands, lose discards
+    "j_ring_master":   0.5,   # uncommon+ jokers more common
+}
+
+
+def _utility_synergy(key: str, owned_keys: set[str], strat: Strategy) -> float:
+    """Bonus value for a utility joker based on current build synergy."""
+    bonus = 0.0
+
+    if key == "j_four_fingers":
+        if strat.hand_affinity("Flush") > 0 or strat.hand_affinity("Straight") > 0:
+            bonus += 2.0
+    elif key == "j_smeared" and strat.hand_affinity("Flush") > 0:
+        bonus += 3.0
+    elif key == "j_shortcut" and strat.hand_affinity("Straight") > 0:
+        bonus += 2.0
+    elif key == "j_pareidolia":
+        face_jokers = {"j_photograph", "j_scary_face", "j_smiley",
+                        "j_triboulet", "j_sock_and_buskin"}
+        bonus += len(owned_keys & face_jokers) * 2.0
+    elif key == "j_8_ball" and strat.rank_affinity("8") > 0:
+        bonus += 2.0
+    elif key == "j_oops":
+        prob_jokers = {"j_8_ball", "j_space", "j_sixth_sense",
+                        "j_bloodstone", "j_lucky_cat"}
+        bonus += len(owned_keys & prob_jokers) * 1.5
+    elif key == "j_space" and strat.top_hand():
+        bonus += 1.0
+    elif key == "j_merry_andy":
+        discard_jokers = {"j_castle", "j_yorick", "j_hit_the_road"}
+        bonus += len(owned_keys & discard_jokers) * 2.0
+    elif key == "j_marble" and "j_stone" in owned_keys:
+        bonus += 2.0
+    elif key == "j_splash":
+        per_card = {"j_hiker", "j_seltzer", "j_hanging_chad"}
+        bonus += len(owned_keys & per_card) * 1.5
+
+    return bonus
+
 
 class SellInvisible:
     """Sell down to best joker + Invisible, then sell Invisible for a guaranteed dupe.
@@ -279,9 +358,13 @@ class SellWeakJoker:
         key = joker.get("key", "")
         effect = JOKER_EFFECTS.get(key)
 
-        # No scoring effect at all — lowest value
+        # No scoring effect — check if it's a valued utility joker
         if effect is None or effect is _noop:
-            return 0.0
+            base = _UTILITY_VALUE.get(key, 0.0)
+            if base <= 0:
+                return 0.0
+            owned_keys = {j.get("key") for j in (owned_jokers or [])}
+            return base + _utility_synergy(key, owned_keys, strat)
 
         # Parse the actual current value from the joker's effect text
         effect_text = joker.get("value", {}).get("effect", "")
@@ -780,6 +863,12 @@ class BuyJokersInShop:
             # No hand to evaluate — use strategy to score the joker
             key = candidate_joker.get("key", "")
             if not self._has_scoring_effect(key):
+                # Check if it's a valued utility joker
+                base = _UTILITY_VALUE.get(key, 0.0)
+                if base > 0:
+                    strat = compute_strategy(current_jokers, state.get("hands", {}))
+                    owned_keys = {j.get("key") for j in current_jokers}
+                    return (base + _utility_synergy(key, owned_keys, strat)) / 10.0
                 return 0.0
 
             strat = compute_strategy(current_jokers, state.get("hands", {}))

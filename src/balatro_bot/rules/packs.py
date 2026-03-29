@@ -259,8 +259,10 @@ class PickFromBuffoonPack:
             has_effect = effect is not None and effect is not _noop
 
             if not has_effect:
-                # No-op jokers get a small baseline so they lose to any real effect
-                score = 0.1
+                # Check if it's a valued utility joker
+                from balatro_bot.rules.shop import _UTILITY_VALUE, _utility_synergy
+                base = _UTILITY_VALUE.get(key, 0.1)
+                score = base + _utility_synergy(key, owned_keys, strat)
             else:
                 # Score based on strategy synergy + effect strength
                 score = 1.0
