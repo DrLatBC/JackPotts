@@ -208,9 +208,13 @@ def run_bot(
     consecutive_errors = 0
     total_hands_played = 0
     total_discards_used = 0
+    hands_at_blind_start = 0
+    discards_at_blind_start = 0
     last_logged_hand = None
     last_logged_shop = None
     last_logged_blind = None
+    prev_joker_keys: set[str] = set()
+    hand_context_logged = False
     prev_hand_labels: list[str] = []
     last_ante = None
     last_round = None
@@ -259,22 +263,60 @@ def run_bot(
         round_num = state.get("round_num")
         if ante_num is not None and ante_num != last_ante:
             joker_cards = state.get("jokers", {}).get("cards", [])
-            roster = [j.get("label", "?") for j in joker_cards]
+            hand_levels = state.get("hands", {})
+            money = state.get("money", 0)
+
+            # Roster with effect values
+            roster_parts = []
+            for j in joker_cards:
+                label = j.get("label", "?")
+                effect_text = j.get("value", {}).get("effect", "")
+                # Extract compact value from effect text
+                from balatro_bot.joker_effects import parse_effect_value
+                parsed = parse_effect_value(effect_text) if effect_text else {}
+                if parsed.get("xmult"):
+                    roster_parts.append(f"{label}(X{parsed['xmult']:.1f})")
+                elif parsed.get("mult"):
+                    roster_parts.append(f"{label}(+{parsed['mult']:.0f}mult)")
+                elif parsed.get("chips"):
+                    roster_parts.append(f"{label}(+{parsed['chips']:.0f}chips)")
+                else:
+                    roster_parts.append(label)
+
             log.info(
-                "Ante %s roster (%d jokers): [%s]",
-                ante_num, len(roster),
-                ", ".join(roster) if roster else "none",
+                "[ANTE %s] Roster (%d jokers): [%s]",
+                ante_num, len(joker_cards),
+                ", ".join(roster_parts) if roster_parts else "none",
             )
+
+            # Strategy snapshot
+            from balatro_bot.strategy import compute_strategy
+            strat = compute_strategy(joker_cards, hand_levels)
+            log.info("[ANTE %s] Strategy: %s", ante_num, strat.describes())
+
+            # Hand levels (only leveled-up hands)
+            leveled = []
+            for ht, data in hand_levels.items():
+                if isinstance(data, dict) and data.get("level", 1) > 1:
+                    leveled.append(f"{ht}(lv{data['level']})")
+            if leveled:
+                log.info("[ANTE %s] Money: $%d | Levels: %s", ante_num, money, ", ".join(leveled))
+            else:
+                log.info("[ANTE %s] Money: $%d", ante_num, money)
+
             last_ante = ante_num
         # Track highest chips seen during this blind
-        if current_blind_name:
-            cur_chips = state.get("round", {}).get("chips", 0)
-            if cur_chips > max_chips_this_blind:
-                max_chips_this_blind = cur_chips
+        # Track highest chips seen during this blind (capture before round resets)
+        cur_chips = state.get("round", {}).get("chips", 0)
+        if cur_chips > max_chips_this_blind:
+            max_chips_this_blind = cur_chips
         if last_round is not None and round_num != last_round and current_blind_name:
             log.info(
-                "Blind cleared: %s | scored %s / needed %s",
-                current_blind_name, max_chips_this_blind, current_blind_target,
+                "[ROUND] %s: scored %s / needed %s — WON | %d hands, %d discards",
+                current_blind_name, f"{max_chips_this_blind:,}",
+                f"{current_blind_target:,}" if isinstance(current_blind_target, int) else current_blind_target,
+                total_hands_played - hands_at_blind_start,
+                total_discards_used - discards_at_blind_start,
             )
             current_blind_name = None
             current_blind_target = None
@@ -336,6 +378,9 @@ def run_bot(
                         current_blind_name = name
                         current_blind_target = score
                         max_chips_this_blind = 0
+                        hands_at_blind_start = total_hands_played
+                        discards_at_blind_start = total_discards_used
+                        hand_context_logged = False
                         break
                 last_logged_blind = blind_id
 
@@ -365,6 +410,27 @@ def run_bot(
                 log.info("Hand: [%s]%s%s", hand_str, drew_str, debuff_str)
                 prev_hand_labels = [c.get("label", "") for c in hand_cards]
                 last_logged_hand = hand_id
+
+                # First hand of a new blind — log context once
+                if not hand_context_logged and current_blind_name:
+                    jokers_now = state.get("jokers", {}).get("cards", [])
+                    hand_levels_now = state.get("hands", {})
+                    rnd = state.get("round", {})
+                    from balatro_bot.hand_evaluator import best_hand as _bh
+                    jlimit = state.get("jokers", {}).get("limit", 5)
+                    bh = _bh(hand_cards, hand_levels_now, jokers=jokers_now, joker_limit=jlimit)
+                    best_score = bh.total if bh else 0
+                    best_name = bh.hand_name if bh else "?"
+                    blind_need = current_blind_target or 0
+                    can_win = best_score >= blind_need if blind_need else False
+                    log.info(
+                        "[HAND] Best: %s for %s | Blind: %s needs %s | Hands: %d | %s",
+                        best_name, f"{best_score:,}", current_blind_name,
+                        f"{blind_need:,}" if isinstance(blind_need, int) else blind_need,
+                        rnd.get("hands_left", 0),
+                        "CAN WIN" if can_win else "NEED MORE",
+                    )
+                    hand_context_logged = True
 
         action = engine.decide(state)
         if action is None:
@@ -419,6 +485,15 @@ def run_bot(
                 _log_played_hand(play_snapshot, pre_play_chips, state, fmt_card)
             elif method == "discard":
                 total_discards_used += 1
+
+            # Detect joker roster changes and log strategy shift
+            cur_joker_keys = {j.get("key") for j in state.get("jokers", {}).get("cards", [])}
+            if cur_joker_keys != prev_joker_keys and prev_joker_keys:
+                from balatro_bot.strategy import compute_strategy as _cs
+                new_strat = _cs(state.get("jokers", {}).get("cards", []), state.get("hands", {}))
+                log.info("[STRAT] %s", new_strat.describes())
+            prev_joker_keys = cur_joker_keys
+
             consecutive_errors = 0
         except httpx.TimeoutException:
             raise
@@ -436,6 +511,16 @@ def run_bot(
             else:
                 time.sleep(poll_interval)
                 state = client.call("gamestate")
+
+    # Log final round summary if died on a blind
+    if current_blind_name:
+        log.info(
+            "[ROUND] %s: scored %s / needed %s — LOST | %d hands, %d discards",
+            current_blind_name, f"{max_chips_this_blind:,}",
+            f"{current_blind_target:,}" if isinstance(current_blind_target, int) else current_blind_target,
+            total_hands_played - hands_at_blind_start,
+            total_discards_used - discards_at_blind_start,
+        )
 
     ante = state.get("ante_num", "?")
     round_num = state.get("round_num", "?")

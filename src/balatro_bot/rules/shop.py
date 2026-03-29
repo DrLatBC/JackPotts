@@ -889,6 +889,16 @@ class BuyJokersInShop:
         ante = state.get("ante_num", 1)
 
         if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
+            # Log interesting jokers we can't buy because slots are full
+            for card in shop.get("cards", []):
+                if card.get("set") != "JOKER":
+                    continue
+                key = card.get("key", "")
+                if key in self.ALWAYS_BUY or key in self.HIGH_PRIORITY:
+                    label = card.get("label", "?")
+                    cost = card.get("cost", {}).get("buy", 999)
+                    log.info("[SHOP] %s($%d): slots full (%d/%d) — can't buy",
+                             label, cost, joker_slots.get("count", 0), joker_slots.get("limit", 5))
             return None
 
         current_interest = min(money // 5, 5)
@@ -997,6 +1007,12 @@ class BuyJokersInShop:
                 best_label = card.get("label", "?")
 
         if best_idx is not None:
+            key = shop.get("cards", [])[best_idx].get("key", "")
+            comp = self._composition_multiplier(joker_slots.get("cards", []), key, ante)
+            tier = "ALWAYS_BUY" if key in self.ALWAYS_BUY else (
+                "HIGH_PRIORITY" if key in self.HIGH_PRIORITY else "scored")
+            log.info("[SHOP] %s($%d): %s, improvement=%.0f%%, comp=%.1fx — BUYING",
+                     best_label, best_cost, tier, best_improvement * 100, comp)
             return BuyCard(
                 best_idx,
                 reason=f"buy joker: {best_label} for ${best_cost} "

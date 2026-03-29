@@ -45,8 +45,9 @@ class UseImmediateConsumables:
             if key in PLANET_KEYS:
                 hand_type = PLANET_KEYS[key]
                 affinity = strat.hand_affinity(hand_type) if hand_type != "ALL" else 99
+                cur_level = hand_levels.get(hand_type, {}).get("level", 1) if hand_type != "ALL" else 0
                 return UseConsumable(
-                    i, reason=f"use planet: {card.get('label', '?')} (levels {hand_type}, affinity={affinity:.0f})",
+                    i, reason=f"[PLANET] {card.get('label', '?')}: {hand_type} lv{cur_level}→lv{cur_level+1} (affinity={affinity:.0f})",
                 )
 
         # Priority 2: Use safe no-target Tarots
