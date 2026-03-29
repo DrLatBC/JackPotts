@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Logs
+bot_log/
+score_debug.txt
+growing_*.txt
+wins_*.txt
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/
