@@ -34,6 +34,8 @@ class RoundContext:
     score_discount: float = 1.0
     forced_card_idx: int | None = None
     ancient_suit: str | None = None
+    eye_used_hands: set[str] | None = None
+    scoring_suit: str | None = None
 
     @staticmethod
     def from_state(state: dict[str, Any]) -> RoundContext:
@@ -64,6 +66,23 @@ class RoundContext:
                 if isinstance(hand_data, dict) and hand_data.get("played_this_round", 0) > 0:
                     mouth_locked_hand = hand_name
                     break
+
+        # The Eye: track which hand types have been played this round
+        eye_used_hands = None
+        if blind_name == "The Eye":
+            eye_used_hands = {
+                ht for ht, data in hand_levels.items()
+                if isinstance(data, dict) and data.get("played_this_round", 0) > 0
+            }
+
+        # Suit restriction bosses: preference signal for scoring suit
+        scoring_suit = None
+        if blind_name == "The Head":
+            scoring_suit = "H"
+        elif blind_name == "The Club":
+            scoring_suit = "C"
+        elif blind_name == "The Window":
+            scoring_suit = "D"
 
         chips_scored = rnd.get("chips", 0)
         hands_left = rnd.get("hands_left", 0)
@@ -107,11 +126,14 @@ class RoundContext:
                 required_hand=mouth_locked_hand,
                 required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
                 ancient_suit=ancient_suit,
+                excluded_hands=eye_used_hands,
             ),
             mouth_locked_hand=mouth_locked_hand,
             score_discount=score_discount,
             forced_card_idx=forced_card_idx,
             ancient_suit=ancient_suit,
+            eye_used_hands=eye_used_hands,
+            scoring_suit=scoring_suit,
             money=money,
             ante=state.get("ante_num", 1),
             round_num=state.get("round_num", 1),

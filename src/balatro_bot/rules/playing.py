@@ -85,7 +85,11 @@ class MilkScalingJokers:
             return None
 
         # Comfort check: don't milk if barely winning (need some margin for variance)
-        margin = 1.25 if free_hands >= 3 else 1.5
+        # The Wall: 4x blind needs much more margin before milking
+        if ctx.blind_name == "The Wall":
+            margin = 2.0
+        else:
+            margin = 1.25 if free_hands >= 3 else 1.5
         if effective < ctx.chips_remaining * margin:
             return None
 
@@ -410,6 +414,10 @@ class PlayHighValueHand:
         if not ctx.best:
             return None
 
+        # The Needle: only 1 hand play — never play unless it wins
+        if ctx.blind_name == "The Needle":
+            return None
+
         threshold = self.THRESHOLDS.get(ctx.hands_left, 0.15 if ctx.hands_left > 6 else 0.0)
         effective_score = ctx.best.total * ctx.score_discount
 
@@ -504,7 +512,7 @@ class DiscardToImprove:
             if extra_count > 0 and ctx.chips_remaining > 0:
                 coverage = ctx.best.total / ctx.chips_remaining
                 if coverage < 0.15:
-                    extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), rank_affinity=ctx.strategy.rank_affinity_dict())
+                    extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit)
                     to_discard = extras[:min(extra_count, ctx.discards_left)]
                     if to_discard:
                         return DiscardCards(
@@ -586,12 +594,22 @@ class PlayBestAvailable:
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         ctx = RoundContext.from_state(state)
+
+        # The Needle: keep discarding if we have discards — don't give up
+        if ctx.blind_name == "The Needle" and ctx.discards_left > 0:
+            if ctx.best:
+                keep = set(ctx.best.card_indices)
+                to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit)[:min(5, ctx.discards_left)]
+                if to_discard:
+                    return DiscardCards(to_discard, reason="Needle: use all discards to find winning hand")
+            return None
+
         # If hand can't win and we still have discards AND the hand is < 5 cards,
         # discard junk to try to improve. 5-card hands can't be improved by discarding.
         if (ctx.best and ctx.best.total < ctx.chips_remaining
                 and ctx.discards_left > 0 and len(ctx.best.card_indices) < 5):
             keep = set(ctx.best.card_indices)
-            to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict())[:min(5, ctx.discards_left)]
+            to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit)[:min(5, ctx.discards_left)]
             if to_discard:
                 return DiscardCards(to_discard, reason="last resort discard (hand too weak, searching for better)")
         if ctx.best:

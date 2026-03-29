@@ -688,6 +688,7 @@ def enumerate_hands(
     required_hand: str | None = None,
     required_card_indices: set[int] | None = None,
     ancient_suit: str | None = None,
+    excluded_hands: set[str] | None = None,
 ) -> list[HandCandidate]:
     """Enumerate all valid poker hands from the cards in hand."""
     candidates: list[HandCandidate] = []
@@ -731,6 +732,8 @@ def enumerate_hands(
 
     if required_hand:
         candidates = [c for c in candidates if c.hand_name == required_hand]
+    if excluded_hands:
+        candidates = [c for c in candidates if c.hand_name not in excluded_hands]
 
     if jokers:
         candidates.sort(key=lambda h: (-h.total, h.priority, len(h.cards)))
@@ -752,6 +755,7 @@ def best_hand(
     required_hand: str | None = None,
     required_card_indices: set[int] | None = None,
     ancient_suit: str | None = None,
+    excluded_hands: set[str] | None = None,
 ) -> HandCandidate | None:
     """Return the single best hand playable from the given cards."""
     candidates = enumerate_hands(
@@ -763,6 +767,7 @@ def best_hand(
         required_hand=required_hand,
         required_card_indices=required_card_indices,
         ancient_suit=ancient_suit,
+        excluded_hands=excluded_hands,
     )
     return candidates[0] if candidates else None
 
@@ -774,16 +779,20 @@ def best_hand(
 def cards_not_in(
     hand_cards: list[dict], keep_indices: set[int], blackboard: bool = False,
     rank_affinity: dict[str, float] | None = None,
+    scoring_suit: str | None = None,
 ) -> list[int]:
     """Return indices of cards NOT in the keep set — candidates for discard.
 
     When rank_affinity is provided, high-affinity ranks are protected (sorted
     last) and negative-affinity ranks are prioritized for discard (sorted first).
+    When scoring_suit is set (suit restriction bosses), off-suit cards sort earlier.
     """
     candidates = [i for i in range(len(hand_cards)) if i not in keep_indices]
     candidates.sort(key=lambda i: (
         0 if is_debuffed(hand_cards[i]) else 1,
         0 if blackboard and card_suit(hand_cards[i]) in ("H", "D") else 1,
+        # Scoring suit: off-suit cards are more disposable
+        1 if scoring_suit and scoring_suit in card_suits(hand_cards[i]) else 0 if not scoring_suit else -1,
         # Rank affinity: high → sort last (keep), negative → sort first (discard)
         rank_affinity.get(card_rank(hand_cards[i]) or "", 0.0) if rank_affinity else 0,
         rank_value(card_rank(hand_cards[i]) or "2"),
