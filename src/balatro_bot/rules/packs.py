@@ -49,10 +49,12 @@ class SkipPackForRedCard:
 
 
 class PickFromTarotPack:
-    """Pick the best Tarot card from an Arcana pack, with proper targeting."""
+    """Pick the best Tarot card from an Arcana pack using dynamic scoring."""
     name = "pick_from_tarot_pack"
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        from balatro_bot.rules._helpers import score_consumable
+
         pack = state.get("pack", {})
         cards = pack.get("cards", [])
         if not cards:
@@ -68,47 +70,42 @@ class PickFromTarotPack:
         hand_levels = state.get("hands", {})
         strat = compute_strategy(jokers, hand_levels)
 
-        # Phase 1: Score no-target Tarots
-        best_no_target_idx = None
-        best_no_target_score = -1.0
+        best_idx = None
+        best_score = -1.0
+        best_targets: list[int] | None = None
+
         for i, card in enumerate(cards):
             key = card.get("key", "")
-            if key in NO_TARGET_TAROTS:
-                score = float(NO_TARGET_TAROTS[key])
-                if score > best_no_target_score:
-                    best_no_target_score = score
-                    best_no_target_idx = i
+            score = score_consumable(key, state, strat)
+            if score <= best_score:
+                continue
 
-        # Phase 2: Score targeting Tarots
-        best_target_idx = None
-        best_target_score = -1.0
-        best_targets: list[int] = []
-
-        if hand_cards:
-            for i, card in enumerate(cards):
-                key = card.get("key", "")
-                if key not in TARGETING_TAROTS:
-                    continue
+            # For targeting tarots, also verify we have valid targets
+            targets = None
+            if key in TARGETING_TAROTS and hand_cards:
                 max_count, effect_type, extra = TARGETING_TAROTS[key]
-                targets, score = _find_tarot_targets(
+                found_targets, _ = _find_tarot_targets(
                     effect_type, extra, max_count, hand_cards, jokers, strat,
                 )
-                if targets and score > best_target_score:
-                    best_target_score = score
-                    best_target_idx = i
-                    best_targets = targets
+                if not found_targets:
+                    continue  # can't use this tarot — no valid targets
+                targets = found_targets
 
-        # Pick the higher-scoring option
-        if best_no_target_idx is not None and best_no_target_score >= best_target_score:
-            label = cards[best_no_target_idx].get("label", "?")
-            return PackAction(card_index=best_no_target_idx, reason=f"tarot: {label} (no target)")
+            best_score = score
+            best_idx = i
+            best_targets = targets
 
-        if best_target_idx is not None and best_targets:
-            label = cards[best_target_idx].get("label", "?")
+        if best_idx is not None:
+            label = cards[best_idx].get("label", "?")
+            key = cards[best_idx].get("key", "")
+            if best_targets:
+                return PackAction(
+                    card_index=best_idx, targets=best_targets,
+                    reason=f"tarot: {label} (value={best_score:.1f}) -> targets {best_targets}",
+                )
             return PackAction(
-                card_index=best_target_idx,
-                targets=best_targets,
-                reason=f"tarot: {label} -> targets {best_targets}",
+                card_index=best_idx,
+                reason=f"tarot: {label} (value={best_score:.1f})",
             )
 
         return PackAction(card_index=None, reason="skip tarot pack (nothing usable)")

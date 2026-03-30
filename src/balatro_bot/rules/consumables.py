@@ -8,24 +8,35 @@ from balatro_bot.constants import (
     PLANET_KEYS, SAFE_CONSUMABLE_TAROTS, TARGETING_TAROTS,
     IMMEDIATE_TARGETING, TACTICAL_TARGETING,
     SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING, SCALING_JOKERS,
-    FACE_RANKS_TAROT,
+    FACE_RANKS_TAROT, NO_TARGET_TAROTS,
 )
 from balatro_bot.hand_evaluator import best_hand, flush_draw, score_hand
 from balatro_bot.strategy import compute_strategy
 from balatro_bot.cards import card_suit, card_suits, card_rank, _modifier, rank_value
 from balatro_bot.rules._helpers import (
     _find_tarot_targets, _find_gold_targets, _find_enhancement_targets,
+    _find_clone_targets, score_consumable,
 )
 
 if TYPE_CHECKING:
     from typing import Any
+    from balatro_bot.strategy import Strategy
 
 log = logging.getLogger("balatro_bot")
 
 
-class UseImmediateConsumables:
-    """Use planets, no-target tarots, and permanent deck-change tarots immediately."""
-    name = "use_immediate_consumables"
+class UseConsumables:
+    """Unified consumable usage: scores use_now vs hold_value for each consumable.
+
+    Replaces both UseImmediateConsumables and UseTacticalConsumables.
+    """
+    name = "use_consumables"
+
+    # Track how many rounds a consumable has been held (key -> round count)
+    _held_rounds: dict[str, int] = {}
+    _last_round: int = -1
+    # Track the last tarot/planet we used, so Fool knows what it copies
+    _last_used_consumable: str | None = None
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         consumables = state.get("consumables", {}).get("cards", [])
@@ -37,187 +48,27 @@ class UseImmediateConsumables:
         hand_levels = state.get("hands", {})
         joker_slots = state.get("jokers", {})
         ante = state.get("ante_num", 1)
-
-        # Priority 1: Use planet cards immediately
-        strat = compute_strategy(jokers, hand_levels)
-        for i, card in enumerate(consumables):
-            key = card.get("key", "")
-            if key in PLANET_KEYS:
-                hand_type = PLANET_KEYS[key]
-                affinity = strat.hand_affinity(hand_type) if hand_type != "ALL" else 99
-                cur_level = hand_levels.get(hand_type, {}).get("level", 1) if hand_type != "ALL" else 0
-                return UseConsumable(
-                    i, reason=f"[PLANET] {card.get('label', '?')}: {hand_type} lv{cur_level}→lv{cur_level+1} (affinity={affinity:.0f})",
-                )
-
-        # Priority 2: Use safe no-target Tarots
-        for i, card in enumerate(consumables):
-            key = card.get("key", "")
-            if key in SAFE_CONSUMABLE_TAROTS:
-                if key == "c_judgement":
-                    if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
-                        continue
-                if key == "c_wheel_of_fortune":
-                    if joker_slots.get("count", 0) == 0:
-                        continue  # needs at least 1 joker to add edition to
-                return UseConsumable(
-                    i, reason=f"use tarot: {card.get('label', '?')}",
-                )
-
-        # Priority 2.5: Use safe no-target Spectral cards (with per-card conditions)
-        for i, card in enumerate(consumables):
-            key = card.get("key", "")
-            if key not in SAFE_SPECTRAL_CONSUMABLES:
-                continue
-            if key in ("c_ankh", "c_hex") and not jokers:
-                continue  # nothing to clone/buff
-            if key == "c_hex":
-                # Hex destroys ALL jokers except 1 — sell it when established
-                joker_count = joker_slots.get("count", 0)
-                joker_limit = joker_slots.get("limit", 5)
-                owned_keys = {j.get("key") for j in jokers}
-                if joker_count >= joker_limit or owned_keys & SCALING_JOKERS or ante >= 5:
-                    reason = "full slots" if joker_count >= joker_limit else (
-                        "scaling joker" if owned_keys & SCALING_JOKERS else f"ante {ante}"
-                    )
-                    return SellConsumable(i, reason=f"sell Hex (would destroy joker lineup: {reason})")
-
-            if key == "c_ankh":
-                if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
-                    continue  # no slot for the cloned joker
-            if key == "c_wraith":
-                if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
-                    continue  # no slot for the rare joker
-            if key == "c_ectoplasm" and ante < 3:
-                continue  # -1 hand size too costly early game
-            return UseConsumable(
-                i, reason=f"use spectral: {card.get('label', '?')}",
-            )
-
-        # Priority 3: Use permanent targeting Tarots and Spectrals
-        if hand_cards:
-            strat = compute_strategy(jokers, hand_levels)
-            money = state.get("money", 0)
-            rnd = state.get("round", {})
-            discards_left = rnd.get("discards_left", 0)
-            hands_left = rnd.get("hands_left", 1)
-            joker_limit = state.get("jokers", {}).get("limit", 5)
-            current_best = best_hand(hand_cards, hand_levels, jokers=jokers,
-                                     money=money, discards_left=discards_left, hands_left=hands_left,
-                                     joker_limit=joker_limit)
-
-            # Check Tarots first
-            for i, card in enumerate(consumables):
-                key = card.get("key", "")
-                if key not in TARGETING_TAROTS:
-                    continue
-                max_count, effect_type, extra = TARGETING_TAROTS[key]
-                if effect_type not in IMMEDIATE_TARGETING:
-                    continue
-
-                # Death tarot: rearrange hand if needed so best is left of worst
-                if effect_type == "clone":
-                    from balatro_bot.rules._helpers import _find_clone_targets
-                    result = _find_clone_targets(hand_cards, strat)
-                    if result is None:
-                        continue
-                    best_idx, worst_idx = result
-                    if best_idx > worst_idx:
-                        order = list(range(len(hand_cards)))
-                        order.remove(best_idx)
-                        insert_pos = order.index(worst_idx)
-                        order.insert(insert_pos, best_idx)
-                        return RearrangeHand(
-                            order=order,
-                            reason=f"rearrange for Death: move {hand_cards[best_idx].get('label','?')} left of {hand_cards[worst_idx].get('label','?')}",
-                        )
-                    return UseConsumable(
-                        i, target_cards=[best_idx, worst_idx],
-                        reason=f"Death: clone {hand_cards[best_idx].get('label','?')} onto {hand_cards[worst_idx].get('label','?')}",
-                    )
-
-                targets, score = _find_tarot_targets(
-                    effect_type, extra, max_count, hand_cards, jokers, strat,
-                    current_best=current_best,
-                )
-                if targets:
-                    return UseConsumable(
-                        i, target_cards=targets,
-                        reason=f"use tarot: {card.get('label', '?')} -> targets {targets}",
-                    )
-
-            # Check Spectral targeting cards
-            for i, card in enumerate(consumables):
-                key = card.get("key", "")
-                if key not in SPECTRAL_TARGETING:
-                    continue
-                max_count, effect_type, extra = SPECTRAL_TARGETING[key]
-                targets, score = _find_tarot_targets(
-                    effect_type, extra, max_count, hand_cards, jokers, strat,
-                    current_best=current_best,
-                )
-                if targets:
-                    return UseConsumable(
-                        i, target_cards=targets,
-                        reason=f"use spectral: {card.get('label', '?')} -> targets {targets}",
-                    )
-
-        # Priority 4: Sell unknown consumables to free slots
-        all_known = PLANET_KEYS.keys() | SAFE_CONSUMABLE_TAROTS | TARGETING_TAROTS.keys() | SAFE_SPECTRAL_CONSUMABLES | SPECTRAL_TARGETING.keys()
-        consumable_limit = state.get("consumables", {}).get("limit", 2)
-        if len(consumables) >= consumable_limit:
-            for i, card in enumerate(consumables):
-                key = card.get("key", "")
-                if key not in all_known:
-                    return SellConsumable(
-                        i, reason=f"sell unknown consumable: {card.get('label', '?')} (freeing slot)",
-                    )
-
-        return None
-
-
-class UseTacticalConsumables:
-    """Use suit conversions, Glass, and enhancements tactically based on current hand.
-
-    Evaluates whether using a Tarot would create a significantly better hand
-    than what we currently have (e.g., converting off-suit cards to create a Flush).
-    """
-    name = "use_tactical_consumables"
-
-    # Minimum score improvement to justify using a consumable
-    MIN_IMPROVEMENT = 1.3  # new hand must be 30% better
-
-    def evaluate(self, state: dict[str, Any]) -> Action | None:
-        consumables = state.get("consumables", {}).get("cards", [])
-        if not consumables:
-            return None
-
-        hand_cards = state.get("hand", {}).get("cards", [])
-        if not hand_cards:
-            return None
-
-        jokers = state.get("jokers", {}).get("cards", [])
-        hand_levels = state.get("hands", {})
-
-        # Find tactical consumables
-        tactical = []
-        for i, card in enumerate(consumables):
-            key = card.get("key", "")
-            if key in TARGETING_TAROTS:
-                max_count, effect_type, extra = TARGETING_TAROTS[key]
-                if effect_type in TACTICAL_TARGETING:
-                    tactical.append((i, key, max_count, effect_type, extra))
-
-        if not tactical:
-            return None
-
-        strat = compute_strategy(jokers, hand_levels)
         money = state.get("money", 0)
         rnd = state.get("round", {})
+        round_num = state.get("round_num", 0)
+
+        strat = compute_strategy(jokers, hand_levels)
+
+        # Track held consumable staleness
+        if round_num != self._last_round:
+            self._last_round = round_num
+            for card in consumables:
+                key = card.get("key", "")
+                self._held_rounds[key] = self._held_rounds.get(key, 0) + 1
+            # Clean up keys no longer in consumable slots
+            held_keys = {c.get("key", "") for c in consumables}
+            for k in list(self._held_rounds):
+                if k not in held_keys:
+                    del self._held_rounds[k]
+
+        # Compute round context for tactical decisions
         discards_left = rnd.get("discards_left", 0)
         hands_left = rnd.get("hands_left", 1)
-
-        # Blind progress — how many chips still needed
         blind_score = 0
         chips_scored = rnd.get("chips", 0)
         for b in state.get("blinds", {}).values():
@@ -226,92 +77,340 @@ class UseTacticalConsumables:
                 break
         chips_remaining = max(0, blind_score - chips_scored)
 
-        # Desperation: last 2 hands and current score won't clear the blind
-        desperate = hands_left <= 2
+        joker_limit = joker_slots.get("limit", 5)
+        current_best = None
+        current_score = 0
+        if hand_cards:
+            current_best = best_hand(hand_cards, hand_levels, jokers=jokers,
+                                     money=money, discards_left=discards_left,
+                                     hands_left=hands_left, joker_limit=joker_limit)
+            current_score = current_best.total if current_best else 0
 
-        joker_limit = state.get("jokers", {}).get("limit", 5)
-        current_best = best_hand(hand_cards, hand_levels, jokers=jokers,
-                                 money=money, discards_left=discards_left, hands_left=hands_left,
-                                 joker_limit=joker_limit)
-        current_score = current_best.total if current_best else 0
-
-        # If we can already beat the blind with chips in hand, don't burn consumables
-        # unless we're on the last hand (use it or lose it)
         can_win_now = current_score >= chips_remaining
+        desperate = hands_left <= 2
+        consumable_limit = state.get("consumables", {}).get("limit", 2)
+        slots_full = len(consumables) >= consumable_limit
 
-        # Gold enhancement: fire NOW when we know we're winning — the target card
-        # will sit in hand collecting $3/round. Only when the round is already won.
-        if can_win_now:
-            for cons_idx, key, max_count, effect_type, extra in tactical:
-                if effect_type != "gold":
-                    continue
-                targets = _find_gold_targets(hand_cards, max_count, current_best)
-                if targets:
-                    label = consumables[cons_idx].get("label", "?")
-                    return UseConsumable(
-                        cons_idx, target_cards=targets,
-                        reason=f"gold junk: {label} on held card (round already won)",
+        # Score each consumable: use_value vs hold_value
+        candidates: list[tuple[int, float, str, Action]] = []
+
+        for i, card in enumerate(consumables):
+            key = card.get("key", "")
+            label = card.get("label", "?")
+
+            # --- Special cases that bypass scoring ---
+
+            # Hex: sell if joker lineup established
+            if key == "c_hex":
+                joker_count = joker_slots.get("count", 0)
+                owned_keys = {j.get("key") for j in jokers}
+                if joker_count >= joker_limit or owned_keys & SCALING_JOKERS or ante >= 5:
+                    reason = "full slots" if joker_count >= joker_limit else (
+                        "scaling joker" if owned_keys & SCALING_JOKERS else f"ante {ante}"
                     )
+                    return SellConsumable(i, reason=f"sell Hex (would destroy joker lineup: {reason})")
 
-        if can_win_now and hands_left > 1:
+            # --- Compute use_value and hold_value ---
+            use_value, action = self._score_use_now(
+                i, key, label, card, state, strat, hand_cards, jokers,
+                hand_levels, current_best, current_score, chips_remaining,
+                can_win_now, desperate, money, discards_left, hands_left,
+                joker_limit, ante,
+            )
+            hold_value = self._score_hold(
+                key, ante, slots_full, desperate, hands_left, discards_left,
+            )
+
+            # Staleness penalty
+            rounds_held = self._held_rounds.get(key, 0)
+            if rounds_held >= 2:
+                hold_value -= (rounds_held - 1) * 0.5
+
+            if use_value > hold_value and action is not None:
+                candidates.append((i, use_value, label, action))
+
+        if not candidates:
+            # Sell stale unknown consumables to free slots
+            if slots_full:
+                all_known = (PLANET_KEYS.keys() | SAFE_CONSUMABLE_TAROTS |
+                             TARGETING_TAROTS.keys() | SAFE_SPECTRAL_CONSUMABLES |
+                             SPECTRAL_TARGETING.keys())
+                for i, card in enumerate(consumables):
+                    key = card.get("key", "")
+                    if key not in all_known:
+                        return SellConsumable(
+                            i, reason=f"sell unknown consumable: {card.get('label', '?')} (freeing slot)",
+                        )
+                # Sell stale consumables held 3+ rounds
+                for i, card in enumerate(consumables):
+                    key = card.get("key", "")
+                    rounds_held = self._held_rounds.get(key, 0)
+                    if rounds_held >= 3:
+                        return SellConsumable(
+                            i, reason=f"sell stale consumable: {card.get('label', '?')} (held {rounds_held} rounds)",
+                        )
             return None
 
-        best_action = None
-        best_new_score = current_score
+        # Pick highest use_value
+        candidates.sort(key=lambda x: -x[1])
+        idx, use_val, label, action = candidates[0]
+        # Track last used tarot/planet so Fool knows what it copies
+        # Fool only copies Tarots and Planets — not Spectrals
+        if isinstance(action, UseConsumable):
+            used_card = consumables[idx]
+            used_key = used_card.get("key", "")
+            used_set = used_card.get("set", "")
+            if used_key and used_key != "c_fool" and used_set in ("TAROT", "PLANET"):
+                self._last_used_consumable = used_key
+        return action
 
-        for cons_idx, key, max_count, effect_type, extra in tactical:
-            label = consumables[cons_idx].get("label", "?")
+    def _score_use_now(
+        self, idx: int, key: str, label: str, card: dict,
+        state: dict, strat: Strategy, hand_cards: list, jokers: list,
+        hand_levels: dict, current_best, current_score: int,
+        chips_remaining: int, can_win_now: bool, desperate: bool,
+        money: int, discards_left: int, hands_left: int,
+        joker_limit: int, ante: int,
+    ) -> tuple[float, Action | None]:
+        """Return (use_value, action) for using this consumable right now."""
+
+        joker_slots = state.get("jokers", {})
+
+        # --- Planet cards: always use immediately ---
+        if key in PLANET_KEYS:
+            hand_type = PLANET_KEYS[key]
+            affinity = strat.hand_affinity(hand_type) if hand_type != "ALL" else 99
+            cur_level = hand_levels.get(hand_type, {}).get("level", 1) if hand_type != "ALL" else 0
+            return (10.0, UseConsumable(
+                idx, reason=f"[PLANET] {label}: {hand_type} lv{cur_level}→lv{cur_level+1} (affinity={affinity:.0f})",
+            ))
+
+        # --- Safe no-target tarots: use immediately ---
+        if key in SAFE_CONSUMABLE_TAROTS:
+            if key == "c_judgement":
+                if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
+                    return (0.0, None)
+            if key == "c_wheel_of_fortune":
+                if joker_slots.get("count", 0) == 0:
+                    return (0.0, None)
+            if key == "c_fool":
+                if not self._last_used_consumable:
+                    return (0.0, None)  # nothing used yet — API will reject
+                # Score Fool as whatever it copies
+                value = score_consumable(self._last_used_consumable, state, strat)
+                return (value, UseConsumable(
+                    idx, reason=f"use Fool (copies {self._last_used_consumable}, value={value:.1f})",
+                ))
+            value = score_consumable(key, state, strat)
+            return (value, UseConsumable(idx, reason=f"use tarot: {label} (value={value:.1f})"))
+
+        # --- Safe spectral cards ---
+        if key in SAFE_SPECTRAL_CONSUMABLES:
+            if key in ("c_ankh", "c_hex") and not jokers:
+                return (0.0, None)
+            if key == "c_ankh" and joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
+                return (0.0, None)
+            if key == "c_wraith" and joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
+                return (0.0, None)
+            if key == "c_ectoplasm" and ante < 3:
+                return (0.0, None)
+            return (5.0, UseConsumable(idx, reason=f"use spectral: {label}"))
+
+        # --- Targeting tarots/spectrals ---
+        if not hand_cards:
+            return (0.0, None)
+
+        # Check Tarots
+        if key in TARGETING_TAROTS:
+            max_count, effect_type, extra = TARGETING_TAROTS[key]
+            return self._score_targeting_use(
+                idx, key, label, max_count, effect_type, extra,
+                state, strat, hand_cards, jokers, hand_levels,
+                current_best, current_score, chips_remaining,
+                can_win_now, desperate, money, discards_left, hands_left,
+                joker_limit, ante,
+            )
+
+        # Check Spectral targeting
+        if key in SPECTRAL_TARGETING:
+            max_count, effect_type, extra = SPECTRAL_TARGETING[key]
+            targets, score = _find_tarot_targets(
+                effect_type, extra, max_count, hand_cards, jokers, strat,
+                current_best=current_best,
+            )
+            if targets:
+                return (score, UseConsumable(
+                    idx, target_cards=targets,
+                    reason=f"use spectral: {label} -> targets {targets}",
+                ))
+
+        return (0.0, None)
+
+    def _score_targeting_use(
+        self, idx: int, key: str, label: str,
+        max_count: int, effect_type: str, extra: str | None,
+        state: dict, strat: Strategy, hand_cards: list, jokers: list,
+        hand_levels: dict, current_best, current_score: int,
+        chips_remaining: int, can_win_now: bool, desperate: bool,
+        money: int, discards_left: int, hands_left: int,
+        joker_limit: int, ante: int,
+    ) -> tuple[float, Action | None]:
+        """Score and return action for a targeting tarot."""
+
+        # --- Immediate-use targeting (destroy, clone, stone, rank_up) ---
+        if effect_type in IMMEDIATE_TARGETING:
+            # Death tarot: rearrange hand if needed
+            if effect_type == "clone":
+                result = _find_clone_targets(hand_cards, strat)
+                if result is None:
+                    return (0.0, None)
+                best_idx, worst_idx = result
+                if best_idx > worst_idx:
+                    order = list(range(len(hand_cards)))
+                    order.remove(best_idx)
+                    insert_pos = order.index(worst_idx)
+                    order.insert(insert_pos, best_idx)
+                    return (4.0, RearrangeHand(
+                        order=order,
+                        reason=f"rearrange for Death: move {hand_cards[best_idx].get('label','?')} left of {hand_cards[worst_idx].get('label','?')}",
+                    ))
+                return (4.0, UseConsumable(
+                    idx, target_cards=[best_idx, worst_idx],
+                    reason=f"Death: clone {hand_cards[best_idx].get('label','?')} onto {hand_cards[worst_idx].get('label','?')}",
+                ))
+
+            targets, score = _find_tarot_targets(
+                effect_type, extra, max_count, hand_cards, jokers, strat,
+                current_best=current_best,
+            )
+            if targets:
+                return (score, UseConsumable(
+                    idx, target_cards=targets,
+                    reason=f"use tarot: {label} -> targets {targets}",
+                ))
+            return (0.0, None)
+
+        # --- Tactical targeting (suit_convert, glass, enhance, gold) ---
+
+        # Gold enhancement: fire when round already won
+        if effect_type == "gold":
+            if can_win_now:
+                targets = _find_gold_targets(hand_cards, max_count, current_best)
+                if targets:
+                    return (4.0, UseConsumable(
+                        idx, target_cards=targets,
+                        reason=f"gold junk: {label} on held card (round already won)",
+                    ))
+            return (0.0, None)
+
+        # Suit conversions: fire when it creates a meaningful improvement
+        if effect_type == "suit_convert":
+            result = self._eval_suit_convert(
+                hand_cards, hand_levels, jokers, extra, max_count,
+                current_score, strat, money, discards_left, hands_left,
+                joker_limit=joker_limit,
+            )
+            if result:
+                new_score, targets = result
+                improvement = new_score / max(current_score, 1)
+                if improvement > 1.2 or desperate:
+                    return (improvement * 3.0, UseConsumable(
+                        idx, target_cards=targets,
+                        reason=f"tactical: {label} -> Flush ({new_score} vs {current_score}, {hands_left}h left)",
+                    ))
+            return (0.0, None)
+
+        # Enhancements and Glass: use based on ante timing
+        if effect_type in ("glass", "enhance"):
+            # Ante-based timing from the plan
+            if ante <= 3:
+                # Early game: fire freely — deck improvements compound
+                threshold = 1.0
+            elif ante <= 5:
+                # Mid game: need meaningful improvement
+                threshold = 1.2
+            else:
+                # Late game: only when desperate or huge improvement
+                if not desperate:
+                    return (0.0, None)
+                threshold = 1.0
+
+            if effect_type == "glass":
+                result = self._eval_glass(hand_cards, hand_levels, jokers, current_best, current_score)
+                if result:
+                    new_score, targets = result
+                    improvement = new_score / max(current_score, 1)
+                    if improvement >= threshold or desperate:
+                        return (improvement * 3.0, UseConsumable(
+                            idx, target_cards=targets,
+                            reason=f"{'desperate' if desperate else 'tactical'}: Glass (×{improvement:.1f}, {hands_left}h left)",
+                        ))
+            else:
+                result = self._eval_enhancement(
+                    hand_cards, hand_levels, jokers, current_best, current_score,
+                    extra, max_count,
+                )
+                if result:
+                    new_score, targets = result
+                    improvement = new_score / max(current_score, 1)
+                    if improvement >= threshold or desperate:
+                        return (improvement * 3.0, UseConsumable(
+                            idx, target_cards=targets,
+                            reason=f"{'desperate' if desperate else 'tactical'}: {label} ({extra}) (×{improvement:.1f}, {hands_left}h left)",
+                        ))
+
+        return (0.0, None)
+
+    def _score_hold(
+        self, key: str, ante: int, slots_full: bool,
+        desperate: bool, hands_left: int, discards_left: int,
+    ) -> float:
+        """Score the value of holding this consumable for later."""
+        # Planets: always use immediately
+        if key in PLANET_KEYS:
+            return 0.0
+        # No-target tarots: always use immediately
+        if key in SAFE_CONSUMABLE_TAROTS:
+            return 0.0
+        # Spectrals: always use immediately
+        if key in SAFE_SPECTRAL_CONSUMABLES:
+            return 0.0
+
+        # Tactical consumables: hold value depends on ante timing
+        hold = 0.0
+
+        if key in TARGETING_TAROTS:
+            _, effect_type, extra = TARGETING_TAROTS[key]
 
             if effect_type == "suit_convert":
-                # Suit conversions are time-sensitive: the hand setup (4 of a suit)
-                # may not recur. Use whenever it creates a Flush improvement.
-                result = self._eval_suit_convert(
-                    hand_cards, hand_levels, jokers, extra, max_count,
-                    current_score, strat, money, discards_left, hands_left,
-                    joker_limit=joker_limit,
-                )
-                if result and result[0] > best_new_score:
-                    best_new_score, targets = result
-                    best_action = UseConsumable(
-                        cons_idx, target_cards=targets,
-                        reason=f"tactical: {label} -> Flush ({best_new_score} vs {current_score}, {hands_left}h left)",
-                    )
+                # Worth holding if we have discards (might draw into flush)
+                hold = 2.0 if discards_left > 0 else 0.5
 
             elif effect_type in ("glass", "enhance"):
-                # Permanent enhancements: save until desperate or last hand.
-                # They improve the deck long-term, so don't burn early.
-                if not desperate:
-                    continue
-
-                if effect_type == "glass":
-                    result = self._eval_glass(
-                        hand_cards, hand_levels, jokers, current_best, current_score,
-                    )
-                    if result and result[0] > best_new_score:
-                        best_new_score, targets = result
-                        best_action = UseConsumable(
-                            cons_idx, target_cards=targets,
-                            reason=f"desperate: Glass on face card ({best_new_score} vs {current_score}, {hands_left}h left)",
-                        )
+                # Early: low hold value (use freely, compound)
+                # Late: high hold value (wait for best target)
+                if ante <= 3:
+                    hold = 1.0
+                elif ante <= 5:
+                    hold = 2.0
                 else:
-                    enhancement = extra
-                    result = self._eval_enhancement(
-                        hand_cards, hand_levels, jokers, current_best, current_score,
-                        enhancement, max_count,
-                    )
-                    if result and result[0] > best_new_score:
-                        best_new_score, targets = result
-                        best_action = UseConsumable(
-                            cons_idx, target_cards=targets,
-                            reason=f"desperate: {label} ({enhancement}) ({best_new_score} vs {current_score}, {hands_left}h left)",
-                        )
+                    hold = 3.0
 
-        # Suit conversions still need to clear the improvement bar.
-        # Desperate enhancements just need to be better than current.
-        if best_action and best_new_score > current_score * self.MIN_IMPROVEMENT:
-            return best_action
+            elif effect_type == "gold":
+                # Hold until winning
+                hold = 2.0
 
-        return None
+            else:
+                # Immediate-use tarots (destroy, clone, etc)
+                hold = 0.0
+
+        # Slot pressure: holding a mediocre card blocks better purchases
+        if slots_full:
+            hold -= 2.0
+
+        return hold
+
+    # --- Evaluation helpers (preserved from UseTacticalConsumables) ---
 
     def _eval_suit_convert(
         self, hand_cards, hand_levels, jokers, target_suit, max_count,
@@ -319,7 +418,6 @@ class UseTacticalConsumables:
         joker_limit: int = 5,
     ) -> tuple[int, list[int]] | None:
         """Would converting cards to target_suit create a Flush?"""
-        # Count how many cards already match the target suit
         matching = []
         non_matching = []
         for i, c in enumerate(hand_cards):
@@ -329,15 +427,12 @@ class UseTacticalConsumables:
             elif card_suit(c) is not None:
                 non_matching.append(i)
 
-        # Need at least 3 matching + enough convertible to reach 5
         needed = 5 - len(matching)
         if needed <= 0:
-            return None  # already have a flush
+            return None
         if needed > min(max_count, len(non_matching)):
-            return None  # can't convert enough
+            return None
 
-        # Pick low-affinity, low-value non-matching cards to convert
-        # (protect high-affinity ranks even if they're the wrong suit)
         rank_aff = strat.rank_affinity_dict() if strat else {}
         non_matching.sort(key=lambda i: (
             rank_aff.get(card_rank(hand_cards[i]) or "", 0.0),
@@ -345,7 +440,6 @@ class UseTacticalConsumables:
         ))
         targets = non_matching[:needed]
 
-        # Simulate: what would the Flush score?
         flush_cards = matching[:5 - needed]
         flush_cards.extend(targets)
         flush_cards = flush_cards[:5]
@@ -367,13 +461,19 @@ class UseTacticalConsumables:
         if not current_best:
             return None
 
-        # Find face cards in the best hand's scoring cards that aren't enhanced
         for idx in current_best.card_indices:
             c = hand_cards[idx]
             r = card_rank(c)
             if r in FACE_RANKS_TAROT and not _modifier(c).get("enhancement"):
-                # Glass gives ×2 mult when scored — rough estimate: double the score
-                estimated_new = int(current_score * 1.8)  # conservative estimate
+                estimated_new = int(current_score * 1.8)
+                return (estimated_new, [idx])
+
+        # Also check non-face cards if no face cards available
+        for idx in current_best.card_indices:
+            c = hand_cards[idx]
+            r = card_rank(c)
+            if r and not _modifier(c).get("enhancement"):
+                estimated_new = int(current_score * 1.6)
                 return (estimated_new, [idx])
 
         return None
@@ -386,40 +486,40 @@ class UseTacticalConsumables:
         if not current_best:
             return None
 
-        # Wild (Lovers) is special — check if it would enable a Flush
+        # Wild (Lovers): check if it enables a Flush
         if enhancement == "Wild":
-            # A Wild card counts as ALL suits. Check if we're 1 card away from Flush
             fd = flush_draw(hand_cards)
             if fd and len(fd) >= 4:
-                # Find a non-matching card in hand that isn't already Wild
                 for i, c in enumerate(hand_cards):
                     if i not in fd and not _modifier(c).get("enhancement"):
-                        # Making this Wild would complete the flush possibility
                         estimated = int(current_score * 1.5)
                         return (estimated, [i])
 
-        # Steel — value comes from cards held in hand (NOT played). Apply to highest-rank
-        # unenhanced card that will stay in hand this round, so it contributes ×1.5 mult NOW.
+        # Steel: apply to highest-rank held (not played) card
         if enhancement == "Steel":
             scoring_set = set(current_best.card_indices)
             held = [i for i, c in enumerate(hand_cards)
                     if i not in scoring_set and not _modifier(c).get("enhancement")]
             if held:
-                RANK_ORDER = ["2","3","4","5","6","7","8","9","T","J","Q","K","A"]
+                RANK_ORDER = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"]
                 held.sort(key=lambda i: RANK_ORDER.index(card_rank(hand_cards[i]))
                           if card_rank(hand_cards[i]) in RANK_ORDER else -1, reverse=True)
-                estimated = int(current_score * 1.5)  # ×1.5 mult per Steel held
+                estimated = int(current_score * 1.5)
                 return (estimated, held[:max_count])
             return None
 
-        # For other enhancements, apply to highest-value non-enhanced scoring card
+        # Other enhancements: apply to highest-value scoring card
         targets = _find_enhancement_targets(hand_cards, max_count)
         if targets:
-            # Check if target is in the current best hand (about to be played)
             scoring_set = set(current_best.card_indices)
             relevant = [t for t in targets if t in scoring_set]
             if relevant:
-                estimated = int(current_score * 1.2)  # modest boost
+                estimated = int(current_score * 1.2)
                 return (estimated, relevant[:max_count])
 
         return None
+
+
+# Keep old names as aliases for backwards compatibility during transition
+UseImmediateConsumables = UseConsumables
+UseTacticalConsumables = UseConsumables

@@ -16,7 +16,7 @@ from balatro_bot.rules import (
     AlwaysCashOut,
     SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
     PickFromBuffoonPack, PickFromSpectralPack, PickBestFromPack,
-    UseImmediateConsumables, UseTacticalConsumables,
+    UseConsumables,
 )
 
 if TYPE_CHECKING:
@@ -27,10 +27,9 @@ if TYPE_CHECKING:
 DEFAULT_RULES: dict[str, list[Rule]] = {
     "SELECTING_HAND": [
         VerdantLeafUnlock(),
-        UseImmediateConsumables(),
+        UseConsumables(),
         MilkScalingJokers(),
         ReorderJokersForCeremonial(),
-        UseTacticalConsumables(),
         SellLuchador(),
         PlayWinningHand(),
         DiscardToImprove(),

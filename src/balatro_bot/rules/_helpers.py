@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import card_rank, card_suit, card_suits, rank_value, is_debuffed, _modifier
 from balatro_bot.constants import (
     FEWER_CARDS_JOKERS, ALL_SCORE_JOKERS, EXACT_4_JOKERS,
-    FACE_RANKS_TAROT,
+    FACE_RANKS_TAROT, PLANET_KEYS, NO_TARGET_TAROTS, TARGETING_TAROTS,
+    SCALING_JOKERS,
 )
 
 if TYPE_CHECKING:
     from typing import Any
+    from balatro_bot.strategy import Strategy
+
+log = logging.getLogger("balatro_bot")
 
 
 def _pad_with_junk(
@@ -271,3 +276,137 @@ def _find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, strat
         targets = _find_clone_deck_targets(hand_cards, max_count, current_best)
         return (targets, 1.5) if targets else (None, 0)
     return (None, 0)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic consumable value scoring
+# ---------------------------------------------------------------------------
+
+
+def score_consumable(
+    key: str,
+    state: dict[str, Any],
+    strat: Strategy | None = None,
+) -> float:
+    """Score a consumable by key, accounting for game state.
+
+    Used by buy, use, and pack pick logic for consistent valuation.
+    Returns a float where higher = more valuable. 0 or negative = skip.
+    """
+    jokers = state.get("jokers", {}).get("cards", [])
+    joker_slots = state.get("jokers", {})
+    money = state.get("money", 0)
+    ante = state.get("ante_num", 1)
+
+    # --- Planet cards ---
+    if key in PLANET_KEYS:
+        hand_type = PLANET_KEYS[key]
+        if hand_type == "ALL":
+            return 8.0  # Black Hole — always top priority
+        hand_levels = state.get("hands", {})
+        has_constellation = any(j.get("key") == "j_constellation" for j in jokers)
+        affinity = strat.hand_affinity(hand_type) if strat else 0.0
+        if affinity > 0:
+            score = 5.0 + affinity
+            if has_constellation:
+                score += 2.0
+            return score
+        if has_constellation:
+            return 3.0  # every planet = +0.1 xmult
+        return 0.0  # off-strategy, no constellation
+
+    # --- No-target tarots ---
+    if key == "c_judgement":
+        slots_open = joker_slots.get("count", 0) < joker_slots.get("limit", 5)
+        return 6.0 if slots_open else 0.0
+    if key == "c_high_priestess":
+        return 5.0
+    if key == "c_hermit":
+        return min(money, 20) / 4.0
+    if key == "c_emperor":
+        cons = state.get("consumables", {})
+        slots_open = cons.get("count", 0) < cons.get("limit", 2)
+        return 3.0 if slots_open else 1.0
+    if key == "c_temperance":
+        total_sell = sum(
+            j.get("cost", {}).get("sell", 0) if isinstance(j.get("cost"), dict) else 0
+            for j in jokers
+        )
+        return min(total_sell, 20) / 4.0
+    if key == "c_wheel_of_fortune":
+        n_jokers = len(jokers)
+        return 3.0 if n_jokers >= 3 else (1.5 if n_jokers >= 1 else 0.0)
+    if key == "c_fool":
+        # Fool copies the last tarot/planet used. For buy/pack decisions we
+        # don't know what it'll copy — give it a modest base value since it
+        # has potential. Actual use decisions are handled in UseConsumables
+        # which tracks _last_used_consumable and scores Fool dynamically.
+        return 1.5
+
+    # --- Targeting tarots ---
+    if key in TARGETING_TAROTS:
+        max_count, effect_type, extra = TARGETING_TAROTS[key]
+        return _score_targeting_tarot(key, effect_type, extra, state, strat)
+
+    # Unknown consumable
+    return 0.0
+
+
+def _score_targeting_tarot(
+    key: str,
+    effect_type: str,
+    extra: str | None,
+    state: dict[str, Any],
+    strat: Strategy | None,
+) -> float:
+    """Score a targeting tarot based on effect type and game state."""
+    ante = state.get("ante_num", 1)
+    # Estimate remaining rounds: (8 - ante) * 3 rounds per ante (rough)
+    remaining_rounds = max(1, (8 - ante) * 3)
+
+    if effect_type == "clone":
+        # Death: score gap between best and worst card — higher gap = more value
+        return 4.0
+
+    if effect_type == "destroy":
+        # Hanged Man: deck thinning — more valuable early (more draws to benefit)
+        return 3.0 if ante <= 4 else 2.0
+
+    if effect_type == "glass":
+        # Justice: x2 mult on scoring card — always strong
+        return 4.5
+
+    if effect_type == "suit_convert":
+        # Suit conversions: value depends on suit affinity
+        suit_aff = strat.suit_affinity(extra) if strat and extra else 0.0
+        if suit_aff <= 0:
+            return 0.5  # no suit strategy — low value
+        return 2.0 + suit_aff
+
+    if effect_type == "enhance":
+        # Enhancements by type
+        enhance_scores = {
+            "Lucky": 3.5, "Steel": 3.0, "Mult": 2.5,
+            "Bonus": 2.0, "Wild": 2.5, "Gold": 0.0,  # Gold scored separately
+        }
+        base = enhance_scores.get(extra, 2.0)
+        # Enhancements compound — more valuable early
+        if ante <= 3:
+            base *= 1.3
+        return base
+
+    if effect_type == "gold":
+        # Devil: $3 per round remaining on a held card
+        return remaining_rounds * 3 / 4.0
+
+    if effect_type == "stone":
+        # Tower: niche — only good with Stone Joker
+        has_stone_joker = any(j.get("key") == "j_stone"
+                             for j in state.get("jokers", {}).get("cards", []))
+        return 3.0 if has_stone_joker else 1.0
+
+    if effect_type == "rank_up":
+        # Strength: situational, can damage rank affinity
+        return 1.0
+
+    return 1.5  # fallback for other effect types

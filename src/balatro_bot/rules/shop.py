@@ -1114,50 +1114,14 @@ class BuyJokersInShop:
 
 
 class BuyConsumablesInShop:
-    """Buy Planet cards and useful Tarots from the shop."""
+    """Buy consumables from the shop using dynamic value scoring."""
     name = "buy_consumables_in_shop"
 
     INTEREST_CAP = 25
 
-    # Planet card keys -> hand type they level (for strategy-aware buying)
-    PLANET_KEYS = {
-        "c_mercury": "Pair", "c_venus": "Three of a Kind", "c_earth": "Full House",
-        "c_mars": "Four of a Kind", "c_jupiter": "Flush", "c_saturn": "Straight",
-        "c_uranus": "Two Pair", "c_neptune": "Straight Flush", "c_pluto": "High Card",
-        "c_planet_x": "Five of a Kind", "c_ceres": "Flush House", "c_eris": "Flush Five",
-        "c_black_hole": "ALL",
-    }
-
-    # No-target Tarots worth buying from shop
-    GOOD_TAROTS = {
-        "c_judgement",         # creates random Joker
-        "c_high_priestess",   # creates 2 random Planets
-        "c_hermit",           # doubles money (max $20)
-        "c_emperor",          # creates 2 random Tarots
-        "c_wheel_of_fortune", # free edition on random joker
-        "c_temperance",       # money = total joker sell value (up to $20)
-        "c_fool",             # copy of last tarot/planet used
-    }
-
-    # Targeting Tarots worth buying — Glass and suit conversions are high value
-    GOOD_TARGETING_TAROTS = {
-        "c_justice": 3,    # Glass — ×2 mult on face cards, very strong
-        "c_death": 3,      # Clone best card onto worst — strong deck improvement
-        "c_hanged_man": 4, # Destroy 2 cards — deck thinning, rank-affinity aware
-        "c_star": 4,       # Suit conversions — strategy-dependent
-        "c_moon": 4,
-        "c_sun": 4,
-        "c_world": 4,
-        "c_lovers": 4,     # Enhancements — always useful
-        "c_chariot": 4,
-        "c_hierophant": 4,
-        "c_empress": 4,
-        "c_magician": 4,
-        "c_devil": 4,
-        "c_strength": 5,   # Rank up — situational
-    }
-
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        from balatro_bot.rules._helpers import score_consumable
+
         money = state.get("money", 0)
         shop = state.get("shop", {})
         consumables = state.get("consumables", {})
@@ -1171,7 +1135,7 @@ class BuyConsumablesInShop:
         strat = compute_strategy(jokers, hand_levels)
 
         best_idx = None
-        best_priority = 999
+        best_value = 0.0
         best_cost = 0
         best_label = ""
         passed_on: list[str] = []
@@ -1182,35 +1146,20 @@ class BuyConsumablesInShop:
             card_set = card.get("set", "")
             cost = card.get("cost", {}).get("buy", 999)
 
-            # Planet cards — on-strategy priority 1, off-strategy skip
-            if key in self.PLANET_KEYS or card_set == "PLANET":
-                hand_type = self.PLANET_KEYS.get(key)
-                has_constellation = any(j.get("key") == "j_constellation" for j in jokers)
-                if hand_type == "ALL":
-                    priority = 1  # Black Hole — always buy
-                elif hand_type and strat.hand_affinity(hand_type) > 0:
-                    priority = 1  # levels a hand we care about
-                elif has_constellation:
-                    priority = 2  # Constellation: every planet = +0.1 xmult
-                else:
-                    passed_on.append(f"{label}({hand_type}, off-strategy)")
-                    continue
-            # Good no-target Tarots — priority 2
-            elif key in self.GOOD_TAROTS:
-                priority = 2
-            # Good targeting Tarots — priority 3-5
-            elif key in self.GOOD_TARGETING_TAROTS:
-                priority = self.GOOD_TARGETING_TAROTS[key]
-            else:
-                if card_set in ("TAROT", "PLANET", "SPECTRAL"):
-                    passed_on.append(f"{label}(not in buy list)")
+            # Only score consumable-type cards
+            if card_set not in ("TAROT", "PLANET", "SPECTRAL") and key not in PLANET_KEYS:
+                continue
+
+            value = score_consumable(key, state, strat)
+            if value <= 0:
+                passed_on.append(f"{label}(value={value:.1f})")
                 continue
 
             if cost > money:
                 passed_on.append(f"{label}(${cost}, can't afford)")
                 continue
 
-            # Respect interest below cap (planets are cheap, usually $3-4)
+            # Respect interest below cap
             current_interest = min(money // 5, 5)
             if money < self.INTEREST_CAP:
                 interest_after = min((money - cost) // 5, 5)
@@ -1218,16 +1167,17 @@ class BuyConsumablesInShop:
                     passed_on.append(f"{label}(${cost}, saving for interest)")
                     continue
 
-            if priority < best_priority or (priority == best_priority and cost < best_cost):
-                best_priority = priority
+            if value > best_value or (value == best_value and cost < best_cost):
+                best_value = value
                 best_idx = i
                 best_cost = cost
-                best_label = card.get("label", "?")
+                best_label = label
 
         if best_idx is not None:
+            log.info("[SHOP] buy consumable: %s ($%d, value=%.1f)", best_label, best_cost, best_value)
             return BuyCard(
                 best_idx,
-                reason=f"buy consumable: {best_label} for ${best_cost} (${money}->${money - best_cost})",
+                reason=f"buy consumable: {best_label} for ${best_cost} (value={best_value:.1f}, ${money}->${money - best_cost})",
             )
         if passed_on:
             log.info("Passed on consumables: %s", ", ".join(passed_on))

@@ -16,7 +16,7 @@ from balatro_bot.rules.packs import (
     SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
     PickFromBuffoonPack, PickFromSpectralPack, PickBestFromPack,
 )
-from balatro_bot.rules.consumables import UseImmediateConsumables, UseTacticalConsumables
+from balatro_bot.rules.consumables import UseConsumables, UseImmediateConsumables, UseTacticalConsumables
 
 __all__ = [
     "VerdantLeafUnlock", "MilkScalingJokers", "SellLuchador", "PlayWinningHand",
@@ -29,5 +29,5 @@ __all__ = [
     "AlwaysCashOut",
     "SkipPackForRedCard", "PickFromTarotPack", "PickFromPlanetPack",
     "PickFromBuffoonPack", "PickFromSpectralPack", "PickBestFromPack",
-    "UseImmediateConsumables", "UseTacticalConsumables",
+    "UseConsumables", "UseImmediateConsumables", "UseTacticalConsumables",
 ]
