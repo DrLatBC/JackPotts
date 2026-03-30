@@ -185,7 +185,7 @@ def compute_session_number() -> int:
 
 class Supervisor:
     def __init__(self, n: int, games: int, decks: list[str], stake: str,
-                 seed: str | None):
+                 seed: str | None, verbose: bool = False):
         taken: set[str] = set()
         slots = []
         for i in range(n):
@@ -197,6 +197,7 @@ class Supervisor:
         self.decks = decks  # rotated across slots
         self.stake = stake
         self.seed = seed
+        self.verbose = verbose
         self.running = True
         self.session_num = 0
 
@@ -266,6 +267,8 @@ class Supervisor:
         ]
         if self.seed:
             cmd.extend(["--seed", self.seed])
+        if self.verbose:
+            cmd.append("--verbose")
         slot.bot_proc = subprocess.Popen(
             cmd,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
@@ -443,6 +446,8 @@ def main() -> None:
     parser.add_argument("--seed", default=None, help="Game seed")
     parser.add_argument("--kill", action="store_true",
                         help="Kill all existing bot/balatro processes and exit")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Pass --verbose to bot instances (DEBUG logging)")
     args = parser.parse_args()
 
     if args.kill:
@@ -458,6 +463,7 @@ def main() -> None:
         decks=decks,
         stake=args.stake,
         seed=args.seed,
+        verbose=args.verbose,
     )
 
     def on_sigint(sig, frame):

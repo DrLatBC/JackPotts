@@ -51,9 +51,13 @@ def apply_joker_effects(ctx: ScoreContext) -> None:
             effect(ctx, joker)
 
 
-def apply_joker_effects_detailed(ctx: ScoreContext) -> list[tuple[str, float, float]]:
-    """Like apply_joker_effects, but returns per-joker (label, delta_chips, delta_mult)."""
-    contributions = []
+def apply_joker_effects_detailed(ctx: ScoreContext) -> list[tuple[str, float, float, float]]:
+    """Like apply_joker_effects, but returns per-joker (label, delta_chips, delta_mult, xmult_factor).
+
+    xmult_factor is the multiplicative ratio (e.g. 2.0 means mult was doubled).
+    A value of 1.0 means no xmult was applied (change was additive only).
+    """
+    contributions: list[tuple[str, float, float, float]] = []
     for joker in ctx.jokers:
         key = joker.get("key", "")
         label = joker.get("label", key)
@@ -61,9 +65,12 @@ def apply_joker_effects_detailed(ctx: ScoreContext) -> list[tuple[str, float, fl
         if effect is not None:
             pre_chips, pre_mult = ctx.chips, ctx.mult
             effect(ctx, joker)
-            contributions.append((
-                label,
-                ctx.chips - pre_chips,
-                ctx.mult - pre_mult,
-            ))
+            dc = ctx.chips - pre_chips
+            dm = ctx.mult - pre_mult
+            # Detect xmult: if mult changed multiplicatively (ratio != 1 + additive)
+            if pre_mult > 0 and dm != 0:
+                xmult = ctx.mult / pre_mult
+            else:
+                xmult = 1.0
+            contributions.append((label, dc, dm, xmult))
     return contributions

@@ -136,26 +136,33 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
         cards_str = ", ".join(fmt_card(c) for c in played)
 
         joker_parts = []
-        for label, dc, dm in detail["joker_contributions"]:
+        for entry in detail["joker_contributions"]:
+            label, dc, dm = entry[0], entry[1], entry[2]
+            xm = entry[3] if len(entry) > 3 else 1.0
             parts = []
             if dc:
                 parts.append(f"+{dc:.0f}c")
-            if dm:
+            # Show xmult as multiplier if it's clearly multiplicative (ratio > 1.1 or < 0.9)
+            if xm > 1.01 or xm < 0.99:
+                parts.append(f"x{xm:.2f}")
+            elif dm:
                 parts.append(f"+{dm:.1f}m")
             if parts:
                 joker_parts.append(f"{label}({', '.join(parts)})")
         joker_str = ", ".join(joker_parts) if joker_parts else "none"
 
         mismatch = ""
-        if actual_reliable and detail["total"] != actual_chips:
+        is_mismatch = actual_reliable and detail["total"] != actual_chips
+        if is_mismatch:
             mismatch = f" MISMATCH(diff={actual_chips - detail['total']:+d})"
         elif not actual_reliable:
             mismatch = " (actual unreliable)"
 
+        scoring_str = ", ".join(fmt_card(c) for c in scoring)
         _scoring_log.info(
-            "%s [%s] | base: %d/%d | pre-joker: %d/%.1f | jokers: [%s] | "
+            "%s [%s] scoring=[%s](%d) | base: %d/%d | pre-joker: %d/%.1f | jokers: [%s] | "
             "final: %d/%.1f | est=%d actual=%d%s",
-            detail["hand_name"], cards_str,
+            detail["hand_name"], cards_str, scoring_str, len(scoring),
             detail["base_chips"], detail["base_mult"],
             detail["pre_joker_chips"], detail["pre_joker_mult"],
             joker_str,
@@ -163,6 +170,53 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
             detail["total"], actual_chips,
             mismatch,
         )
+
+        # On mismatch, dump per-card scoring breakdown and raw card data
+        if is_mismatch:
+            from balatro_bot.cards import card_chip_value, card_mult_value, card_xmult_value, _modifier
+            for i, c in enumerate(scoring):
+                mod = _modifier(c)
+                rank = c.get("value", {}).get("rank", "?")
+                suit = c.get("value", {}).get("suit", "?")
+                enh = mod.get("enhancement", "")
+                edition = mod.get("edition", "")
+                seal = mod.get("seal", "")
+                debuff = c.get("state", {})
+                if isinstance(debuff, dict):
+                    debuff = debuff.get("debuff", False)
+                else:
+                    debuff = False
+                chips = card_chip_value(c)
+                mult = card_mult_value(c)
+                xmult = card_xmult_value(c)
+                perma = c.get("value", {}).get("perma_bonus", 0) or 0
+                _scoring_log.info(
+                    "  card[%d] %s %s%s | chips=%d mult=%.1f xmult=%.2f | "
+                    "enh=%s ed=%s seal=%s debuff=%s perma=%d | raw_mod=%s",
+                    i, rank, suit,
+                    " (SCORING)" if c in scoring else "",
+                    chips, mult, xmult,
+                    enh or "-", edition or "-", seal or "-", debuff, perma,
+                    mod,
+                )
+            # Also dump held cards if any have steel
+            for i, c in enumerate(snapshot["held"]):
+                mod_h = _modifier(c)
+                if mod_h.get("enhancement") == "STEEL":
+                    _scoring_log.info(
+                        "  held[%d] STEEL %s %s | xmult=1.5",
+                        i, c.get("value", {}).get("rank", "?"),
+                        c.get("value", {}).get("suit", "?"),
+                    )
+            # Dump raw joker ability data so we can see what the API provides
+            for i, j in enumerate(snapshot["jokers"]):
+                ability = j.get("value", {}).get("ability", {})
+                effect = j.get("value", {}).get("effect", "")
+                _scoring_log.info(
+                    "  joker[%d] %s | ability=%s | effect=%s",
+                    i, j.get("key", "?"), ability,
+                    effect[:120] if effect else "-",
+                )
     except Exception as e:
         _scoring_log.warning("scoring log error: %s", e)
 
@@ -249,6 +303,10 @@ def run_bot(
                 cur_ante, state.get("round_num", "?"),
                 state.get("seed", "?"),
             )
+            # TEMP: bail out of endless mode — balatrobot mod has pack/buy
+            # timeouts after G.GAME.won that cause 30s hangs on every action.
+            # Remove this once the mod's post-win event handling is fixed.
+            break
 
         # Log when state.won fires (may be premature due to Hieroglyph)
         if state.get("won") and not won_logged:
@@ -309,21 +367,10 @@ def run_bot(
         # Track highest chips seen during this blind (capture before round resets)
         cur_chips = state.get("round", {}).get("chips", 0)
         if cur_chips > 0 or game_state in ("SELECTING_HAND", "HAND_PLAYED", "ROUND_EVAL"):
-            log.debug("[CHIPS_DBG] state=%s round=%s chips=%s max=%s blind=%s",
-                      game_state, round_num, cur_chips, max_chips_this_blind, current_blind_name)
+            log.info("[CHIPS_DBG] state=%s round=%s chips=%s max=%s blind=%s",
+                     game_state, round_num, cur_chips, max_chips_this_blind, current_blind_name)
         if cur_chips > max_chips_this_blind:
             max_chips_this_blind = cur_chips
-        if last_round is not None and round_num != last_round and current_blind_name:
-            log.info(
-                "[ROUND] %s: scored %s / needed %s — WON | %d hands, %d discards",
-                current_blind_name, f"{max_chips_this_blind:,}",
-                f"{current_blind_target:,}" if isinstance(current_blind_target, int) else current_blind_target,
-                total_hands_played - hands_at_blind_start,
-                total_discards_used - discards_at_blind_start,
-            )
-            current_blind_name = None
-            current_blind_target = None
-            max_chips_this_blind = 0
         last_round = round_num
 
         if game_state in ("HAND_PLAYED", "DRAW_TO_HAND", "NEW_ROUND", "SPLASH", "TUTORIAL"):
@@ -377,6 +424,15 @@ def run_bot(
                     if isinstance(b, dict) and b.get("status") in ("SELECT", "CURRENT"):
                         name = b.get("name", "?")
                         score = b.get("score", "?")
+                        # Log previous blind summary before overwriting
+                        if current_blind_name and max_chips_this_blind > 0:
+                            log.info(
+                                "[ROUND] %s: scored %s / needed %s — WON | %d hands, %d discards",
+                                current_blind_name, f"{max_chips_this_blind:,}",
+                                f"{current_blind_target:,}" if isinstance(current_blind_target, int) else current_blind_target,
+                                total_hands_played - hands_at_blind_start,
+                                total_discards_used - discards_at_blind_start,
+                            )
                         log.info("Blind: %s (need %s chips)", name, score)
                         current_blind_name = name
                         current_blind_target = score
@@ -499,16 +555,36 @@ def run_bot(
 
             consecutive_errors = 0
         except httpx.TimeoutException:
-            raise
+            log.warning("Timeout on %s — re-polling gamestate", method)
+            try:
+                state = client.call("gamestate")
+                # Check if game ended during the timeout
+                if state.get("state") == "GAME_OVER":
+                    break
+                continue
+            except httpx.TimeoutException:
+                log.error("Double timeout — server unresponsive, aborting")
+                raise
         except APIError as e:
             consecutive_errors += 1
             log.warning("API error: %s (%s) — retry %d", e.message, e.name, consecutive_errors)
+
+            # If a consumable use was rejected, clear Fool tracking so
+            # the rule engine doesn't keep trying the same consumable.
+            if method == "use" and e.name == "NOT_ALLOWED":
+                for rule in engine.rules.get(game_state, []):
+                    if hasattr(rule, "_last_used_consumable"):
+                        rule._last_used_consumable = None
+                        break
+
             if consecutive_errors >= 5:
                 log.error("Too many consecutive errors, forcing skip")
-                try:
-                    state = client.call("pack", {"skip": True})
-                except APIError:
-                    pass
+                if game_state in ("TAROT_PACK", "PLANET_PACK", "SPECTRAL_PACK",
+                                  "STANDARD_PACK", "BUFFOON_PACK", "SMODS_BOOSTER_OPENED"):
+                    try:
+                        state = client.call("pack", {"skip": True})
+                    except APIError:
+                        pass
                 state = client.call("gamestate")
                 consecutive_errors = 0
             else:

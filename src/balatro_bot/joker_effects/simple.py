@@ -34,6 +34,10 @@ def _hand_xmult(ctx: ScoreContext, j: dict, hands: list[str], fallback: float, *
     if _hand_contains(ctx, *hands):
         ctx.mult *= _ab_xmult(j, fallback=fallback)
 
+def _hand_parsed_chips(ctx: ScoreContext, j: dict, hands: list[str], fallback: float, **_kw) -> None:
+    if _hand_contains(ctx, *hands):
+        ctx.chips += _ab_chips(j, fallback=fallback)
+
 def _suit_mult(ctx: ScoreContext, j: dict, suit: str, ability_key: str, fallback: float) -> None:
     ctx.mult += _ability(j).get(ability_key, fallback) * _count_suit_in_scoring(ctx, suit)
 
@@ -50,6 +54,7 @@ _DISPATCHERS = {
     "hand_mult": _hand_mult,
     "hand_chips": _hand_chips,
     "hand_xmult": _hand_xmult,
+    "hand_parsed_chips": _hand_parsed_chips,
     "suit_mult": _suit_mult,
 }
 
@@ -99,7 +104,7 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     ("j_flash",         "parsed_mult",  {"fallback": 6}),
     ("j_trousers",      "parsed_mult",  {"fallback": 6}),
     ("j_erosion",       "parsed_mult",  {"fallback": 8}),
-    ("j_runner",        "parsed_chips", {"fallback": 30}),
+    ("j_runner",        "hand_parsed_chips", {"hands": ["Straight", "Straight Flush"], "fallback": 30}),
     ("j_square",        "parsed_chips", {"fallback": 20}),
     ("j_hiker",         "parsed_chips", {"fallback": 10}),
     ("j_stone",         "parsed_chips", {"fallback": 25}),

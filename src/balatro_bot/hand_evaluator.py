@@ -213,6 +213,7 @@ def _prob_hit(good: int, deck_size: int, draws: int) -> float:
 
 def flush_draw_quality(
     hand_cards: list[dict], deck_cards: list[dict], smeared: bool = False,
+    rank_affinity: dict[str, float] | None = None,
 ) -> tuple[list[int], float, str] | None:
     """If 4+ cards share a suit, return (keep_indices, probability, suit)."""
     suits_to_indices: dict[str, list[int]] = {}
@@ -229,6 +230,15 @@ def flush_draw_quality(
     for suit, indices in suits_to_indices.items():
         if len(indices) < 4:
             continue
+        if len(indices) > 4 and rank_affinity:
+            # Prefer keeping cards with high rank affinity
+            indices.sort(
+                key=lambda i: (
+                    rank_affinity.get(card_rank(hand_cards[i]) or "", 0.0),
+                    rank_value(card_rank(hand_cards[i]) or "2"),
+                ),
+                reverse=True,
+            )
         keep = indices[:4]
         cards_to_draw = len(hand_cards) - len(keep)
         suit_in_deck = sum(1 for c in deck_cards if suit in card_suits(c, smeared=smeared))
@@ -317,6 +327,7 @@ def straight_draw_quality(
 
 def two_pair_draw_quality(
     hand_cards: list[dict], deck_cards: list[dict],
+    rank_affinity: dict[str, float] | None = None,
 ) -> tuple[list[int], float] | None:
     """If hand has a pair, return (keep_indices, probability) for chasing Two Pair."""
     rank_to_indices: dict[str, list[int]] = {}
@@ -329,7 +340,13 @@ def two_pair_draw_quality(
     if not pairs:
         return None
 
-    pair_rank, pair_indices = max(pairs, key=lambda x: rank_value(x[0]))
+    pair_rank, pair_indices = max(
+        pairs,
+        key=lambda x: (
+            rank_affinity.get(x[0], 0.0) if rank_affinity else 0.0,
+            rank_value(x[0]),
+        ),
+    )
     keep = pair_indices[:2]
     draws = len(hand_cards) - len(keep)
 
@@ -354,6 +371,7 @@ def two_pair_draw_quality(
 
 def three_kind_draw_quality(
     hand_cards: list[dict], deck_cards: list[dict],
+    rank_affinity: dict[str, float] | None = None,
 ) -> tuple[list[int], float] | None:
     """If hand has a pair, return (keep_indices, probability) for chasing Three of a Kind."""
     rank_to_indices: dict[str, list[int]] = {}
@@ -372,7 +390,13 @@ def three_kind_draw_quality(
         if r:
             deck_rank_counts[r] = deck_rank_counts.get(r, 0) + 1
 
-    pair_rank, pair_indices = max(pairs, key=lambda x: deck_rank_counts.get(x[0], 0))
+    pair_rank, pair_indices = max(
+        pairs,
+        key=lambda x: (
+            deck_rank_counts.get(x[0], 0),
+            rank_affinity.get(x[0], 0.0) if rank_affinity else 0.0,
+        ),
+    )
     keep = pair_indices[:2]
     draws = len(hand_cards) - len(keep)
 
@@ -848,7 +872,7 @@ def discard_candidates(
 
     if HAND_INFO["Flush"][2] < HAND_INFO[best.hand_name][2]:
         if deck_cards:
-            fdq = flush_draw_quality(hand_cards, deck_cards, smeared=smeared)
+            fdq = flush_draw_quality(hand_cards, deck_cards, smeared=smeared, rank_affinity=rank_aff)
             if fdq:
                 indices, prob, suit = fdq
                 strategies.append((
@@ -889,7 +913,7 @@ def discard_candidates(
                 ))
 
     if deck_cards and HAND_INFO["Two Pair"][2] < HAND_INFO[best.hand_name][2]:
-        tpdq = two_pair_draw_quality(hand_cards, deck_cards)
+        tpdq = two_pair_draw_quality(hand_cards, deck_cards, rank_affinity=rank_aff)
         if tpdq:
             indices, prob = tpdq
             strategies.append((
@@ -900,7 +924,7 @@ def discard_candidates(
             ))
 
     if deck_cards and HAND_INFO["Three of a Kind"][2] < HAND_INFO[best.hand_name][2]:
-        tkdq = three_kind_draw_quality(hand_cards, deck_cards)
+        tkdq = three_kind_draw_quality(hand_cards, deck_cards, rank_affinity=rank_aff)
         if tkdq:
             indices, prob = tkdq
             strategies.append((
