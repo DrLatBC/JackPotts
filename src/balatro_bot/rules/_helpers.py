@@ -410,8 +410,9 @@ def score_consumable(
         )
         return min(total_sell, 20) / 4.0
     if key == "c_wheel_of_fortune":
-        n_jokers = len(jokers)
-        return 3.0 if n_jokers >= 3 else (1.5 if n_jokers >= 1 else 0.0)
+        eligible = [j for j in jokers if not (isinstance(j.get("modifier"), dict) and j["modifier"].get("edition"))]
+        n = len(eligible)
+        return 3.0 if n >= 3 else (1.5 if n >= 1 else 0.0)
     if key == "c_fool":
         # Fool copies the last tarot/planet used. For buy/pack decisions we
         # don't know what it'll copy — give it a modest base value since it

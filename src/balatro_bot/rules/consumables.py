@@ -191,7 +191,10 @@ class UseConsumables:
                 if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
                     return (0.0, None)
             if key == "c_wheel_of_fortune":
-                if joker_slots.get("count", 0) == 0:
+                if not jokers:
+                    return (0.0, None)
+                # NOT_ALLOWED if every joker already has an edition
+                if all(isinstance(j.get("modifier"), dict) and j["modifier"].get("edition") for j in jokers):
                     return (0.0, None)
             if key == "c_fool":
                 if not self._last_used_consumable:

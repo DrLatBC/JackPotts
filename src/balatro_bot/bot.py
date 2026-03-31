@@ -305,10 +305,9 @@ def run_bot(
             )
             if current_blind_name:
                 target = current_blind_target if isinstance(current_blind_target, int) else 0
-                final_chips = max(max_chips_this_blind, target)
                 log.info(
                     "[ROUND] %s: scored %s / needed %s — WON | %d hands, %d discards",
-                    current_blind_name, f"{final_chips:,}",
+                    current_blind_name, f"{max_chips_this_blind:,}",
                     f"{target:,}",
                     total_hands_played - hands_at_blind_start,
                     total_discards_used - discards_at_blind_start,
