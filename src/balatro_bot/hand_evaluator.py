@@ -413,6 +413,59 @@ def three_kind_draw_quality(
 # Scoring
 # ---------------------------------------------------------------------------
 
+def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
+    """Score cards in played order and apply per-card xmult jokers (Photograph,
+    Triboulet, Ancient). These fire during card scoring in Balatro, BEFORE
+    independent joker effects like Runner/Erosion."""
+    from balatro_bot.joker_effects import retrigger_count
+
+    # Score in PLAYED order (matching the game), not internal scoring order
+    scoring_id_set = set(id(c) for c in scoring_cards)
+    scored_in_play_order = [c for c in (played_cards or scoring_cards) if id(c) in scoring_id_set]
+    # Append any scoring cards not in played_cards (e.g., Stone cards)
+    played_id_set = set(id(c) for c in scored_in_play_order)
+    for c in scoring_cards:
+        if id(c) not in played_id_set:
+            scored_in_play_order.append(c)
+
+    # Identify per-card xmult joker state
+    _photo_xm = 0.0
+    _triboule_xm = 0.0
+    _ancient_xm = 0.0
+    _first_face_found = False
+    for j in (jokers or []):
+        k = j.get("key", "")
+        if k == "j_photograph":
+            _photo_xm = j.get("value", {}).get("ability", {}).get("extra", 2.0)
+        elif k == "j_triboulet":
+            _triboule_xm = j.get("value", {}).get("ability", {}).get("extra", 2.0)
+        elif k == "j_ancient":
+            _ancient_xm = 1.5
+
+    for card in scored_in_play_order:
+        triggers = retrigger_count(card, ctx)
+        ctx.chips += card_chip_value(card) * triggers
+        ctx.mult  += card_mult_value(card) * triggers
+        xmv = card_xmult_value(card)
+        if xmv != 1.0:
+            for _ in range(triggers):
+                ctx.mult *= xmv
+        # Per-card xmult joker effects fire on each trigger
+        if not is_debuffed(card):
+            rank = card_rank(card)
+            if _photo_xm and not _first_face_found and (ctx.pareidolia or rank in ("J", "Q", "K")):
+                _first_face_found = True
+                ctx.mult *= _photo_xm ** triggers
+            if _triboule_xm and rank in ("K", "Q"):
+                ctx.mult *= _triboule_xm ** triggers
+            if _ancient_xm and ancient_suit and ancient_suit in card_suits(card):
+                ctx.mult *= _ancient_xm ** triggers
+
+    for card in ctx.held_cards:
+        if not is_debuffed(card) and _modifier(card).get("enhancement") == "STEEL":
+            ctx.mult *= 1.5
+
+
 def score_hand(
     hand_name: str,
     scoring_cards: list[dict],
@@ -469,18 +522,7 @@ def score_hand(
         ancient_suit=ancient_suit,
     )
 
-    for card in scoring_cards:
-        triggers = retrigger_count(card, ctx)
-        ctx.chips += card_chip_value(card) * triggers
-        ctx.mult  += card_mult_value(card) * triggers
-        xmv = card_xmult_value(card)
-        if xmv != 1.0:
-            for _ in range(triggers):
-                ctx.mult *= xmv
-
-    for card in ctx.held_cards:
-        if not is_debuffed(card) and _modifier(card).get("enhancement") == "STEEL":
-            ctx.mult *= 1.5
+    _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit)
 
     pre_joker_chips = ctx.chips
     pre_joker_mult = ctx.mult
@@ -488,28 +530,6 @@ def score_hand(
     apply_joker_effects(ctx)
 
     total = round(ctx.chips * ctx.mult)
-
-    if jokers and total < 200 and hand_name in ("Full House", "Flush", "Straight", "Four of a Kind"):
-        import logging
-        _score_log = logging.getLogger("score_debug")
-        if not _score_log.handlers:
-            _fh = logging.FileHandler("score_debug.txt", mode="a", encoding="utf-8")
-            _fh.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
-            _score_log.addHandler(_fh)
-            _score_log.setLevel(logging.DEBUG)
-        joker_details = [
-            (j.get("key", "?"), j.get("value", {}).get("effect", ""))
-            for j in jokers
-        ]
-        _score_log.debug(
-            "SUSPICIOUS %s: base=%d/%d card_chips=%d pre_joker=%d/%.1f "
-            "post_joker=%d/%.1f total=%d joker_effects=%s hand_lvl=%s",
-            hand_name, base_chips, base_mult,
-            pre_joker_chips - base_chips, pre_joker_chips, pre_joker_mult,
-            ctx.chips, ctx.mult, total,
-            joker_details,
-            hand_levels.get(hand_name) if hand_levels else None,
-        )
 
     return ctx.chips, ctx.mult, total
 
@@ -586,18 +606,7 @@ def score_hand_detailed(
         ancient_suit=ancient_suit,
     )
 
-    for card in scoring_cards:
-        triggers = retrigger_count(card, ctx)
-        ctx.chips += card_chip_value(card) * triggers
-        ctx.mult += card_mult_value(card) * triggers
-        xmv = card_xmult_value(card)
-        if xmv != 1.0:
-            for _ in range(triggers):
-                ctx.mult *= xmv
-
-    for card in ctx.held_cards:
-        if not is_debuffed(card) and _modifier(card).get("enhancement") == "STEEL":
-            ctx.mult *= 1.5
+    _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit)
 
     pre_joker_chips = ctx.chips
     pre_joker_mult = ctx.mult
@@ -621,7 +630,12 @@ def score_hand_detailed(
 # ---------------------------------------------------------------------------
 
 def _scoring_cards_for(hand_name: str, cards: list[dict]) -> list[dict]:
-    """Return the subset of cards that actually score for the hand type."""
+    """Return the subset of cards that actually score for the hand type.
+
+    Stone cards always score when played (they contribute +50 chips regardless
+    of hand type), so they're appended to the result even if they aren't part
+    of the poker hand formation.
+    """
     rc = _rank_counts(cards)
     counts_sorted = sorted(rc.items(), key=lambda x: (-x[1], -rank_value(x[0])))
 
@@ -630,37 +644,46 @@ def _scoring_cards_for(hand_name: str, cards: list[dict]) -> list[dict]:
 
     if hand_name == "Five of a Kind":
         target_rank = counts_sorted[0][0]
-        return [c for c in cards if card_rank(c) == target_rank][:5]
+        result = [c for c in cards if card_rank(c) == target_rank][:5]
 
-    if hand_name == "Four of a Kind":
+    elif hand_name == "Four of a Kind":
         target_rank = next(r for r, cnt in counts_sorted if cnt >= 4)
-        return [c for c in cards if card_rank(c) == target_rank][:4]
+        result = [c for c in cards if card_rank(c) == target_rank][:4]
 
-    if hand_name == "Full House":
+    elif hand_name == "Full House":
         trip_rank = next(r for r, cnt in counts_sorted if cnt >= 3)
         pair_rank = next(r for r, cnt in counts_sorted if cnt >= 2 and r != trip_rank)
         trips = [c for c in cards if card_rank(c) == trip_rank][:3]
         pairs = [c for c in cards if card_rank(c) == pair_rank][:2]
-        return trips + pairs
+        result = trips + pairs
 
-    if hand_name == "Three of a Kind":
+    elif hand_name == "Three of a Kind":
         target_rank = next(r for r, cnt in counts_sorted if cnt >= 3)
-        return [c for c in cards if card_rank(c) == target_rank][:3]
+        result = [c for c in cards if card_rank(c) == target_rank][:3]
 
-    if hand_name == "Two Pair":
+    elif hand_name == "Two Pair":
         pair_ranks = [r for r, cnt in counts_sorted if cnt >= 2][:2]
         result = []
         for pr in pair_ranks:
             result.extend(c for c in cards if card_rank(c) == pr)
-        return result[:4]
+        result = result[:4]
 
-    if hand_name == "Pair":
+    elif hand_name == "Pair":
         target_rank = next(r for r, cnt in counts_sorted if cnt >= 2)
-        return [c for c in cards if card_rank(c) == target_rank][:2]
+        result = [c for c in cards if card_rank(c) == target_rank][:2]
 
-    ranked = [c for c in cards if card_rank(c)]
-    ranked.sort(key=lambda c: rank_value(card_rank(c)), reverse=True)
-    return ranked[:1] if ranked else cards[:1]
+    else:
+        ranked = [c for c in cards if card_rank(c)]
+        ranked.sort(key=lambda c: rank_value(card_rank(c)), reverse=True)
+        result = ranked[:1] if ranked else cards[:1]
+
+    # Stone cards always score when played — append any not already included
+    result_set = set(id(c) for c in result)
+    for c in cards:
+        if is_stone(c) and id(c) not in result_set:
+            result.append(c)
+
+    return result
 
 
 # ---------------------------------------------------------------------------

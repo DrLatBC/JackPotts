@@ -9,7 +9,7 @@ from balatro_bot.constants import (
     SCALING_JOKERS, SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
 )
 from balatro_bot.strategy import compute_strategy, JOKER_HAND_AFFINITY
-from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
+
 from balatro_bot.rules._helpers import _find_tarot_targets
 
 if TYPE_CHECKING:
@@ -232,6 +232,8 @@ class PickFromBuffoonPack:
         owned_jokers = joker_slots.get("cards", [])
         owned_keys = {j.get("key") for j in owned_jokers}
         hand_levels = state.get("hands", {})
+        ante = state.get("ante_num", 1)
+        joker_limit = joker_slots.get("limit", 5)
         strat = compute_strategy(owned_jokers, hand_levels)
         has_madness = "j_madness" in owned_keys
 
@@ -252,45 +254,16 @@ class PickFromBuffoonPack:
             if check_anti_synergy(key, owned_keys):
                 continue
 
-            effect = JOKER_EFFECTS.get(key)
-            has_effect = effect is not None and effect is not _noop
-
-            if not has_effect:
-                # Check if it's a valued utility joker
-                from balatro_bot.rules.shop import _UTILITY_VALUE, _utility_synergy
-                base = _UTILITY_VALUE.get(key, 0.1)
-                score = base + _utility_synergy(key, owned_keys, strat)
-            else:
-                # Score based on strategy synergy + effect strength
-                score = 1.0
-
-                # Parse actual values from effect text
-                effect_text = card.get("value", {}).get("effect", "")
-                parsed = parse_effect_value(effect_text) if effect_text else {}
-                if parsed.get("xmult") and parsed["xmult"] > 1.0:
-                    score = max(score, parsed["xmult"] * 2.0)
-                if parsed.get("mult") and parsed["mult"] > 0:
-                    score = max(score, parsed["mult"] / 5.0)
-                if parsed.get("chips") and parsed["chips"] > 0:
-                    score = max(score, parsed["chips"] / 50.0)
-
-                # Strategy synergy bonus
-                if key in JOKER_HAND_AFFINITY:
-                    hand_types, weight = JOKER_HAND_AFFINITY[key]
-                    synergy = sum(strat.hand_affinity(ht) for ht in hand_types)
-                    if synergy > 0:
-                        score += synergy * 2.0
-
-                # S-tier jokers get a massive boost
-                from balatro_bot.rules.shop import BuyJokersInShop
-                if key in BuyJokersInShop.ALWAYS_BUY:
-                    score += 10.0
-
-            # Cross-joker synergy: utility jokers boost scoring jokers and vice versa
-            from balatro_bot.rules.shop import _cross_synergy
-            xsyn = _cross_synergy(key, owned_keys)
-            if xsyn > 1.0:
-                score *= xsyn
+            from balatro_bot.joker_valuation import evaluate_joker_value
+            score = evaluate_joker_value(
+                card, owned_jokers=owned_jokers,
+                hand_levels=hand_levels, ante=ante, strategy=strat,
+                joker_limit=joker_limit,
+            )
+            # S-tier jokers get a massive boost
+            from balatro_bot.rules.shop import BuyJokersInShop
+            if key in BuyJokersInShop.ALWAYS_BUY:
+                score = max(score, 10.0)
 
             if score > best_score:
                 best_score = score

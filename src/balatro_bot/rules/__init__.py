@@ -7,7 +7,7 @@ from balatro_bot.rules.playing import (
 from balatro_bot.rules.blind import AlwaysSelectBlind, SkipForTag
 from balatro_bot.rules.shop import (
     SellInvisible, SellDietCola,
-    SellWeakJoker, FeedCampfire, ReorderJokersForCeremonial,
+    SellWeakJoker, FeedCampfire, ReorderJokersForCeremonial, ReorderJokersForScoring,
     BuyJokersInShop, BuyConsumablesInShop, BuyPacksInShop,
     BuyVouchersInShop, RerollShop, LeaveShop,
 )
@@ -23,7 +23,7 @@ __all__ = [
     "PlayHighValueHand", "DiscardToImprove", "PlayBestAvailable",
     "AlwaysSelectBlind", "SkipForTag",
     "SellInvisible", "SellDietCola",
-    "SellWeakJoker", "FeedCampfire", "ReorderJokersForCeremonial",
+    "SellWeakJoker", "FeedCampfire", "ReorderJokersForCeremonial", "ReorderJokersForScoring",
     "BuyJokersInShop", "BuyConsumablesInShop", "BuyPacksInShop",
     "BuyVouchersInShop", "RerollShop", "LeaveShop",
     "AlwaysCashOut",

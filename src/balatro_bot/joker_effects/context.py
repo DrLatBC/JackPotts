@@ -92,7 +92,14 @@ def retrigger_count(card: dict, ctx: ScoreContext) -> int:
         count += 1
 
     if "j_hanging_chad" in joker_keys:
-        if ctx.scoring_cards and card is ctx.scoring_cards[0]:
+        # Hanging Chad retriggers the first PLAYED card that is used in scoring.
+        # The game uses played order, not the bot's internal scoring order
+        # (which reorders e.g. trips before pairs in Full House).
+        scoring_ids = set(id(c) for c in ctx.scoring_cards)
+        first_played_scoring = next(
+            (c for c in ctx.played_cards if id(c) in scoring_ids), None
+        )
+        if first_played_scoring is not None and card is first_played_scoring:
             count += 2
 
     if "j_dusk" in joker_keys and ctx.hands_left == 1:

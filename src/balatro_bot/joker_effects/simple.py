@@ -102,10 +102,10 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     ("j_red_card",      "parsed_mult",  {"fallback": 6}),
     ("j_fortune_teller","parsed_mult",  {"fallback": 3}),
     ("j_flash",         "parsed_mult",  {"fallback": 6}),
-    ("j_trousers",      "parsed_mult",  {"fallback": 6}),
+    # j_trousers — moved to complex.py (needs pre-scoring increment on Two Pair)
+    # j_runner — moved to complex.py (scores unconditionally + pre-scoring increment on Straight)
+    # j_square — moved to complex.py (needs pre-scoring increment on 4-card plays)
     ("j_erosion",       "parsed_mult",  {"fallback": 8}),
-    ("j_runner",        "hand_parsed_chips", {"hands": ["Straight", "Straight Flush"], "fallback": 30}),
-    ("j_square",        "parsed_chips", {"fallback": 20}),
     ("j_hiker",         "parsed_chips", {"fallback": 10}),
     ("j_stone",         "parsed_chips", {"fallback": 25}),
     ("j_castle",        "parsed_chips", {"fallback": 15}),

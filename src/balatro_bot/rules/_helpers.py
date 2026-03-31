@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suit, card_suits, rank_value, is_debuffed, _modifier
+from balatro_bot.cards import card_rank, card_suit, card_suits, card_xmult_value, rank_value, is_debuffed, _modifier
 from balatro_bot.constants import (
     FEWER_CARDS_JOKERS, ALL_SCORE_JOKERS, EXACT_4_JOKERS,
     FACE_RANKS_TAROT, PLANET_KEYS, NO_TARGET_TAROTS, TARGETING_TAROTS,
     SCALING_JOKERS,
 )
+from balatro_bot.hand_evaluator import classify_hand
 
 if TYPE_CHECKING:
     from typing import Any
@@ -23,9 +24,16 @@ def _pad_with_junk(
     card_indices: list[int],
     hand_cards: list[dict],
     jokers: list[dict],
+    intended_hand: str = "",
     max_cards: int = 5,
 ) -> list[int]:
-    """Pad a hand with low-value junk cards for free deck cycling."""
+    """Pad a hand with low-value junk cards for free deck cycling.
+
+    If intended_hand is provided, each candidate junk card is checked to
+    ensure it doesn't change the hand classification (e.g. turning a High
+    Card into a Pair, or creating an accidental Flush/Straight).  If we
+    can't fill to target without changing the hand, we play fewer cards.
+    """
     joker_keys = {j.get("key") for j in jokers}
     n = len(card_indices)
 
@@ -42,6 +50,10 @@ def _pad_with_junk(
     if n >= target:
         return card_indices
 
+    four_fingers = "j_four_fingers" in joker_keys
+    shortcut = "j_shortcut" in joker_keys
+    smeared = "j_smeared" in joker_keys
+
     used = set(card_indices)
     junk = []
     for i, c in enumerate(hand_cards):
@@ -55,9 +67,73 @@ def _pad_with_junk(
     for i, _, _ in junk:
         if len(padded) >= target:
             break
+        if intended_hand:
+            test_cards = [hand_cards[j] for j in padded] + [hand_cards[i]]
+            if classify_hand(test_cards, four_fingers, shortcut, smeared) != intended_hand:
+                continue
         padded.append(i)
 
     return padded
+
+
+def _sort_play_order(
+    indices: list[int],
+    hand_cards: list[dict],
+    jokers: list[dict],
+) -> list[int]:
+    """Sort card play indices so additive effects fire before multiplicative.
+
+    In Balatro, played cards score left-to-right. Cards with ×mult (Glass,
+    Polychrome) should be rightmost so all +chips/+mult accumulate first.
+
+    With Hanging Chad, the first card gets +2 retriggers (3 total). The card
+    that benefits most from compounded retriggers goes first instead.
+    """
+    if len(indices) <= 1:
+        return indices
+
+    joker_keys = {j.get("key") for j in jokers}
+    has_hanging_chad = "j_hanging_chad" in joker_keys
+    has_photograph = "j_photograph" in joker_keys
+    has_triboulet = "j_triboulet" in joker_keys
+    pareidolia = "j_pareidolia" in joker_keys
+
+    def _total_xmult(idx: int) -> float:
+        """Per-trigger xmult for this card (card ×mult + per-card joker ×mult)."""
+        c = hand_cards[idx]
+        if is_debuffed(c):
+            return 1.0
+        xm = card_xmult_value(c)
+        rank = card_rank(c)
+        if has_triboulet and rank in ("K", "Q"):
+            xm *= 2.0
+        return xm
+
+    if has_hanging_chad:
+        # First card gets 3 triggers — pick the card that benefits most.
+        def _first_position_score(idx: int) -> float:
+            c = hand_cards[idx]
+            if is_debuffed(c):
+                return 0.0
+            xm = _total_xmult(idx)
+            rank = card_rank(c)
+            is_face = pareidolia or rank in ("J", "Q", "K")
+            if has_photograph and is_face:
+                xm *= 2.0  # Photograph ×2 per trigger on first face
+            # xm^3 (first) vs xm (elsewhere) — higher ratio = more benefit
+            return xm ** 3
+
+        best_first = max(indices, key=_first_position_score)
+        rest = [i for i in indices if i != best_first]
+        # Sort rest: additive left (xmult<=1), multiplicative right (xmult>1)
+        rest.sort(key=lambda i: (0 if card_xmult_value(hand_cards[i]) <= 1.0 else 1, i))
+        return [best_first] + rest
+
+    # No Hanging Chad: simple sort — additive left, ×mult right
+    return sorted(indices, key=lambda i: (
+        0 if card_xmult_value(hand_cards[i]) <= 1.0 else 1,
+        i,  # stability tiebreak: preserve original order within group
+    ))
 
 
 def _find_gold_targets(hand_cards, count, current_best=None):

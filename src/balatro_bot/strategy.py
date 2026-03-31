@@ -17,6 +17,117 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
+# Build archetypes — cross-cutting strategies beyond poker hand types
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ArchetypeProfile:
+    """Defines a build archetype that cuts across poker hand types.
+
+    Archetypes inject weights into existing hand/rank/suit affinity channels,
+    so 35+ existing decision points benefit automatically.
+    """
+    name: str                            # "face_card"
+    display_name: str                    # "Face Card"
+    joker_weights: dict[str, int]        # member joker key -> weight (xmult=5, mult=3, chips=2, retrigger=4)
+    amplifiers: frozenset[str]           # jokers that amplify (e.g., Pareidolia for face card)
+    hand_contributions: dict[str, float] # hand_type -> weight per strength point
+    rank_contributions: dict[str, float] # rank -> weight per strength point
+    suit_contributions: dict[str, float] # suit -> weight per strength point
+    anti_jokers: frozenset[str]          # jokers that conflict with this archetype
+
+
+# Pareidolia makes ALL cards face cards — hands with more scoring cards win
+_PAREIDOLIA_FACE_CONTRIBUTIONS: dict[str, float] = {
+    "Straight Flush": 6.0,
+    "Flush": 5.0,
+    "Straight": 5.0,
+    "Full House": 4.0,
+    "Four of a Kind": 3.0,
+    "Two Pair": 3.0,
+    "Three of a Kind": 2.0,
+    "Pair": 1.0,
+    "High Card": 1.0,
+}
+
+# Shared hand contributions for rank-scoring archetypes:
+# these hand types put specific ranks into the scoring set
+_RANK_SCORING_HANDS: dict[str, float] = {
+    "High Card": 1.0,
+    "Pair": 3.0,
+    "Two Pair": 2.0,
+    "Three of a Kind": 3.0,
+    "Four of a Kind": 2.0,
+    "Full House": 2.0,
+}
+
+ARCHETYPE_REGISTRY: dict[str, ArchetypeProfile] = {
+    "face_card": ArchetypeProfile(
+        name="face_card",
+        display_name="Face Card",
+        joker_weights={
+            "j_photograph": 5,       # xMult on first face scored
+            "j_triboulet": 5,        # xMult per K/Q scored
+            "j_sock_and_buskin": 4,  # retrigger face cards
+            "j_smiley": 3,           # +mult per face scored
+            "j_scary_face": 2,       # +chips per face scored
+            "j_midas_mask": 1,       # face cards → Gold (economy)
+        },
+        amplifiers=frozenset({"j_pareidolia"}),
+        hand_contributions={
+            "High Card": 4.0,       # face cards always in scoring set
+            "Pair": 3.0,            # pair of face cards is ideal
+            "Full House": 3.0,      # face cards in both parts
+            "Two Pair": 2.0,        # face pairs
+            "Three of a Kind": 2.0, # trips of face rank
+        },
+        rank_contributions={"J": 3.0, "Q": 3.0, "K": 3.0},
+        suit_contributions={},
+        anti_jokers=frozenset({"j_ride_the_bus"}),
+    ),
+    "single_rank": ArchetypeProfile(
+        name="single_rank",
+        display_name="Rank Scoring",
+        joker_weights={
+            "j_even_steven": 3,    # all evens
+            "j_odd_todd": 2,       # all odds
+            "j_fibonacci": 5,      # retrigger A,2,3,5,8
+            "j_hack": 5,           # retrigger 2,3,4,5
+            "j_scholar": 3,        # Aces
+            "j_walkie_talkie": 3,  # T,4
+            "j_8_ball": 2,         # 8s
+            "j_sixth_sense": 2,    # 6s
+            "j_wee": 2,            # 2s
+            "j_superposition": 1,  # Aces
+        },
+        amplifiers=frozenset(),
+        hand_contributions=_RANK_SCORING_HANDS,
+        rank_contributions={},      # ranks already in JOKER_RANK_AFFINITY
+        suit_contributions={},
+        anti_jokers=frozenset(),
+    ),
+    "fibonacci": ArchetypeProfile(
+        name="fibonacci",
+        display_name="Fibonacci",
+        joker_weights={
+            "j_fibonacci": 5,      # retrigger A,2,3,5,8
+            "j_hack": 5,           # retrigger 2,3,4,5 — shares 2,3,5
+        },
+        amplifiers=frozenset(),
+        hand_contributions={
+            **_RANK_SCORING_HANDS,
+            "Straight": 2.0,       # A-5 straight hits both jokers
+        },
+        rank_contributions={
+            "A": 3.0, "2": 3.0, "3": 3.0, "4": 1.0, "5": 3.0, "8": 3.0,
+        },
+        suit_contributions={},
+        anti_jokers=frozenset(),
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
 # Affinity tables
 # ---------------------------------------------------------------------------
 
@@ -48,20 +159,9 @@ JOKER_HAND_AFFINITY: dict[str, tuple[list[str], int]] = {
     "j_half": (["High Card", "Pair", "Three of a Kind"], 2),
     "j_trousers": (["Two Pair"], 2),
 
-    # Face card jokers
-    "j_scary_face": (["Full House"], 1),
-    "j_smiley": (["Full House"], 1),
-    "j_photograph": (["Full House"], 1),
-    "j_sock_and_buskin": (["Full House"], 1),
-
-    # Fibonacci jokers
-    "j_fibonacci": (["Straight"], 2),
-
-    # Specific card jokers
-    "j_hack": (["Straight"], 2),
-
-    # xmult conditional by state
-    "j_blackboard": (["Flush"], 2),
+    # Face card jokers — handled by face_card archetype, not hand type affinity
+    # j_fibonacci, j_hack — handled by fibonacci archetype (rank-scoring, not Straight)
+    # j_blackboard — held card archetype (cares about held suit, not Flush)
 
     # Scaling jokers with hand type triggers
     "j_runner": (["Straight"], 1),
@@ -87,6 +187,14 @@ JOKER_RANK_AFFINITY: dict[str, tuple[list[str], int]] = {
     "j_8_ball":      (["8"], 2),          # score an 8 → tarot
     "j_sixth_sense": (["6"], 2),          # play a 6 → spectral
     "j_wee":         (["2"], 2),          # +chips when 2 scored, scaling
+
+    # Per-card scoring on specific ranks
+    "j_walkie_talkie": (["T", "4"], 3),   # +chips and +mult per T or 4
+    "j_scholar":       (["A"], 3),         # +chips and +mult per Ace
+    "j_triboulet":     (["K", "Q"], 5),    # xMult per K or Q scored
+    "j_baron":         (["K"], 4),         # xMult per held King
+    "j_shoot_the_moon": (["Q"], 3),        # +mult per held Queen
+    "j_superposition": (["A"], 1),         # Ace + Straight → tarot
 
     # Anti-affinity for face cards (negative weight)
     "j_ride_the_bus": (["J", "Q", "K"], -3),  # resets mult on face cards
@@ -116,6 +224,7 @@ class Strategy:
     preferred_hands: list[tuple[str, float]]
     preferred_suits: list[tuple[str, float]]
     preferred_ranks: list[tuple[str, float]] = field(default_factory=list)
+    active_archetypes: list[tuple[str, float]] = field(default_factory=list)
 
     def top_hand(self) -> str | None:
         return self.preferred_hands[0][0] if self.preferred_hands else None
@@ -145,6 +254,15 @@ class Strategy:
         """Return rank affinity as a dict for fast lookup in hot paths."""
         return dict(self.preferred_ranks) if self.preferred_ranks else {}
 
+    def has_archetype(self, name: str) -> bool:
+        return any(n == name for n, _ in self.active_archetypes)
+
+    def archetype_strength(self, name: str) -> float:
+        for n, s in self.active_archetypes:
+            if n == name:
+                return s
+        return 0.0
+
     def describes(self) -> str:
         parts = []
         if self.preferred_hands:
@@ -156,6 +274,9 @@ class Strategy:
         if self.preferred_ranks:
             top3 = [f"{r}({score:.0f})" for r, score in self.preferred_ranks[:3]]
             parts.append("ranks=" + ",".join(top3))
+        if self.active_archetypes:
+            archs = ", ".join(f"{n}({s:.0f})" for n, s in self.active_archetypes)
+            parts.append(f"arch={archs}")
         return " | ".join(parts) if parts else "no preference"
 
 
@@ -187,6 +308,34 @@ def compute_strategy(
             ranks, weight = JOKER_RANK_AFFINITY[key]
             for r in ranks:
                 rank_scores[r] = rank_scores.get(r, 0) + weight
+
+    # Detect active archetypes and inject their contributions
+    joker_keys = {j.get("key", "") for j in jokers}
+    active_archs: list[tuple[str, float]] = []
+    for arch in ARCHETYPE_REGISTRY.values():
+        members = {k for k in arch.joker_weights if k in joker_keys}
+        amps = joker_keys & arch.amplifiers
+        antis = joker_keys & arch.anti_jokers
+        if len(members) < 2 and not (len(members) >= 1 and amps):
+            continue
+        strength = sum(arch.joker_weights[k] for k in members)
+        if amps:
+            strength *= 1.0 + 0.5 * len(amps)
+        if antis:
+            strength *= max(0.1, 1.0 - 0.5 * len(antis))
+
+        # Pareidolia swaps face card hand map (all cards = face → more scoring cards = better)
+        contribs = arch.hand_contributions
+        if arch.name == "face_card" and "j_pareidolia" in joker_keys:
+            contribs = _PAREIDOLIA_FACE_CONTRIBUTIONS
+
+        for ht, w in contribs.items():
+            hand_scores[ht] = hand_scores.get(ht, 0) + w * strength
+        for r, w in arch.rank_contributions.items():
+            rank_scores[r] = rank_scores.get(r, 0) + w * strength
+        for s, w in arch.suit_contributions.items():
+            suit_scores[s] = suit_scores.get(s, 0) + w * strength
+        active_archs.append((arch.name, strength))
 
     # Synthesize composite hand affinities: jokers that boost sub-hands
     # should also contribute to hands that CONTAIN those sub-hands.
@@ -229,4 +378,5 @@ def compute_strategy(
         preferred_hands=preferred_hands,
         preferred_suits=preferred_suits,
         preferred_ranks=preferred_ranks,
+        active_archetypes=active_archs,
     )

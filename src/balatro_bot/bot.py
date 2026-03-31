@@ -299,14 +299,21 @@ def run_bot(
         if cur_ante >= 9 and not actually_won:
             actually_won = True
             log.info(
-                "VICTORY at ante %s round %s (seed=%s) — beat Ante 8 boss, entering endless",
+                "VICTORY at ante %s round %s (seed=%s) — entering endless mode",
                 cur_ante, state.get("round_num", "?"),
                 state.get("seed", "?"),
             )
-            # TEMP: bail out of endless mode — balatrobot mod has pack/buy
-            # timeouts after G.GAME.won that cause 30s hangs on every action.
-            # Remove this once the mod's post-win event handling is fixed.
-            break
+            if current_blind_name:
+                target = current_blind_target if isinstance(current_blind_target, int) else 0
+                final_chips = max(max_chips_this_blind, target)
+                log.info(
+                    "[ROUND] %s: scored %s / needed %s — WON | %d hands, %d discards",
+                    current_blind_name, f"{final_chips:,}",
+                    f"{target:,}",
+                    total_hands_played - hands_at_blind_start,
+                    total_discards_used - discards_at_blind_start,
+                )
+                current_blind_name = None
 
         # Log when state.won fires (may be premature due to Hieroglyph)
         if state.get("won") and not won_logged:
@@ -363,12 +370,8 @@ def run_bot(
                 log.info("[ANTE %s] Money: $%d", ante_num, money)
 
             last_ante = ante_num
-        # Track highest chips seen during this blind
         # Track highest chips seen during this blind (capture before round resets)
         cur_chips = state.get("round", {}).get("chips", 0)
-        if cur_chips > 0 or game_state in ("SELECTING_HAND", "HAND_PLAYED", "ROUND_EVAL"):
-            log.info("[CHIPS_DBG] state=%s round=%s chips=%s max=%s blind=%s",
-                     game_state, round_num, cur_chips, max_chips_this_blind, current_blind_name)
         if cur_chips > max_chips_this_blind:
             max_chips_this_blind = cur_chips
         last_round = round_num
@@ -536,6 +539,20 @@ def run_bot(
                 "ancient_suit": state.get("round", {}).get("ancient_suit"),
             }
 
+        # Capture expected hand score for chip accounting on timeout
+        expected_hand_score = 0
+        if method == "play":
+            import re
+            m = re.search(r"for (\d+)", getattr(action, "reason", ""))
+            if m:
+                expected_hand_score = int(m.group(1))
+
+        # Shorter timeout on ante 8 plays — the win screen hangs the mod
+        saved_timeout = None
+        if method == "play" and cur_ante == 8:
+            saved_timeout = client.timeout
+            client.timeout = 5.0
+
         try:
             state = client.call(method, params)
             actions_taken += 1
@@ -555,12 +572,53 @@ def run_bot(
 
             consecutive_errors = 0
         except httpx.TimeoutException:
-            log.warning("Timeout on %s — re-polling gamestate", method)
+            if method == "play":
+                total_hands_played += 1  # hand was played, game processed it
+            log.warning("Timeout on %s(%s) — re-polling gamestate", method, params)
             try:
                 state = client.call("gamestate")
                 # Check if game ended during the timeout
                 if state.get("state") == "GAME_OVER":
                     break
+                # Victory detection: if ante advanced to 9+ during a play
+                # timeout, the win screen caused the hang — handle it here
+                post_ante = state.get("ante_num", 0)
+                if post_ante >= 9 and not actually_won:
+                    actually_won = True
+                    if current_blind_name:
+                        target = current_blind_target if isinstance(current_blind_target, int) else 0
+                        final_chips = pre_play_chips + expected_hand_score
+                        max_chips_this_blind = max(max_chips_this_blind, final_chips)
+                        log.info(
+                            "VICTORY at ante %s round %s (seed=%s) — scored %s / needed %s — WON | %d hands, %d discards",
+                            post_ante, state.get("round_num", "?"),
+                            state.get("seed", "?"),
+                            f"{final_chips:,}", f"{target:,}",
+                            total_hands_played - hands_at_blind_start,
+                            total_discards_used - discards_at_blind_start,
+                        )
+                        current_blind_name = None
+                    else:
+                        log.info(
+                            "VICTORY at ante %s round %s (seed=%s)",
+                            post_ante, state.get("round_num", "?"),
+                            state.get("seed", "?"),
+                        )
+                # Diagnostic dump on timeout
+                gs = state.get("state", "?")
+                pack_cards = state.get("pack", {}).get("cards", [])
+                pack_labels = [c.get("label", "?") for c in pack_cards]
+                log.warning(
+                    "  post-timeout state=%s pack=%s money=%s ante=%s round=%s",
+                    gs, pack_labels or "none", state.get("money"),
+                    state.get("ante_num"), state.get("round_num"),
+                )
+                if pack_cards:
+                    for i, c in enumerate(pack_cards):
+                        log.warning(
+                            "  pack[%d]: label=%s key=%s set=%s",
+                            i, c.get("label"), c.get("key"), c.get("set"),
+                        )
                 continue
             except httpx.TimeoutException:
                 log.error("Double timeout — server unresponsive, aborting")
@@ -590,6 +648,15 @@ def run_bot(
             else:
                 time.sleep(poll_interval)
                 state = client.call("gamestate")
+        finally:
+            if saved_timeout is not None:
+                client.timeout = saved_timeout
+
+    # Capture chips from the final state — the loop exits before the top-of-loop
+    # chips tracking can run, so the last play/discard response's chips are missed.
+    final_chips = state.get("round", {}).get("chips", 0)
+    if final_chips > max_chips_this_blind:
+        max_chips_this_blind = final_chips
 
     # Log final round summary if died on a blind
     if current_blind_name:

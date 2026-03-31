@@ -12,7 +12,7 @@ from balatro_bot.scaling import (
 from balatro_bot.constants import FACE_RANKS_SET
 from balatro_bot.cards import card_rank, rank_value, is_debuffed
 from balatro_bot.hand_evaluator import best_hand, classify_hand, cards_not_in, discard_candidates
-from balatro_bot.rules._helpers import _pad_with_junk
+from balatro_bot.rules._helpers import _pad_with_junk, _sort_play_order
 
 if TYPE_CHECKING:
     from typing import Any
@@ -214,7 +214,7 @@ class MilkScalingJokers:
 
         # Square Joker: exactly 4 junk cards
         if "j_square" in play_scalers and len(junk) >= 4:
-            indices = [i for i, _ in junk[:4]]
+            indices = _sort_play_order([i for i, _ in junk[:4]], ctx.hand_cards, ctx.jokers)
             return PlayCards(
                 indices,
                 reason=f"milk: cycle 4 junk for Square (+4 chips) ({hands_after} hands left)",
@@ -230,7 +230,7 @@ class MilkScalingJokers:
             if enhanced:
                 required = enhanced[0][0]
                 filler = [i for i, _ in junk if i != required][:4]
-                indices = [required] + filler
+                indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers)
                 hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
                 return PlayCards(
                     indices,
@@ -244,7 +244,7 @@ class MilkScalingJokers:
             if twos:
                 required = twos[0][0]
                 filler = [i for i, _ in junk if i != required][:4]
-                indices = [required] + filler
+                indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers)
                 hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
                 return PlayCards(
                     indices,
@@ -280,8 +280,9 @@ class MilkScalingJokers:
             for ht, jname in targets:
                 match = next((c for c in candidates if c.hand_name == ht), None)
                 if match:
+                    indices = _sort_play_order(match.card_indices, ctx.hand_cards, ctx.jokers)
                     return PlayCards(
-                        match.card_indices,
+                        indices,
                         reason=f"milk: {ht} for {jname} ({hands_after} hands left)",
                         hand_name=ht,
                     )
@@ -313,7 +314,7 @@ class MilkScalingJokers:
 
         if generic:
             dump = junk[:5] if junk else playable[:1]
-            indices = [i for i, _ in dump]
+            indices = _sort_play_order([i for i, _ in dump], ctx.hand_cards, ctx.jokers)
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -388,7 +389,8 @@ class PlayWinningHand:
             return None
         effective_score = ctx.best.total * ctx.score_discount
         if effective_score >= ctx.chips_remaining:
-            indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers)
+            indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name)
+            indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers)
             return PlayCards(
                 indices,
                 reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}) >= {ctx.chips_remaining} needed",
@@ -429,7 +431,8 @@ class PlayHighValueHand:
             return None
 
         if effective_score >= ctx.chips_remaining * threshold:
-            indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers)
+            indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name)
+            indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers)
             return PlayCards(
                 indices,
                 reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}) >= {threshold:.0%} of {ctx.chips_remaining} remaining",
@@ -613,7 +616,8 @@ class PlayBestAvailable:
             if to_discard:
                 return DiscardCards(to_discard, reason="last resort discard (hand too weak, searching for better)")
         if ctx.best:
-            indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers)
+            indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name)
+            indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers)
             return PlayCards(
                 indices,
                 reason=f"best available: {ctx.best.hand_name} for {ctx.best.total}",
@@ -629,7 +633,8 @@ class PlayBestAvailable:
                 hands_left=ctx.hands_left,
             )
             if unconstrained:
-                indices = _pad_with_junk(unconstrained.card_indices, ctx.hand_cards, ctx.jokers)
+                indices = _pad_with_junk(unconstrained.card_indices, ctx.hand_cards, ctx.jokers, unconstrained.hand_name)
+                indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers)
                 return PlayCards(
                     indices,
                     reason=f"mouth locked ({ctx.mouth_locked_hand}) but can't form it: "
@@ -639,10 +644,11 @@ class PlayBestAvailable:
         # Absolute fallback: play best 5-card combo we can find
         if ctx.hand_cards:
             if len(ctx.hand_cards) >= 5:
-                # Play the 5 highest-value cards
                 ranked = sorted(range(len(ctx.hand_cards)),
                                 key=lambda i: rank_value(card_rank(ctx.hand_cards[i]) or "2"),
                                 reverse=True)
-                return PlayCards(ranked[:5], reason="fallback: play 5 highest cards", hand_name="High Card")
-            return PlayCards(list(range(len(ctx.hand_cards))), reason="fallback: play all remaining cards", hand_name="High Card")
+                indices = _sort_play_order(ranked[:5], ctx.hand_cards, ctx.jokers)
+                return PlayCards(indices, reason="fallback: play 5 highest cards", hand_name="High Card")
+            indices = _sort_play_order(list(range(len(ctx.hand_cards))), ctx.hand_cards, ctx.jokers)
+            return PlayCards(indices, reason="fallback: play all remaining cards", hand_name="High Card")
         return None

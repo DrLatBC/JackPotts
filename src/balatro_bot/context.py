@@ -60,17 +60,6 @@ class RoundContext:
 
         min_cards = 5 if blind_name == "The Psychic" else 1
 
-        # DEBUG: dump state for Plant/Flint verification (search BOSS_DEBUG)
-        import logging as _log
-        _boss_log = _log.getLogger("balatro_bot")
-        if blind_name == "The Plant" and hand_cards:
-            face_cards = [c for c in hand_cards if c.get("value", {}).get("rank") in ("J", "Q", "K")]
-            if face_cards:
-                _boss_log.info("[BOSS_DEBUG] The Plant — face card state: %s", face_cards[0].get("state"))
-        if blind_name == "The Flint":
-            pair_level = hand_levels.get("Pair", {})
-            _boss_log.info("[BOSS_DEBUG] The Flint — Pair hand_level: %s", pair_level)
-
         mouth_locked_hand = None
         if blind_name == "The Mouth":
             for hand_name, hand_data in hand_levels.items():

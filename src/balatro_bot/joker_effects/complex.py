@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import card_rank, card_suits, is_debuffed, _modifier, rank_value
-from balatro_bot.constants import FACE_RANKS, FIBONACCI_RANKS, EVEN_RANKS, ODD_RANKS
+from balatro_bot.constants import FACE_RANKS, FIBONACCI_RANKS, EVEN_RANKS, ODD_RANKS, RANK_CHIPS
 from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult
 from balatro_bot.joker_effects.context import ScoreContext, retrigger_count, _count_suit_in_scoring, _count_face_in_scoring, _hand_contains
 
@@ -48,9 +48,10 @@ def _misprint(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += (lo + hi) / 2
 
 def _raised_fist(ctx: ScoreContext, j: dict) -> None:
-    held_ranks = [rank_value(card_rank(c)) for c in ctx.held_cards if card_rank(c)]
-    if held_ranks:
-        ctx.mult += 2 * min(held_ranks)
+    # Raised Fist uses chip values (J/Q/K=10, A=11), not rank order (J=11..A=14)
+    held_chips = [RANK_CHIPS.get(card_rank(c), 0) for c in ctx.held_cards if card_rank(c)]
+    if held_chips:
+        ctx.mult += 2 * min(held_chips)
 
 def _fibonacci(ctx: ScoreContext, j: dict) -> None:
     count = sum(retrigger_count(c, ctx) for c in ctx.scoring_cards if not is_debuffed(c) and card_rank(c) in FIBONACCI_RANKS)
@@ -98,6 +99,33 @@ def _ride_the_bus(ctx: ScoreContext, j: dict) -> None:
         # Gains +extra in context.before, then scores the new total
         ctx.mult += base + ab.get("extra", 1)
 
+def _runner(ctx: ScoreContext, j: dict) -> None:
+    """Runner always scores accumulated chips. Gains +chip_mod on Straights
+    (incremented in context.before, so snapshot is stale by chip_mod)."""
+    ab = _ability(j)
+    base = _ab_chips(j, fallback=30)
+    if _hand_contains(ctx, "Straight", "Straight Flush"):
+        base += ab.get("chip_mod", 15)
+    ctx.chips += base
+
+def _square(ctx: ScoreContext, j: dict) -> None:
+    """Square always scores accumulated chips. Gains +chip_mod on exactly-4-card plays
+    (incremented in context.before, so snapshot is stale by chip_mod)."""
+    ab = _ability(j)
+    base = _ab_chips(j, fallback=20)
+    if len(ctx.played_cards) == 4:
+        base += ab.get("chip_mod", 4)
+    ctx.chips += base
+
+def _trousers(ctx: ScoreContext, j: dict) -> None:
+    """Trousers always scores accumulated mult. Gains +extra on Two Pair
+    (incremented in context.before, so snapshot is stale by extra)."""
+    ab = _ability(j)
+    base = _ab_mult(j, fallback=6)
+    if _hand_contains(ctx, "Two Pair"):
+        base += ab.get("extra", 2)
+    ctx.mult += base
+
 def _blackboard(ctx: ScoreContext, j: dict) -> None:
     if ctx.held_cards and all(
         card_suits(c) & {"S", "C"} for c in ctx.held_cards if card_suits(c)
@@ -110,10 +138,9 @@ def _baron(ctx: ScoreContext, j: dict) -> None:
         ctx.mult *= _ability(j).get("extra", 1.5) ** kings
 
 def _photograph(ctx: ScoreContext, j: dict) -> None:
-    for c in ctx.scoring_cards:
-        if not is_debuffed(c) and (ctx.pareidolia or card_rank(c) in FACE_RANKS):
-            ctx.mult *= _ability(j).get("extra", 2.0)
-            break
+    # Per-card xmult: handled in score_hand's card scoring loop (fires per retrigger,
+    # before independent joker effects). This is a noop here to avoid double-counting.
+    pass
 
 def _smiley(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += _ability(j).get("extra", 5) * _count_face_in_scoring(ctx)
@@ -128,15 +155,10 @@ def _card_sharp(ctx: ScoreContext, j: dict) -> None:
         ctx.mult *= _ab_xmult(j, fallback=3.0)
 
 def _ancient(ctx: ScoreContext, j: dict) -> None:
-    if ctx.ancient_suit:
-        count = sum(
-            retrigger_count(c, ctx)
-            for c in ctx.scoring_cards
-            if not is_debuffed(c) and ctx.ancient_suit in card_suits(c)
-        )
-        if count > 0:
-            ctx.mult *= 1.5 ** count
-    else:
+    # Per-card xmult: handled in score_hand's card scoring loop (fires per retrigger,
+    # before independent joker effects). This is a noop here to avoid double-counting.
+    # Fallback: if no ancient_suit data, apply a flat x2 estimate.
+    if not ctx.ancient_suit:
         ctx.mult *= 2.0
 
 def _walkie_talkie(ctx: ScoreContext, j: dict) -> None:
@@ -218,10 +240,9 @@ def _onyx_agate(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += _ability(j).get("extra", 7) * _count_suit_in_scoring(ctx, "C")
 
 def _triboulet(ctx: ScoreContext, j: dict) -> None:
-    xm = _ability(j).get("extra", 2.0)
-    count = sum(retrigger_count(c, ctx) for c in ctx.scoring_cards if not is_debuffed(c) and card_rank(c) in ("K", "Q"))
-    if count > 0:
-        ctx.mult *= xm ** count
+    # Per-card xmult: handled in score_hand's card scoring loop (fires per retrigger,
+    # before independent joker effects). This is a noop here to avoid double-counting.
+    pass
 
 def _baseball(ctx: ScoreContext, j: dict) -> None:
     xm = _ability(j).get("extra", 1.5)
@@ -261,6 +282,9 @@ COMPLEX_EFFECTS: dict[str, object] = {
     "j_odd_todd": _odd_todd,
     "j_scholar": _scholar,
     "j_supernova": _supernova,
+    "j_runner": _runner,
+    "j_square": _square,
+    "j_trousers": _trousers,
     "j_green_joker": _green_joker,
     "j_ride_the_bus": _ride_the_bus,
     "j_blackboard": _blackboard,

@@ -69,8 +69,9 @@ def card_chip_value(card: dict[str, Any]) -> int:
     mod = _modifier(card)
     enhancement = mod.get("enhancement", "")
     bonus = 30 if enhancement == "BONUS" else 0
-    # Edition chips: prefer numeric field from API, fall back to type string
-    edition_chips = mod.get("edition_chips") or (50 if mod.get("edition") == "FOIL" else 0)
+    # Edition chips: use hardcoded value for known editions (API fields are unreliable)
+    edition = mod.get("edition", "")
+    edition_chips = 50 if edition == "FOIL" else (mod.get("edition_chips") or 0)
     rank = card_rank(card)
     base = RANK_CHIPS.get(rank, 0) if rank else 0
     perma = card.get("value", {}).get("perma_bonus", 0) or 0
@@ -88,12 +89,13 @@ def card_mult_value(card: dict[str, Any]) -> float:
     total = 0.0
     if enhancement == "MULT":
         total += 4
-    # Edition mult: prefer numeric field from API, fall back to type string
-    edition_mult = mod.get("edition_mult")
-    if edition_mult:
-        total += edition_mult
-    elif mod.get("edition") in ("HOLO", "HOLOGRAPHIC"):
+    # Edition mult: use hardcoded value for known editions (API fields are unreliable —
+    # edition_mult often contains the enhancement value, not the edition value)
+    edition = mod.get("edition", "")
+    if edition in ("HOLO", "HOLOGRAPHIC"):
         total += 10
+    elif mod.get("edition_mult"):
+        total += mod["edition_mult"]
     if enhancement == "LUCKY":
         total += 4
     return total
@@ -110,12 +112,12 @@ def card_xmult_value(card: dict[str, Any]) -> float:
     result = 1.0
     if enhancement == "GLASS":
         result *= 2.0
-    # Edition xmult: prefer numeric field from API, fall back to type string
-    edition_xmult = mod.get("edition_x_mult")
-    if edition_xmult:
-        result *= edition_xmult
-    elif mod.get("edition") == "POLYCHROME":
+    # Edition xmult: use hardcoded value for known editions (API fields are unreliable —
+    # edition_x_mult often contains the enhancement value, not the edition value)
+    if mod.get("edition") == "POLYCHROME":
         result *= 1.5
+    elif mod.get("edition_x_mult"):
+        result *= mod["edition_x_mult"]
     return result
 
 

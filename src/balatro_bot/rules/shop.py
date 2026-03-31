@@ -12,9 +12,9 @@ from balatro_bot.constants import (
     SCALING_JOKERS, SCALING_XMULT, PLANET_KEYS, SAFE_CONSUMABLE_TAROTS,
     TARGETING_TAROTS, SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
 )
-from balatro_bot.hand_evaluator import best_hand
 from balatro_bot.strategy import Strategy, compute_strategy, JOKER_HAND_AFFINITY
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
+from balatro_bot.joker_valuation import evaluate_joker_value, UTILITY_VALUE
 
 if TYPE_CHECKING:
     from typing import Any
@@ -48,155 +48,6 @@ _HIGH_VALUE_XMULT = {
 }
 
 # --- Utility joker values (non-scoring jokers with gameplay impact) ---
-
-_UTILITY_VALUE: dict[str, float] = {
-    # Tier 1: survival/game-changing
-    "j_chicot":        4.0,   # destroys boss blind effect
-    "j_mr_bones":      3.5,   # prevents death
-    "j_perkeo":        3.0,   # duplicates consumable in shop
-    # Tier 2: hand construction (understood by hand evaluator)
-    "j_four_fingers":  2.5,   # 4-card straights/flushes
-    "j_smeared":       2.5,   # merged suit groups
-    "j_shortcut":      2.0,   # gap straights
-    "j_splash":        2.0,   # all cards score
-    "j_pareidolia":    2.0,   # all cards count as face
-    # Tier 3: resource generation
-    "j_cartomancer":   2.0,   # tarot on blind select
-    "j_hallucination": 1.5,   # tarot from packs
-    "j_space":         1.5,   # chance to level hand type
-    "j_8_ball":        1.5,   # score 8 → tarot
-    "j_sixth_sense":   1.0,   # play 6 → spectral
-    "j_seance":        1.0,   # spectral from hand types
-    "j_superposition": 1.0,   # Ace + Straight → tarot
-    "j_riff_raff":     1.0,   # 2 common jokers on blind select
-    "j_oops":          1.5,   # doubles all probabilities
-    # Tier 4: hand size/discards
-    "j_merry_andy":    1.5,   # +3 discards, -1 hand size
-    "j_turtle_bean":   1.5,   # +5 hand size (decays)
-    "j_drunkard":      1.0,   # +1 discard
-    "j_burnt":         1.0,   # +1 discard
-    "j_juggler":       1.0,   # +1 hand size
-    "j_troubadour":    1.0,   # +2 hand size, -1 hand
-    # Tier 5: economy/deck manipulation
-    "j_vagabond":      0.5,   # tarot when money < $5
-    "j_marble":        0.5,   # Stone card on blind select
-    "j_dna":           0.5,   # copies first played card
-    "j_certificate":   0.5,   # random card + gold seal
-    "j_midas_mask":    0.5,   # face cards → Gold
-    # Tier 6: retrigger jokers (scoring via retrigger_count, not direct effects)
-    "j_hack":          1.5,   # retrigger 2,3,4,5 — rank affinity build
-    "j_hanging_chad":  1.0,   # retrigger first scored card
-    "j_dusk":          1.5,   # retrigger all on last hand
-    "j_sock_and_buskin":1.0,  # retrigger face cards
-    "j_seltzer":       1.5,   # retrigger all scored cards (limited uses)
-    "j_mime":          1.0,   # retrigger held cards
-    # Tier 7: triggered utility (action rules handle these)
-    "j_luchador":      1.0,   # sell to disable boss blind
-    "j_invisible":     1.0,   # sell to dupe after 2 rounds
-    "j_diet_cola":     0.5,   # sell for free reroll
-    "j_burglar":       0.5,   # +3 hands, lose discards
-    "j_ring_master":   0.5,   # uncommon+ jokers more common
-}
-
-
-def _utility_synergy(key: str, owned_keys: set[str], strat: Strategy) -> float:
-    """Bonus value for a utility joker based on current build synergy."""
-    bonus = 0.0
-
-    if key == "j_four_fingers":
-        if strat.hand_affinity("Flush") > 0 or strat.hand_affinity("Straight") > 0:
-            bonus += 2.0
-    elif key == "j_smeared" and strat.hand_affinity("Flush") > 0:
-        bonus += 3.0
-    elif key == "j_shortcut" and strat.hand_affinity("Straight") > 0:
-        bonus += 2.0
-    elif key == "j_pareidolia":
-        face_jokers = {"j_photograph", "j_scary_face", "j_smiley",
-                        "j_triboulet", "j_sock_and_buskin"}
-        bonus += len(owned_keys & face_jokers) * 2.0
-    elif key == "j_8_ball" and strat.rank_affinity("8") > 0:
-        bonus += 2.0
-    elif key == "j_oops":
-        prob_jokers = {"j_8_ball", "j_space", "j_sixth_sense",
-                        "j_bloodstone", "j_lucky_cat"}
-        bonus += len(owned_keys & prob_jokers) * 1.5
-    elif key == "j_space" and strat.top_hand():
-        bonus += 1.0
-    elif key == "j_merry_andy":
-        discard_jokers = {"j_castle", "j_yorick", "j_hit_the_road"}
-        bonus += len(owned_keys & discard_jokers) * 2.0
-    elif key == "j_marble" and "j_stone" in owned_keys:
-        bonus += 2.0
-    elif key == "j_splash":
-        per_card = {"j_hiker", "j_seltzer", "j_hanging_chad"}
-        bonus += len(owned_keys & per_card) * 1.5
-
-    return bonus
-
-
-def _cross_synergy(candidate_key: str, owned_keys: set[str]) -> float:
-    """Multiplier for a candidate joker based on cross-joker synergies with owned jokers.
-
-    Detects when buying a scoring joker is amplified by an owned utility joker
-    (or vice versa). Synergies stack multiplicatively.
-    """
-    mult = 1.0
-
-    # Pareidolia makes face-card jokers unconditional (all cards = face)
-    _FACE_JOKERS = {"j_photograph", "j_scary_face", "j_smiley",
-                     "j_triboulet", "j_sock_and_buskin"}
-    if "j_pareidolia" in owned_keys and candidate_key in _FACE_JOKERS:
-        mult *= 2.5
-
-    # Smeared doubles suit pool for suit-conditional and flush jokers
-    _SUIT_JOKERS = {"j_greedy_joker", "j_lusty_joker", "j_wrathful_joker",
-                     "j_gluttenous_joker", "j_arrowhead", "j_onyx_agate",
-                     "j_bloodstone", "j_rough_gem"}
-    _FLUSH_JOKERS = {"j_tribe", "j_droll", "j_crafty"}
-    if "j_smeared" in owned_keys and candidate_key in (_SUIT_JOKERS | _FLUSH_JOKERS):
-        mult *= 1.5
-
-    # Four Fingers: 4-card straights/flushes — boosts straight and flush jokers
-    _SF_JOKERS = {"j_order", "j_tribe", "j_crazy", "j_droll",
-                   "j_crafty", "j_devious"}
-    if "j_four_fingers" in owned_keys and candidate_key in _SF_JOKERS:
-        mult *= 1.5
-
-    # Shortcut: gap straights — boosts straight jokers
-    _STRAIGHT_JOKERS = {"j_order", "j_crazy", "j_devious", "j_runner"}
-    if "j_shortcut" in owned_keys and candidate_key in _STRAIGHT_JOKERS:
-        mult *= 1.5
-
-    # Splash: all cards score — boosts per-card effect jokers
-    _PER_CARD_JOKERS = {"j_hiker", "j_fibonacci", "j_hack",
-                         "j_even_steven", "j_odd_todd"}
-    if "j_splash" in owned_keys and candidate_key in _PER_CARD_JOKERS:
-        mult *= 1.5
-
-    # Oops: doubled probabilities — boosts probability-based jokers
-    _PROB_JOKERS = {"j_bloodstone", "j_lucky_cat", "j_8_ball", "j_space"}
-    if "j_oops" in owned_keys and candidate_key in _PROB_JOKERS:
-        mult *= 1.5
-
-    # Blueprint/Brainstorm copy xMult sources — doubling xMult is huge
-    _COPY_JOKERS = {"j_blueprint", "j_brainstorm"}
-    _XMULT_JOKERS = {
-        "j_cavendish", "j_stencil", "j_duo", "j_trio", "j_family",
-        "j_order", "j_tribe", "j_acrobat", "j_blackboard", "j_flower_pot",
-        "j_madness", "j_vampire", "j_hologram", "j_constellation",
-        "j_campfire", "j_lucky_cat", "j_canio", "j_obelisk",
-        "j_card_sharp", "j_seeing_double",
-    }
-    if owned_keys & _COPY_JOKERS and candidate_key in _XMULT_JOKERS:
-        mult *= 1.3
-
-    # Ride the Bus: avoids faces — synergizes with number-rank jokers
-    _NUMBER_RANK_JOKERS = {"j_even_steven", "j_odd_todd", "j_hack",
-                            "j_fibonacci", "j_wee"}
-    if "j_ride_the_bus" in owned_keys and candidate_key in _NUMBER_RANK_JOKERS:
-        mult *= 1.3
-
-    return mult
 
 
 class SellInvisible:
@@ -389,99 +240,6 @@ class SellWeakJoker:
     """Sell the weakest joker if slots are full and the shop has a better one."""
     name = "sell_weak_joker"
 
-    # Approximate power tier for unconditional jokers (no hand type affinity).
-    # Higher = harder to justify selling.
-    UNCONDITIONAL_POWER: dict[str, float] = {
-        # xmult — never sell these
-        "j_cavendish": 5.0,    # X3
-        "j_madness": 6.0,     # scaling X0.5 per blind — run-defining
-        "j_stencil": 4.0,     # X1 per empty slot
-        # Strong +mult
-        "j_gros_michel": 3.0, # +15 mult
-        "j_popcorn": 2.5,     # +20 mult (decays)
-        "j_misprint": 1.5,    # +11 avg mult
-        # Scaling — get better over time, don't sell late
-        "j_supernova": 2.5,   # +mult per time hand type played this run
-        "j_green_joker": 2.0, # +1 mult per hand, scaling
-        "j_ride_the_bus": 2.0,# +1 mult per hand without face card
-        "j_flash": 2.0,       # +2 mult per reroll
-        "j_constellation": 3.0,# X0.1 per planet used — scaling xmult
-        "j_campfire": 2.5,    # X0.25 per sell
-        # Moderate
-        "j_ice_cream": 1.5,   # +100 chips (decays)
-        "j_blue_joker": 1.2,  # +2 chips/deck card
-        "j_stuntman": 2.0,    # +250 chips
-        # Weak
-        "j_joker": 0.8,       # +4 mult
-    }
-
-    def _joker_strategy_value(
-        self, joker: dict, strat: Strategy, owned_jokers: list[dict] | None = None,
-    ) -> float:
-        """Score how valuable a joker is to our current strategy.
-
-        Uses parsed effect text to assess actual accumulated value for
-        scaling jokers, instead of relying solely on the static tier list.
-
-        When owned_jokers is provided, adds a coherence bonus for jokers
-        that share strategic hand types with other owned jokers — making
-        it much harder to sell a joker that's part of a cohesive build.
-        """
-        key = joker.get("key", "")
-        effect = JOKER_EFFECTS.get(key)
-
-        # No scoring effect — check if it's a valued utility joker
-        if effect is None or effect is _noop:
-            base = _UTILITY_VALUE.get(key, 0.0)
-            if base <= 0:
-                return 0.0
-            owned_keys = {j.get("key") for j in (owned_jokers or [])}
-            return base + _utility_synergy(key, owned_keys, strat)
-
-        # Parse the actual current value from the joker's effect text
-        effect_text = joker.get("value", {}).get("effect", "")
-        parsed = parse_effect_value(effect_text) if effect_text else {}
-
-        # Compute a dynamic power score from parsed values
-        # xmult jokers are most valuable, then +mult, then +chips
-        dynamic_power = 0.0
-        if parsed.get("xmult") and parsed["xmult"] > 1.0:
-            dynamic_power = parsed["xmult"] * 2.0  # X2.5 → 5.0, X4 → 8.0
-        if parsed.get("mult") and parsed["mult"] > 0:
-            dynamic_power = max(dynamic_power, parsed["mult"] / 5.0)  # +30 mult → 6.0, +5 → 1.0
-        if parsed.get("chips") and parsed["chips"] > 0:
-            dynamic_power = max(dynamic_power, parsed["chips"] / 50.0)  # +100 chips → 2.0
-
-        # Unconditional jokers — use the higher of static tier or dynamic parsed value
-        if key not in JOKER_HAND_AFFINITY:
-            static_power = self.UNCONDITIONAL_POWER.get(key, 1.0)
-            return max(static_power, dynamic_power)
-
-        # Conditional joker — value depends on strategy alignment + dynamic power
-        hand_types, weight = JOKER_HAND_AFFINITY[key]
-        synergy = sum(strat.hand_affinity(ht) for ht in hand_types)
-
-        # Build coherence bonus: count how many other owned jokers share
-        # at least one hand type with this joker. A joker embedded in a
-        # cohesive build (e.g. j_duo + j_jolly + j_sly all on Pair) is
-        # worth far more than its individual score suggests.
-        coherence_bonus = 0.0
-        if owned_jokers and key in JOKER_HAND_AFFINITY:
-            my_hands = set(JOKER_HAND_AFFINITY[key][0])
-            allies = 0
-            for other in owned_jokers:
-                okey = other.get("key", "")
-                if okey == key or okey not in JOKER_HAND_AFFINITY:
-                    continue
-                other_hands = set(JOKER_HAND_AFFINITY[okey][0])
-                if my_hands & other_hands:
-                    allies += 1
-            coherence_bonus = allies * 1.5  # each ally adds 1.5 to sell resistance
-
-        if synergy > 0:
-            return max(2.0 + synergy + coherence_bonus, dynamic_power)
-        return max(0.5 + coherence_bonus, dynamic_power)
-
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         joker_info = state.get("jokers", {})
         owned = joker_info.get("cards", [])
@@ -558,7 +316,8 @@ class SellWeakJoker:
             return False
 
         owned_values = [
-            (i, self._joker_strategy_value(j, strat, owned_jokers=owned), j)
+            (i, evaluate_joker_value(j, owned_jokers=owned,
+                                     hand_levels=hand_levels, ante=ante, strategy=strat), j)
             for i, j in enumerate(owned)
             if j.get("key") not in protected or _is_stale_scaler(j, ante)
         ]
@@ -582,8 +341,8 @@ class SellWeakJoker:
         best_threshold = 0.0
 
         weakest_key = weakest_joker.get("key", "")
-        weakest_synergy = sum(
-            strat.hand_affinity(ht)
+        weakest_on_strategy = any(
+            strat.hand_affinity(ht) > 0
             for ht in JOKER_HAND_AFFINITY.get(weakest_key, ([], 0))[0]
         )
 
@@ -600,20 +359,21 @@ class SellWeakJoker:
                 if interest_after_buy < current_interest:
                     continue
 
-            shop_value = self._joker_strategy_value(card, strat)
+            shop_value = evaluate_joker_value(card, owned_jokers=owned,
+                                              hand_levels=hand_levels, ante=ante, strategy=strat)
             shop_key = card.get("key", "")
             is_high_tier_xmult = shop_key in _HIGH_VALUE_XMULT
 
-            shop_synergy = sum(
-                strat.hand_affinity(ht)
+            shop_on_strategy = any(
+                strat.hand_affinity(ht) > 0
                 for ht in JOKER_HAND_AFFINITY.get(shop_key, ([], 0))[0]
             )
 
             if is_high_tier_xmult:
                 threshold = 0.5
-            elif weakest_synergy > 0 and shop_synergy == 0:
+            elif weakest_on_strategy and not shop_on_strategy:
                 threshold = 3.0
-            elif weakest_synergy > 0 and shop_synergy > 0:
+            elif weakest_on_strategy and shop_on_strategy:
                 threshold = 1.5
             else:
                 threshold = 1.0
@@ -710,6 +470,162 @@ class FeedCampfire:
         return None
 
 
+class ReorderJokersForScoring:
+    """Arrange jokers in optimal scoring order: +chips → +mult → ×mult (left to right).
+
+    Also handles position-dependent jokers:
+    - Blueprint: placed immediately left of the best ×mult joker to copy
+    - Brainstorm: ensures leftmost joker is a good copyable effect
+    - Ceremonial Dagger: placed immediately left of fodder to sacrifice
+
+    Subsumes the old ReorderJokersForCeremonial rule.
+    """
+    name = "reorder_jokers_for_scoring"
+
+    def __init__(self) -> None:
+        self._last_order: list[int] | None = None
+
+    def evaluate(self, state: dict[str, Any]) -> Action | None:
+        from balatro_bot.joker_scoring_phase import (
+            get_joker_phase, get_joker_edition_phase,
+            PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
+        )
+
+        joker_info = state.get("jokers", {})
+        owned = joker_info.get("cards", [])
+        if len(owned) < 2:
+            self._last_order = None
+            return None
+
+        # Amber Acorn reshuffles jokers every hand — reordering is futile
+        ctx = RoundContext.from_state(state)
+        if ctx.blind_name == "Amber Acorn":
+            return None
+
+        # --- Classify each joker ---
+        ceremonial_idx: int | None = None
+        blueprint_idx: int | None = None
+        brainstorm_idx: int | None = None
+        fodder: list[int] = []  # noop jokers (candidates for Ceremonial sacrifice)
+
+        for i, j in enumerate(owned):
+            key = j.get("key", "")
+            phase = get_joker_phase(key)
+            if key == "j_ceremonial":
+                ceremonial_idx = i
+            elif key == "j_blueprint":
+                blueprint_idx = i
+            elif key == "j_brainstorm":
+                brainstorm_idx = i
+            if phase == PHASE_NOOP:
+                fodder.append(i)
+
+        # --- Sort all jokers by scoring phase ---
+        # Blueprint and Brainstorm are excluded (inserted with constraints after).
+        # Ceremonial participates in the sort as +mult (its scoring phase).
+        # Primary: phase (0=noop, 1=chips, 2=mult, 3=xmult)
+        # Secondary: edition phase (Polychrome jokers rightward within group)
+        # Tertiary: original position (stability)
+        excluded = {blueprint_idx, brainstorm_idx} - {None}
+        sortable = []
+        for i, j in enumerate(owned):
+            if i in excluded:
+                continue
+            key = j.get("key", "")
+            phase = get_joker_phase(key)
+            ed_phase = get_joker_edition_phase(j)
+            sortable.append((i, phase, ed_phase))
+
+        sortable.sort(key=lambda x: (x[1], x[2], x[0]))
+        desired_order = [i for i, _, _ in sortable]
+
+        # --- Ceremonial constraint: fodder must be immediately to its right ---
+        # If no fodder exists, Ceremonial goes RIGHTMOST so it eats nothing.
+        if ceremonial_idx is not None:
+            available_fodder = [f for f in fodder if f != ceremonial_idx
+                                and f not in excluded]
+            # Always remove Ceremonial from its sorted position first
+            desired_order = [i for i in desired_order if i != ceremonial_idx]
+            if available_fodder:
+                available_fodder.sort(key=lambda i: owned[i].get("key", ""))
+                sacrifice_idx = available_fodder[0]
+                desired_order = [i for i in desired_order if i != sacrifice_idx]
+                # Insert Ceremonial after the last +mult joker (or after chips)
+                insert_at = 0
+                for pos, idx in enumerate(desired_order):
+                    if get_joker_phase(owned[idx].get("key", "")) <= PHASE_MULT:
+                        insert_at = pos + 1
+                desired_order.insert(insert_at, ceremonial_idx)
+                desired_order.insert(insert_at + 1, sacrifice_idx)
+            else:
+                # No fodder — Ceremonial goes rightmost (eats nothing)
+                desired_order.append(ceremonial_idx)
+
+        # --- Blueprint: place immediately left of best ×mult joker to copy ---
+        if blueprint_idx is not None:
+            # Find rightmost ×mult joker position (best copy target)
+            best_target_pos = None
+            for pos in range(len(desired_order) - 1, -1, -1):
+                idx = desired_order[pos]
+                key = owned[idx].get("key", "")
+                if key in ("j_blueprint", "j_brainstorm"):
+                    continue
+                phase = get_joker_phase(key)
+                if phase == PHASE_XMULT:
+                    best_target_pos = pos
+                    break
+            if best_target_pos is None:
+                # No ×mult — find rightmost +mult
+                for pos in range(len(desired_order) - 1, -1, -1):
+                    idx = desired_order[pos]
+                    key = owned[idx].get("key", "")
+                    if get_joker_phase(key) == PHASE_MULT:
+                        best_target_pos = pos
+                        break
+            if best_target_pos is not None:
+                desired_order.insert(best_target_pos, blueprint_idx)
+            else:
+                desired_order.append(blueprint_idx)
+
+        # --- Brainstorm: copies leftmost joker, place anywhere except pos 0 ---
+        if brainstorm_idx is not None:
+            desired_order.append(brainstorm_idx)
+            # Ensure position 0 is a good copyable effect (not noop/brainstorm)
+            if desired_order:
+                first_key = owned[desired_order[0]].get("key", "")
+                first_phase = get_joker_phase(first_key)
+                if first_phase == PHASE_NOOP and len(desired_order) > 1:
+                    for swap_pos in range(1, len(desired_order)):
+                        swap_key = owned[desired_order[swap_pos]].get("key", "")
+                        if (get_joker_phase(swap_key) != PHASE_NOOP
+                                and swap_key != "j_brainstorm"):
+                            desired_order[0], desired_order[swap_pos] = \
+                                desired_order[swap_pos], desired_order[0]
+                            break
+
+        # --- Check if reorder needed ---
+        current_order = list(range(len(owned)))
+        if desired_order == current_order:
+            self._last_order = None
+            return None
+
+        # Cycle guard
+        if self._last_order == desired_order:
+            return None
+        self._last_order = desired_order
+
+        # Build description of the new order for logging
+        phase_names = {PHASE_NOOP: "noop", PHASE_CHIPS: "+c", PHASE_MULT: "+m", PHASE_XMULT: "×m"}
+        order_desc = " ".join(
+            f"{owned[i].get('label', '?')}({phase_names.get(get_joker_phase(owned[i].get('key', '')), '?')})"
+            for i in desired_order
+        )
+        return RearrangeJokers(
+            order=desired_order,
+            reason=f"scoring order: {order_desc}",
+        )
+
+
 class ReorderJokersForCeremonial:
     """When Ceremonial Dagger is owned, arrange jokers so only fodder gets eaten.
 
@@ -762,7 +678,7 @@ class ReorderJokersForCeremonial:
                 valuable.append(i)
             elif key in ({"j_madness"} | SCALING_JOKERS):
                 valuable.append(i)
-            elif _UTILITY_VALUE.get(key, 0.0) >= 1.0:
+            elif UTILITY_VALUE.get(key, 0.0) >= 1.0:
                 valuable.append(i)
             elif effect is None or effect is _noop:
                 fodder.append(i)
@@ -808,166 +724,14 @@ class BuyJokersInShop:
     name = "buy_jokers_in_shop"
 
     INTEREST_CAP = 25
-    # Minimum score improvement (%) to justify a purchase that loses interest
-    MIN_IMPROVEMENT = 0.10
+    # Minimum valuation score to justify a purchase that loses interest
+    MIN_VALUE = 1.5
 
     ALWAYS_BUY = _ALWAYS_BUY
     HIGH_PRIORITY = _HIGH_PRIORITY
 
-    # Primary scoring category for each joker — used for build composition weighting.
-    # Jokers not listed here (utility, economy, copy) return a neutral 1.0 multiplier.
-    JOKER_SCORE_CATEGORY: dict[str, set[str]] = {
-        "xmult": {
-            # Unconditional
-            "j_cavendish", "j_stencil",
-            # Hand-type
-            "j_duo", "j_trio", "j_family", "j_order", "j_tribe",
-            # Card property
-            "j_photograph", "j_baron", "j_bloodstone", "j_triboulet",
-            # Game-state conditional
-            "j_blackboard", "j_acrobat", "j_flower_pot", "j_seeing_double",
-            "j_steel_joker", "j_loyalty_card", "j_drivers_license",
-            # Scaling
-            "j_madness", "j_vampire", "j_hologram", "j_obelisk",
-            "j_lucky_cat", "j_glass", "j_campfire", "j_throwback",
-            "j_card_sharp", "j_ancient", "j_baseball", "j_canio",
-            "j_yorick", "j_hit_the_road", "j_constellation", "j_idol",
-        },
-        "mult": {
-            # Unconditional
-            "j_joker", "j_misprint", "j_gros_michel", "j_popcorn",
-            # Hand-type
-            "j_jolly", "j_zany", "j_mad", "j_crazy", "j_droll",
-            # Suit conditional
-            "j_greedy_joker", "j_lusty_joker", "j_wrathful_joker", "j_gluttenous_joker",
-            "j_onyx_agate",
-            # Card property
-            "j_smiley", "j_fibonacci", "j_even_steven",
-            "j_shoot_the_moon", "j_raised_fist",
-            # Game-state conditional
-            "j_half", "j_abstract", "j_mystic_summit", "j_bootstraps",
-            "j_swashbuckler", "j_erosion",
-            # Scaling
-            "j_ceremonial", "j_supernova", "j_ride_the_bus", "j_green_joker",
-            "j_red_card", "j_flash", "j_fortune_teller", "j_trousers", "j_ramen",
-        },
-        "chips": {
-            # Unconditional
-            "j_blue_joker", "j_stuntman", "j_ice_cream",
-            # Hand-type
-            "j_sly", "j_wily", "j_clever", "j_devious", "j_crafty",
-            # Suit conditional
-            "j_arrowhead",
-            # Card property
-            "j_scary_face", "j_odd_todd",
-            # Game-state conditional
-            "j_banner", "j_bull",
-            # Scaling
-            "j_runner", "j_square", "j_castle", "j_wee", "j_hiker", "j_stone",
-        },
-    }
-
-    def _composition_multiplier(self, owned_jokers: list, candidate_key: str, ante: int = 1) -> float:
-        """Weight candidate by how much it fills a scoring gap in the current build.
-
-        Returns >1.0 if candidate fills an underrepresented category,
-        <1.0 if it stacks an already-full category, 1.0 if neutral/utility.
-
-        At higher antes, xMult need is amplified and flat mult/chips need is
-        dampened — reflecting that blinds scale exponentially but flat bonuses
-        don't.
-        """
-        candidate_cat = None
-        for cat, keys in self.JOKER_SCORE_CATEGORY.items():
-            if candidate_key in keys:
-                candidate_cat = cat
-                break
-
-        if candidate_cat is None:
-            return 1.0  # utility/economy/copy jokers — neutral
-
-        counts: dict[str, int] = {"xmult": 0, "mult": 0, "chips": 0}
-        for j in owned_jokers:
-            k = j.get("key", "")
-            for cat, keys in self.JOKER_SCORE_CATEGORY.items():
-                if k in keys:
-                    counts[cat] += 1
-                    break
-
-        needs = {cat: 1.0 / (1.0 + counts[cat]) for cat in counts}
-
-        # Ante-based urgency: xMult becomes critical as blinds scale exponentially
-        # Ante 1-3: no adjustment. Ante 4+: xmult amplified, flat dampened.
-        if ante >= 4:
-            urgency = min(1.0 + (ante - 3) * 0.5, 3.0)    # 1.5 @ ante 4 → 3.0 @ ante 7+
-            dampen = max(1.0 - (ante - 3) * 0.125, 0.5)    # 0.875 @ ante 4 → 0.5 @ ante 7+
-            needs["xmult"] *= urgency
-            needs["mult"] *= dampen
-            needs["chips"] *= dampen
-
-        avg_need = sum(needs.values()) / len(needs)
-
-        if avg_need == 0:
-            return 1.0
-
-        raw = needs[candidate_cat] / avg_need
-        cap = 3.5 if candidate_cat == "xmult" else 2.0
-        return max(0.5, min(cap, raw))
-
     def _interest_after(self, money: int, cost: int) -> int:
         return min((money - cost) // 5, 5)
-
-    def _has_scoring_effect(self, joker_key: str) -> bool:
-        """Check if a joker has a real scoring effect (not a no-op)."""
-        effect = JOKER_EFFECTS.get(joker_key)
-        return effect is not None and effect is not _noop
-
-    def _score_improvement(self, state: dict, candidate_joker: dict) -> float:
-        """Estimate how much a new joker improves our best hand score.
-
-        Returns fractional improvement (0.5 = 50% better).
-        If no hand is available (e.g. in shop), returns a positive value
-        for jokers with known scoring effects so they still get bought.
-        """
-        hand_cards = state.get("hand", {}).get("cards", [])
-        hand_levels = state.get("hands", {})
-        current_jokers = state.get("jokers", {}).get("cards", [])
-
-        if not hand_cards:
-            # No hand to evaluate — use strategy to score the joker
-            key = candidate_joker.get("key", "")
-            if not self._has_scoring_effect(key):
-                # Check if it's a valued utility joker
-                base = _UTILITY_VALUE.get(key, 0.0)
-                if base > 0:
-                    strat = compute_strategy(current_jokers, state.get("hands", {}))
-                    owned_keys = {j.get("key") for j in current_jokers}
-                    return (base + _utility_synergy(key, owned_keys, strat)) / 10.0
-                return 0.0
-
-            strat = compute_strategy(current_jokers, state.get("hands", {}))
-
-            # Joker that boosts our preferred hand type is worth more
-            if key in JOKER_HAND_AFFINITY:
-                hand_types, weight = JOKER_HAND_AFFINITY[key]
-                synergy = sum(strat.hand_affinity(ht) for ht in hand_types)
-                if synergy > 0:
-                    return 0.40  # strong synergy
-                return 0.15  # has effect but doesn't synergize
-
-            return 0.20  # unconditional joker, always decent
-
-        joker_limit = state.get("jokers", {}).get("limit", 5)
-        current_best = best_hand(hand_cards, hand_levels, jokers=current_jokers, joker_limit=joker_limit)
-        with_new = best_hand(hand_cards, hand_levels, jokers=current_jokers + [candidate_joker], joker_limit=joker_limit)
-
-        if not current_best or not with_new:
-            return 0.0
-
-        if current_best.total == 0:
-            return 1.0 if with_new.total > 0 else 0.0
-
-        return (with_new.total - current_best.total) / current_best.total
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         money = state.get("money", 0)
@@ -989,6 +753,9 @@ class BuyJokersInShop:
             return None
 
         current_interest = min(money // 5, 5)
+
+        strat = compute_strategy(joker_slots.get("cards", []), state.get("hands", {}))
+        jlimit = joker_slots.get("limit", 5)
 
         # Score each candidate and pick the best improvement
         best_idx = None
@@ -1037,76 +804,69 @@ class BuyJokersInShop:
             if key in SLOW_SCALERS and ante >= 6:
                 passed_on.append(f"{label}(${cost}, too late for slow scaler at ante {ante})")
                 continue
+            # Compute unified value for this candidate
+            value = evaluate_joker_value(
+                card, owned_jokers=joker_slots.get("cards", []),
+                hand_levels=state.get("hands", {}), ante=ante,
+                strategy=strat, joker_limit=jlimit,
+            )
+
+            # Override gates: force-buy known-good jokers (skip interest gating)
+            force_buy = False
             if key in self.ALWAYS_BUY:
-                improvement = 1.0  # force-buy
+                value = max(value, 10.0)
+                force_buy = True
             elif key in self.HIGH_PRIORITY and ante <= 5:
-                improvement = 0.8  # scaling xMult — strong buy early
+                value = max(value, 8.0)
+                force_buy = True
+
             # Stencil restriction: filling slots reduces its ×mult
-            elif any(j.get("key") == "j_stencil" for j in joker_slots.get("cards", [])):
-                joker_limit = joker_slots.get("limit", 5)
-                # After buying: empty slots = (limit - count - 1), +1 for Stencil counting itself
-                stencil_mult_after = (joker_limit - joker_count - 1) + 1
-                if stencil_mult_after <= 2:
-                    # Buying would leave Stencil at ×1 or ×2 — need a very strong joker
-                    improvement = self._score_improvement(state, card)
-                    if improvement < 0.40:
-                        passed_on.append(f"{label}(${cost}, Stencil restriction: only ×{stencil_mult_after} left)")
-                        continue
-                else:
-                    improvement = self._score_improvement(state, card)
+            if any(j.get("key") == "j_stencil" for j in joker_slots.get("cards", [])):
+                stencil_mult_after = (jlimit - joker_count - 1) + 1
+                if stencil_mult_after <= 2 and value < 5.0:
+                    passed_on.append(f"{label}(${cost}, Stencil restriction: only ×{stencil_mult_after} left)")
+                    continue
+
             # First joker: buy anything — 0 jokers is a death sentence
-            elif joker_count == 0:
-                improvement = 0.50
-            # Joker-starved: ≤2 jokers means building a scoring engine beats saving interest
-            elif joker_count <= 2:
-                improvement = self._score_improvement(state, card)
-            # Early game (ante ≤ 2): always prioritize jokers over saving interest
-            elif state.get("ante_num", 1) <= 2:
-                improvement = self._score_improvement(state, card)
-            # Late game (ante ≥ 5): interest won't matter, just score the joker
-            elif state.get("ante_num", 1) >= 5:
-                improvement = self._score_improvement(state, card)
-            else:
+            if joker_count == 0:
+                value = max(value, 5.0)
+                force_buy = True
+
+            # Interest gating for mid-game (ante 3-4) — skip for force-buy jokers
+            if not force_buy and 3 <= ante <= 4 and joker_count > 2:
                 interest_after = self._interest_after(money, cost)
                 loses_interest = interest_after < current_interest
 
                 if loses_interest:
                     if money >= self.INTEREST_CAP:
-                        improvement = self._score_improvement(state, card)
-                        if improvement < self.MIN_IMPROVEMENT:
-                            passed_on.append(f"{label}(${cost}, +{improvement:.0%} below threshold)")
+                        if value < self.MIN_VALUE:
+                            passed_on.append(f"{label}(${cost}, value={value:.1f} below threshold)")
                             continue
                     else:
                         if cost > 2:
                             passed_on.append(f"{label}(${cost}, saving for interest)")
                             continue
-                        improvement = self._score_improvement(state, card)
-                else:
-                    improvement = self._score_improvement(state, card)
 
-            # Weight by build composition and cross-joker synergies
-            improvement *= self._composition_multiplier(joker_slots.get("cards", []), key, ante)
-            improvement *= _cross_synergy(key, owned_keys)
+            # Slot pressure: last slot needs higher value
+            if joker_count >= jlimit - 1:
+                value *= 0.5
 
-            if improvement > best_improvement:
-                best_improvement = improvement
+            if value > best_improvement:
+                best_improvement = value
                 best_idx = i
                 best_cost = cost
                 best_label = card.get("label", "?")
 
         if best_idx is not None:
             key = shop.get("cards", [])[best_idx].get("key", "")
-            comp = self._composition_multiplier(joker_slots.get("cards", []), key, ante)
-            xsyn = _cross_synergy(key, owned_keys)
             tier = "ALWAYS_BUY" if key in self.ALWAYS_BUY else (
                 "HIGH_PRIORITY" if key in self.HIGH_PRIORITY else "scored")
-            syn_str = f", synergy={xsyn:.1f}x" if xsyn > 1.0 else ""
-            log.info("[SHOP] %s($%d): %s, improvement=%.0f%%, comp=%.1fx%s — BUYING",
-                     best_label, best_cost, tier, best_improvement * 100, comp, syn_str)
+            log.info("[SHOP] %s($%d): %s, value=%.1f — BUYING",
+                     best_label, best_cost, tier, best_improvement)
             return BuyCard(
                 best_idx,
                 reason=f"buy joker: {best_label} for ${best_cost} "
-                       f"(+{best_improvement:.0%} score, ${money}->${money - best_cost})",
+                       f"(value={best_improvement:.1f}, ${money}->${money - best_cost})",
             )
         if passed_on:
             log.info("Passed on jokers: %s", ", ".join(passed_on))

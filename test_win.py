@@ -85,6 +85,24 @@ def inject_god_mode(client: BalatroClient) -> None:
         except APIError as e:
             print(f"  add {jk} failed: {e.message}")
 
+    # Force game to validate joker roster by selling and re-adding ALL jokers.
+    # Jokers injected via `add` API bypass normal shop initialization — a sell/buy
+    # cycle through the game engine forces it to properly activate their effects.
+    # Cycling only the last one isn't enough; all need to go through the sell flow.
+    state = client.call("gamestate")
+    joker_count = state.get("jokers", {}).get("count", 0)
+    if joker_count > 0:
+        try:
+            # Sell all jokers (always sell index 0 since they shift down)
+            for _ in range(joker_count):
+                client.call("sell", {"joker": 0})
+            # Re-add them all
+            for jk in god_jokers:
+                client.call("add", {"key": jk})
+            print(f"  Cycled all {joker_count} jokers to validate roster")
+        except APIError as e:
+            print(f"  Roster validation cycle failed: {e.message}")
+
     state = client.call("gamestate")
     jokers = [j.get("label", "?") for j in state.get("jokers", {}).get("cards", [])]
     print(f"\nRoster: {jokers}")
