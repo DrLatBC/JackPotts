@@ -112,9 +112,9 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     ("j_castle",        "parsed_chips", {"fallback": 15}),
     ("j_constellation", "parsed_xmult", {"fallback": 1.3}),
     ("j_madness",       "parsed_xmult", {"fallback": 2.0}),
-    ("j_vampire",       "parsed_xmult", {"fallback": 1.3}),
+    # j_vampire — moved to complex.py (before-phase enhancement stripping + pre-increment)
     ("j_hologram",      "parsed_xmult", {"fallback": 1.5}),
-    ("j_obelisk",       "parsed_xmult", {"fallback": 1.6}),
+    # j_obelisk — moved to complex.py (needs most-played hand check + pre-scoring increment)
     ("j_ramen",         "parsed_xmult", {"fallback": 1.5}),
     ("j_lucky_cat",     "parsed_xmult", {"fallback": 1.5}),
     ("j_campfire",      "parsed_xmult", {"fallback": 1.5}),

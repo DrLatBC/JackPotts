@@ -32,6 +32,8 @@ def is_debuffed(card: dict[str, Any]) -> bool:
 
 def card_rank(card: dict[str, Any]) -> str | None:
     """Return the rank character, or None for Stone/non-playing cards."""
+    if _modifier(card).get("enhancement") == "STONE":
+        return None
     return card.get("value", {}).get("rank")
 
 
@@ -43,7 +45,7 @@ def card_suit(card: dict[str, Any]) -> str | None:
 def card_suits(card: dict[str, Any], smeared: bool = False) -> set[str]:
     """Return all suits this card counts as (Wild = all four, Smeared = merged pairs)."""
     enhancement = _modifier(card).get("enhancement")
-    if enhancement == "WILD":
+    if enhancement == "WILD" and not is_debuffed(card):
         return set(ALL_SUITS)
     if enhancement == "STONE":
         return set()  # Stone cards have no suit

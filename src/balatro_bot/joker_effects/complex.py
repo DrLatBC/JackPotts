@@ -93,8 +93,10 @@ def _supernova(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += played
 
 def _green_joker(ctx: ScoreContext, j: dict) -> None:
-    """Green Joker: parsed value already reflects the current accumulated mult."""
-    ctx.mult += _ab_mult(j, fallback=5)
+    """Green Joker: +mult per hand played, -mult per discard.
+    The ability field is pre-increment, so add +hand_add for the current hand."""
+    ab = _ability(j)
+    ctx.mult += _ab_mult(j, fallback=0) + ab.get("hand_add", 1)
 
 def _ride_the_bus(ctx: ScoreContext, j: dict) -> None:
     """Ride the Bus: +mult per hand without face cards, resets on face cards.
@@ -271,6 +273,46 @@ def _wee(ctx: ScoreContext, j: dict) -> None:
     ctx.chips += _ab_chips(j, fallback=16)
 
 
+def _vampire(ctx: ScoreContext, j: dict) -> None:
+    """Vampire: xMult that grows by stripping enhancements from scoring cards.
+
+    The before-phase logic (strip enhancements, count enhanced cards, compute
+    new xmult) is handled in hand_evaluator._apply_before_phase() because it
+    must happen BEFORE card scoring. Here we just apply the pre-computed xmult.
+    """
+    if ctx.vampire_xmult is not None:
+        ctx.mult *= ctx.vampire_xmult
+    else:
+        # Fallback: no before-phase ran (e.g. called without full pipeline)
+        ctx.mult *= _ab_xmult(j, fallback=1.0)
+
+
+def _obelisk(ctx: ScoreContext, j: dict) -> None:
+    """Obelisk: xMult that grows when playing a non-most-played hand type.
+    Resets to X1 when playing the most-played hand type.
+    The ability field is pre-increment, so add +extra when applicable.
+    Ties count as 'playing your most-played' (no increment)."""
+    ab = _ability(j)
+    base_xmult = _ab_xmult(j, fallback=1.0)
+    extra = ab.get("extra", 0.2)
+
+    # Determine the most-played count and current hand's count
+    most_played_count = 0
+    for ht, info in ctx.hand_levels.items():
+        played = info.get("played", 0)
+        if played > most_played_count:
+            most_played_count = played
+
+    current_played = ctx.hand_levels.get(ctx.hand_name, {}).get("played", 0)
+
+    if current_played >= most_played_count:
+        # Playing the most-played hand (or tied): game resets to X1
+        ctx.mult *= 1.0  # noop
+    else:
+        # Playing a different hand: game increments before scoring
+        ctx.mult *= base_xmult + extra
+
+
 # Collected dict of complex effects for the registry
 COMPLEX_EFFECTS: dict[str, object] = {
     "j_half": _half,
@@ -318,4 +360,6 @@ COMPLEX_EFFECTS: dict[str, object] = {
     "j_stuntman": _stuntman,
     "j_idol": _idol,
     "j_wee": _wee,
+    "j_obelisk": _obelisk,
+    "j_vampire": _vampire,
 }

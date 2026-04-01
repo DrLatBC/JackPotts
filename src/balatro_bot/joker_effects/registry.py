@@ -25,6 +25,19 @@ JOKER_EFFECTS["j_hiker"] = _noop
 # --- Held-in-hand phase jokers (applied in _apply_card_scoring, before joker effects) ---
 # Baron: x1.5 per held King — fires alongside Steel in held-in-hand phase
 JOKER_EFFECTS["j_baron"] = _noop
+# Shoot the Moon: +13 mult per held Queen — fires in held-in-hand phase
+JOKER_EFFECTS["j_shoot_the_moon"] = _noop
+
+# --- Per-card jokers (applied per trigger in _apply_card_scoring, before joker effects) ---
+# These fire "when scored" interleaved with Glass xmult / editions / retriggers.
+for key in (
+    "j_fibonacci", "j_even_steven", "j_odd_todd", "j_scholar",
+    "j_smiley", "j_scary_face", "j_walkie_talkie",
+    "j_photograph", "j_triboulet", "j_ancient",
+    "j_arrowhead", "j_onyx_agate", "j_bloodstone",
+    "j_greedy_joker", "j_lusty_joker", "j_wrathful_joker", "j_gluttenous_joker",
+):
+    JOKER_EFFECTS[key] = _noop
 
 # --- Economy jokers (no scoring effect, but recognized as "known") ---
 for key in (

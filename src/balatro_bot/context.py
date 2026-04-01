@@ -11,6 +11,29 @@ from balatro_bot.strategy import Strategy, compute_strategy
 if TYPE_CHECKING:
     from typing import Any
 
+import math
+
+
+def flint_halve_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
+    """Return a copy of hand_levels with chips and mult halved (The Flint).
+
+    The Flint halves base chips and mult at scoring time AFTER planet level-ups:
+      chips → max(floor(chips * 0.5 + 0.5), 0)
+      mult  → max(floor(mult  * 0.5 + 0.5), 1)
+    """
+    halved = {}
+    for hand_name, data in hand_levels.items():
+        if not isinstance(data, dict):
+            halved[hand_name] = data
+            continue
+        d = dict(data)
+        if "chips" in d:
+            d["chips"] = max(math.floor(d["chips"] * 0.5 + 0.5), 0)
+        if "mult" in d:
+            d["mult"] = max(math.floor(d["mult"] * 0.5 + 0.5), 1)
+        halved[hand_name] = d
+    return halved
+
 
 @dataclass
 class RoundContext:
@@ -81,6 +104,10 @@ class RoundContext:
                 blind_score = b.get("score", 0)
                 blind_name = b.get("name", "")
                 break
+
+        # The Flint: halve base chips and mult (after planet level-ups)
+        if blind_name == "The Flint":
+            hand_levels = flint_halve_hand_levels(hand_levels)
 
         min_cards = 5 if blind_name == "The Psychic" else 1
 

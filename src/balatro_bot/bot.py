@@ -180,14 +180,24 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
             mismatch = " (actual unreliable)"
 
         scoring_str = ", ".join(fmt_card(c) for c in scoring)
+
+        def _mod(c: dict) -> dict:
+            m = c.get("modifier", {})
+            return m if isinstance(m, dict) else {}
+
+        enhs_str = ",".join(sorted(filter(None, {_mod(c).get("enhancement", "") for c in scoring})))
+        seals_str = ",".join(sorted(filter(None, {_mod(c).get("seal", "") for c in scoring})))
+        eds_str = ",".join(sorted(filter(None, {_mod(c).get("edition", "") for c in scoring})))
+
         _scoring_log.info(
             "%s [%s] scoring=[%s](%d) | base: %d/%d | pre-joker: %d/%.1f | jokers: [%s] | "
-            "final: %d/%.1f | est=%d actual=%d%s",
+            "final: %d/%.1f | enhs=[%s] seals=[%s] eds=[%s] | est=%d actual=%d%s",
             detail["hand_name"], cards_str, scoring_str, len(scoring),
             detail["base_chips"], detail["base_mult"],
             detail["pre_joker_chips"], detail["pre_joker_mult"],
             joker_str,
             detail["post_joker_chips"], detail["post_joker_mult"],
+            enhs_str, seals_str, eds_str,
             detail["total"], actual_chips,
             mismatch,
         )
@@ -641,11 +651,19 @@ def run_bot(
             _scoring_log.info("  PRE_PLAY chips_in_round=%d", pre_play_chips)
             hand_cards_snap = state.get("hand", {}).get("cards", [])
             play_indices = set(params.get("cards", []))
+            # Detect The Flint and halve hand levels for accurate scoring
+            snap_hand_levels = state.get("hands", {})
+            for b in state.get("blinds", {}).values():
+                if isinstance(b, dict) and b.get("status") == "CURRENT" and b.get("name") == "The Flint":
+                    from balatro_bot.context import flint_halve_hand_levels
+                    snap_hand_levels = flint_halve_hand_levels(snap_hand_levels)
+                    break
+
             play_snapshot = {
                 "played": [hand_cards_snap[i] for i in params.get("cards", []) if i < len(hand_cards_snap)],
                 "held": [c for j, c in enumerate(hand_cards_snap) if j not in play_indices],
                 "jokers": state.get("jokers", {}).get("cards", []),
-                "hand_levels": state.get("hands", {}),
+                "hand_levels": snap_hand_levels,
                 "money": state.get("money", 0),
                 "discards_left": state.get("round", {}).get("discards_left", 0),
                 # Game does NOT decrement hands_left before scoring — Acrobat/Dusk

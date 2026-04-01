@@ -30,6 +30,7 @@ class ScoreContext:
     pareidolia: bool = False
     smeared: bool = False
     ancient_suit: str | None = None
+    vampire_xmult: float | None = None  # Pre-computed Vampire xmult (after before-phase increment)
 
 
 def _count_suit_in_scoring(ctx: ScoreContext, suit: str) -> int:
