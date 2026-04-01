@@ -163,13 +163,16 @@ def _find_enhancement_targets(hand_cards, count, rank_affinity=None):
     return [i for i, _, _ in candidates[:count]]
 
 
-def _find_suit_convert_targets(hand_cards, target_suit, count):
+def _find_suit_convert_targets(hand_cards, target_suit, count, rank_affinity=None):
     candidates = []
     for i, c in enumerate(hand_cards):
         s = card_suit(c)
         if s and s != target_suit:
-            candidates.append(i)
-    return candidates[:count]
+            r = card_rank(c)
+            aff = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
+            candidates.append((i, aff))
+    candidates.sort(key=lambda x: x[1])  # low affinity first = convert first
+    return [i for i, _ in candidates[:count]]
 
 
 def _find_rank_up_targets(hand_cards, count, rank_affinity=None):
@@ -322,7 +325,7 @@ def _find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, strat
     if effect_type == "suit_convert":
         if not extra or strat.suit_affinity(extra) <= 0:
             return (None, 0)
-        targets = _find_suit_convert_targets(hand_cards, extra, max_count)
+        targets = _find_suit_convert_targets(hand_cards, extra, max_count, rank_affinity=rank_aff)
         return (targets, 2.0 + strat.suit_affinity(extra)) if targets else (None, 0)
     if effect_type == "rank_up":
         targets = _find_rank_up_targets(hand_cards, max_count, rank_affinity=rank_aff)
@@ -467,6 +470,17 @@ def _score_targeting_tarot(
             "Bonus": 2.0, "Wild": 2.5, "Gold": 0.0,  # Gold scored separately
         }
         base = enhance_scores.get(extra, 2.0)
+        # Synergy bonuses for enhancement-caring jokers
+        jokers = state.get("jokers", {}).get("cards", [])
+        joker_keys = {j.get("key") for j in jokers}
+        if extra == "Lucky":
+            if "j_lucky_cat" in joker_keys:
+                base += 2.0
+            if "j_oops" in joker_keys:
+                base += 1.5
+        elif extra == "Steel":
+            if "j_steel_joker" in joker_keys:
+                base += 2.0
         # Enhancements compound — more valuable early
         if ante <= 3:
             base *= 1.3
@@ -487,3 +501,59 @@ def _score_targeting_tarot(
         return 1.0
 
     return 1.5  # fallback for other effect types
+
+
+def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict) -> float:
+    """Score Hex usage/pick. Returns 0.0 to skip, or positive score.
+
+    Hex adds Polychrome (x1.5) to a random joker and destroys the rest.
+    Worth it when one joker dominates the roster and the rest are expendable.
+    """
+    from balatro_bot.strategy import compute_strategy
+    from balatro_bot.joker_valuation import evaluate_joker_value
+
+    if not jokers:
+        return 0.0
+    if len(jokers) <= 1:
+        return 3.5  # 1 joker: free Polychrome, great
+
+    owned_keys = {j.get("key") for j in jokers}
+    # Never use with multiple scaling jokers — losing any is unacceptable
+    scaling_count = len(owned_keys & SCALING_JOKERS)
+    if scaling_count >= 2:
+        return 0.0
+
+    # Evaluate each joker's value
+    strat = compute_strategy(jokers, hand_levels)
+    values = []
+    for j in jokers:
+        val = evaluate_joker_value(j, jokers, hand_levels, ante, strat)
+        values.append((j, val))
+    values.sort(key=lambda x: x[1], reverse=True)
+
+    best_val = values[0][1]
+    rest_total = sum(v for _, v in values[1:])
+
+    # Hex is worth it when:
+    # - Best joker is strong enough to carry (>= 5.0 value)
+    # - AND the rest aren't worth more than the Polychrome upgrade
+    # Polychrome adds x1.5 permanently — roughly worth 4 value points
+    polychrome_value = 4.0
+    if best_val < 5.0:
+        return 0.0  # best joker not strong enough to solo
+    if rest_total > polychrome_value + 2.0:
+        return 0.0  # sacrificing too much
+
+    # Scale score by how dominant the best joker is
+    dominance = best_val / max(rest_total, 1.0)
+    score = 3.5 + dominance
+
+    # Late-game soft penalty: harder to rebuild, need a truly dominant joker
+    if ante >= 7:
+        score *= 0.4
+    elif ante >= 6:
+        score *= 0.5
+    elif ante >= 5:
+        score *= 0.75
+
+    return min(score, 8.0)

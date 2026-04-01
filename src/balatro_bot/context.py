@@ -37,6 +37,30 @@ class RoundContext:
     eye_used_hands: set[str] | None = None
     scoring_suit: str | None = None
 
+    @property
+    def round_outlook(self) -> str:
+        """Project whether the round is winnable at the current scoring rate.
+
+        Returns one of:
+          "won"         — chips_remaining <= 0, blind already beaten
+          "comfortable" — projected output covers blind with margin (>=1.5x)
+          "tight"       — projected is close, every hand matters (0.8x–1.5x)
+          "hopeless"    — projected can't reach the blind (<0.8x)
+        """
+        if self.chips_remaining <= 0:
+            return "won"
+        effective = self.best.total * self.score_discount if self.best else 0
+        if effective <= 0:
+            return "hopeless"
+        projected = effective * self.hands_left
+        ratio = projected / self.chips_remaining
+        if ratio >= 1.5:
+            return "comfortable"
+        elif ratio >= 0.8:
+            return "tight"
+        else:
+            return "hopeless"
+
     @staticmethod
     def from_state(state: dict[str, Any]) -> RoundContext:
         cached = state.get("_round_ctx")

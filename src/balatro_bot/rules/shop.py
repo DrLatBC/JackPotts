@@ -15,6 +15,7 @@ from balatro_bot.constants import (
 from balatro_bot.strategy import Strategy, compute_strategy, JOKER_HAND_AFFINITY
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
 from balatro_bot.joker_valuation import evaluate_joker_value, UTILITY_VALUE
+from balatro_bot.rules._helpers import evaluate_hex
 
 if TYPE_CHECKING:
     from typing import Any
@@ -446,15 +447,14 @@ class FeedCampfire:
                     reason=f"Campfire: sell {card.get('label', '?')} (+X0.25 Mult, {hand_type} has no affinity)",
                 )
 
-            # Hex: sell if it would destroy our lineup (same gates as UseImmediateConsumables)
+            # Hex: sell if not worth using (nuanced evaluation)
             if key == "c_hex":
-                joker_count = state.get("jokers", {}).get("count", 0)
-                joker_limit = state.get("jokers", {}).get("limit", 5)
-                owned_keys = {j.get("key") for j in owned_jokers}
                 ante = state.get("ante_num", 1)
-                if joker_count >= joker_limit or owned_keys & SCALING_JOKERS or ante >= 5:
+                hand_levels = state.get("hands", {})
+                hex_score = evaluate_hex(owned_jokers, ante, hand_levels)
+                if hex_score <= 0.0:
                     return SellConsumable(
-                        i, reason=f"Campfire: sell Hex (+X0.25 Mult, would destroy lineup)",
+                        i, reason="Campfire: sell Hex (+X0.25 Mult, not worth using)",
                     )
 
             # Tarots/Spectrals we know how to use — keep them
@@ -821,8 +821,10 @@ class BuyJokersInShop:
                 force_buy = True
 
             # Stencil restriction: filling slots reduces its ×mult
+            # Stencil counts empty slots + all Stencils (including itself)
             if any(j.get("key") == "j_stencil" for j in joker_slots.get("cards", [])):
-                stencil_mult_after = (jlimit - joker_count - 1) + 1
+                stencil_count = sum(1 for j in joker_slots.get("cards", []) if j.get("key") == "j_stencil")
+                stencil_mult_after = (jlimit - joker_count - 1) + stencil_count
                 if stencil_mult_after <= 2 and value < 5.0:
                     passed_on.append(f"{label}(${cost}, Stencil restriction: only ×{stencil_mult_after} left)")
                     continue

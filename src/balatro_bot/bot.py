@@ -7,6 +7,7 @@ import logging.handlers
 import random
 import string
 import time
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import httpx
@@ -128,6 +129,7 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
             hands_left=snapshot["hands_left"],
             joker_limit=snapshot["joker_limit"],
             ancient_suit=snapshot.get("ancient_suit"),
+            deck_count=snapshot.get("deck_count", 0),
         )
 
         post_chips = new_state.get("round", {}).get("chips", 0)
@@ -153,6 +155,25 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
 
         mismatch = ""
         is_mismatch = actual_reliable and detail["total"] != actual_chips
+        # Probability-based effects make scoring non-deterministic — the bot
+        # uses expected values but the game rolls dice.  Tag these as noise.
+        if is_mismatch:
+            noise_sources = []
+            if "j_misprint" in joker_keys:
+                noise_sources.append("misprint")
+            if "j_bloodstone" in joker_keys:
+                noise_sources.append("bloodstone")
+            # Lucky cards: 1/5 chance for +20 mult per scored Lucky card
+            if any(
+                isinstance(c.get("modifier", {}), dict)
+                and c.get("modifier", {}).get("enhancement") == "LUCKY"
+                for c in scoring
+            ):
+                noise_sources.append("lucky")
+            if noise_sources:
+                diff = actual_chips - detail["total"]
+                mismatch = f" MISMATCH_NOISE(diff={diff:+d}, {'+'.join(noise_sources)})"
+                is_mismatch = False
         if is_mismatch:
             mismatch = f" MISMATCH(diff={actual_chips - detail['total']:+d})"
         elif not actual_reliable:
@@ -174,6 +195,32 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
         # On mismatch, dump per-card scoring breakdown and raw card data
         if is_mismatch:
             from balatro_bot.cards import card_chip_value, card_mult_value, card_xmult_value, _modifier
+            from balatro_bot.joker_effects import parse_effect_value, retrigger_count, ScoreContext
+
+            # Dump raw hand level data from API for this hand type
+            hand_level_data = snapshot["hand_levels"].get(hand_name, {})
+            _scoring_log.info("  hand_level[%s] = %s", hand_name, hand_level_data)
+
+            # Score context intermediate states
+            _scoring_log.info(
+                "  scoring_ctx: base=%d/%d pre_joker=%d/%.1f post_joker=%d/%.1f total=%d",
+                detail["base_chips"], detail["base_mult"],
+                detail["pre_joker_chips"], detail["pre_joker_mult"],
+                detail["post_joker_chips"], detail["post_joker_mult"],
+                detail["total"],
+            )
+
+            # Build minimal context for retrigger calculation
+            ctx_for_retrigger = ScoreContext(
+                chips=0, mult=0.0, hand_name=hand_name,
+                scoring_cards=scoring, played_cards=played,
+                held_cards=snapshot["held"], hand_levels=snapshot["hand_levels"],
+                jokers=snapshot["jokers"], money=0, discards_left=0, hands_left=1,
+                joker_limit=snapshot.get("joker_limit", 5),
+                pareidolia="j_pareidolia" in joker_keys,
+                smeared="j_smeared" in joker_keys,
+            )
+
             for i, c in enumerate(scoring):
                 mod = _modifier(c)
                 rank = c.get("value", {}).get("rank", "?")
@@ -190,35 +237,100 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
                 mult = card_mult_value(c)
                 xmult = card_xmult_value(c)
                 perma = c.get("value", {}).get("perma_bonus", 0) or 0
+                triggers = retrigger_count(c, ctx_for_retrigger)
                 _scoring_log.info(
-                    "  card[%d] %s %s%s | chips=%d mult=%.1f xmult=%.2f | "
+                    "  card[%d] %s %s (SCORING) | chips=%d mult=%.1f xmult=%.2f triggers=%d | "
                     "enh=%s ed=%s seal=%s debuff=%s perma=%d | raw_mod=%s",
                     i, rank, suit,
-                    " (SCORING)" if c in scoring else "",
-                    chips, mult, xmult,
+                    chips, mult, xmult, triggers,
                     enh or "-", edition or "-", seal or "-", debuff, perma,
                     mod,
                 )
-            # Also dump held cards if any have steel
+            # Dump all held cards (Baron checks Kings, Shoot the Moon checks Queens, etc.)
             for i, c in enumerate(snapshot["held"]):
                 mod_h = _modifier(c)
-                if mod_h.get("enhancement") == "STEEL":
-                    _scoring_log.info(
-                        "  held[%d] STEEL %s %s | xmult=1.5",
-                        i, c.get("value", {}).get("rank", "?"),
-                        c.get("value", {}).get("suit", "?"),
-                    )
-            # Dump raw joker ability data so we can see what the API provides
+                rank_h = c.get("value", {}).get("rank", "?")
+                suit_h = c.get("value", {}).get("suit", "?")
+                enh_h = mod_h.get("enhancement", "")
+                _scoring_log.info("  held[%d] %s %s | enh=%s", i, rank_h, suit_h, enh_h or "-")
+            # Dump raw joker ability data + parsed values so we can compare
             for i, j in enumerate(snapshot["jokers"]):
                 ability = j.get("value", {}).get("ability", {})
-                effect = j.get("value", {}).get("effect", "")
+                effect = j.get("value", {}).get("effect", "") or ""
+                if not isinstance(effect, str):
+                    effect = ""
+                parsed = parse_effect_value(effect)
+                rarity = j.get("value", {}).get("rarity", "?")
+                jmod = j.get("modifier", {})
+                if not isinstance(jmod, dict):
+                    jmod = {}
+                jed = jmod.get("edition", "")
+                jed_parts = []
+                if jed:
+                    jed_parts.append(jed)
+                    if jmod.get("edition_mult"):
+                        jed_parts.append(f"mult={jmod['edition_mult']}")
+                    if jmod.get("edition_chips"):
+                        jed_parts.append(f"chips={jmod['edition_chips']}")
+                    if jmod.get("edition_x_mult"):
+                        jed_parts.append(f"x_mult={jmod['edition_x_mult']}")
+                jed_str = " ".join(jed_parts) if jed_parts else "-"
                 _scoring_log.info(
-                    "  joker[%d] %s | ability=%s | effect=%s",
-                    i, j.get("key", "?"), ability,
+                    "  joker[%d] %s | rarity=%s ed=%s | ability=%s | parsed=%s | effect=%s",
+                    i, j.get("key", "?"), rarity, jed_str, ability, parsed,
                     effect[:120] if effect else "-",
                 )
     except Exception as e:
         _scoring_log.warning("scoring log error: %s", e)
+
+
+def _format_deck_snapshot(deck_cards: list) -> str:
+    """Format a compact deck snapshot for logging at ante transitions."""
+    ENHANCEMENT_ABBR = {
+        "GLASS": "GL", "STEEL": "ST", "WILD": "WL",
+        "BONUS": "BN", "GOLD": "GD", "LUCKY": "LK", "MULT": "MU",
+    }
+    SEAL_ABBR = {
+        "Red Seal": "RS", "Gold Seal": "GS",
+        "Blue Seal": "BS", "Purple Seal": "PS",
+    }
+    SUIT_SYM = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}
+    RANK_ORDER = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"]
+
+    by_rank: dict[str, list] = defaultdict(list)
+    stone_count = 0
+
+    for card in deck_cards:
+        mod = card.get("modifier", {})
+        if not isinstance(mod, dict):
+            mod = {}
+        enh = mod.get("enhancement", "")
+        if enh == "STONE":
+            stone_count += 1
+            continue
+        rank = card.get("value", {}).get("rank")
+        suit = card.get("value", {}).get("suit")
+        if not rank or not suit:
+            continue
+        seal = mod.get("seal", "")
+        by_rank[rank].append((suit, enh, seal))
+
+    parts = []
+    for rank in RANK_ORDER:
+        if rank not in by_rank:
+            continue
+        inner = rank
+        for suit, enh, seal in sorted(by_rank[rank], key=lambda x: x[0]):
+            sym = SUIT_SYM.get(suit, suit)
+            suffix = ENHANCEMENT_ABBR.get(enh, "") + SEAL_ABBR.get(seal, "")
+            inner += sym + suffix
+        parts.append(f"[{inner}]")
+
+    if stone_count:
+        parts.append(f"[STN×{stone_count}]")
+
+    total = sum(len(v) for v in by_rank.values()) + stone_count
+    return f"({total}): " + " ".join(parts)
 
 
 def run_bot(
@@ -352,6 +464,9 @@ def run_bot(
                 ante_num, len(joker_cards),
                 ", ".join(roster_parts) if roster_parts else "none",
             )
+
+            deck_cards = state.get("cards", {}).get("cards", [])
+            log.info("[ANTE %s] Deck %s", ante_num, _format_deck_snapshot(deck_cards))
 
             # Strategy snapshot
             from balatro_bot.strategy import compute_strategy
@@ -523,6 +638,7 @@ def run_bot(
         play_snapshot = None
         if method == "play":
             pre_play_chips = state.get("round", {}).get("chips", 0)
+            _scoring_log.info("  PRE_PLAY chips_in_round=%d", pre_play_chips)
             hand_cards_snap = state.get("hand", {}).get("cards", [])
             play_indices = set(params.get("cards", []))
             play_snapshot = {
@@ -532,10 +648,13 @@ def run_bot(
                 "hand_levels": state.get("hands", {}),
                 "money": state.get("money", 0),
                 "discards_left": state.get("round", {}).get("discards_left", 0),
+                # Game does NOT decrement hands_left before scoring — Acrobat/Dusk
+                # check the pre-play value. Use the raw state value.
                 "hands_left": state.get("round", {}).get("hands_left", 1),
                 "joker_limit": state.get("jokers", {}).get("limit", 5),
                 "hand_name": getattr(action, "hand_name", ""),
                 "ancient_suit": state.get("round", {}).get("ancient_suit"),
+                "deck_count": state.get("cards", {}).get("count", 0),
             }
 
         # Capture expected hand score for chip accounting on timeout
@@ -557,6 +676,8 @@ def run_bot(
             actions_taken += 1
             if method == "play":
                 total_hands_played += 1
+                post_chips = state.get("round", {}).get("chips", 0)
+                _scoring_log.info("  POST_PLAY chips_in_round=%d, delta=%d", post_chips, post_chips - pre_play_chips)
                 _log_played_hand(play_snapshot, pre_play_chips, state, fmt_card)
             elif method == "discard":
                 total_discards_used += 1

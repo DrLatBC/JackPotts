@@ -26,7 +26,9 @@ class ScoreContext:
     discards_left: int
     hands_left: int
     joker_limit: int = 5
+    deck_count: int = 0
     pareidolia: bool = False
+    smeared: bool = False
     ancient_suit: str | None = None
 
 
@@ -34,7 +36,7 @@ def _count_suit_in_scoring(ctx: ScoreContext, suit: str) -> int:
     return sum(
         retrigger_count(c, ctx)
         for c in ctx.scoring_cards
-        if not is_debuffed(c) and suit in card_suits(c)
+        if not is_debuffed(c) and suit in card_suits(c, smeared=ctx.smeared)
     )
 
 

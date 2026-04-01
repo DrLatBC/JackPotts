@@ -9,12 +9,14 @@ score (chips * mult after base hand values and card chip contributions).
 from __future__ import annotations
 
 from itertools import combinations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from balatro_bot.constants import HAND_INFO, HAND_TYPES, RANK_ORDER
 from balatro_bot.cards import (
     _modifier,
     card_chip_value,
+    card_edition_mult_value,
+    card_edition_xmult_value,
     card_mult_value,
     card_rank,
     card_suit,
@@ -27,6 +29,15 @@ from balatro_bot.cards import (
 
 if TYPE_CHECKING:
     from typing import Any
+
+
+class ChaseCandidate(NamedTuple):
+    """Enriched discard suggestion with chase metadata for EV calculation."""
+    discard_indices: list[int]
+    reason: str
+    chase_hand: str        # hand type being chased (e.g. "Flush"), or current best
+    keep_indices: list[int]
+    hit_prob: float
 
 
 # ---------------------------------------------------------------------------
@@ -444,12 +455,25 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
 
     for card in scored_in_play_order:
         triggers = retrigger_count(card, ctx)
+        # Game scoring order per card:
+        # 1. playing_card: base chips + enhancement chips + edition chips (Foil)
         ctx.chips += card_chip_value(card) * triggers
+        # 2. playing_card: enhancement mult (MULT +4, Lucky +4 expected)
         ctx.mult  += card_mult_value(card) * triggers
+        # 3. enhancement xmult (Glass x2.0)
         xmv = card_xmult_value(card)
         if xmv != 1.0:
             for _ in range(triggers):
                 ctx.mult *= xmv
+        # 4. edition mult (HOLO +10) — fires AFTER enhancement xmult
+        ed_mult = card_edition_mult_value(card)
+        if ed_mult:
+            ctx.mult += ed_mult * triggers
+        # 5. edition xmult (Polychrome x1.5) — fires AFTER edition mult
+        ed_xmult = card_edition_xmult_value(card)
+        if ed_xmult != 1.0:
+            for _ in range(triggers):
+                ctx.mult *= ed_xmult
         # Per-card xmult joker effects fire on each trigger
         if not is_debuffed(card):
             rank = card_rank(card)
@@ -458,12 +482,23 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
                 ctx.mult *= _photo_xm ** triggers
             if _triboule_xm and rank in ("K", "Q"):
                 ctx.mult *= _triboule_xm ** triggers
-            if _ancient_xm and ancient_suit and ancient_suit in card_suits(card):
+            if _ancient_xm and ancient_suit and ancient_suit in card_suits(card, smeared=ctx.smeared):
                 ctx.mult *= _ancient_xm ** triggers
 
+    # Held-in-hand effects: Steel cards and Baron (fire before joker effects)
+    _baron_xm = 0.0
+    for j in (jokers or []):
+        if j.get("key") == "j_baron":
+            from balatro_bot.joker_effects.parsers import _ability
+            _baron_xm = _ability(j).get("extra", 1.5)
+            break
+
     for card in ctx.held_cards:
-        if not is_debuffed(card) and _modifier(card).get("enhancement") == "STEEL":
-            ctx.mult *= 1.5
+        if not is_debuffed(card):
+            if _modifier(card).get("enhancement") == "STEEL":
+                ctx.mult *= 1.5
+            if _baron_xm and card_rank(card) == "K":
+                ctx.mult *= _baron_xm
 
 
 def score_hand(
@@ -478,6 +513,7 @@ def score_hand(
     hands_left: int = 1,
     joker_limit: int = 5,
     ancient_suit: str | None = None,
+    deck_count: int = 0,
 ) -> tuple[int, int, int]:
     """Compute (chips, mult, total) for a hand."""
     base_chips, base_mult, _ = HAND_INFO[hand_name]
@@ -496,6 +532,10 @@ def score_hand(
             xmv = card_xmult_value(c)
             if xmv != 1.0:
                 total_mult *= xmv
+            total_mult += card_edition_mult_value(c)
+            exmv = card_edition_xmult_value(c)
+            if exmv != 1.0:
+                total_mult *= exmv
         for c in (held_cards or []):
             if not is_debuffed(c) and _modifier(c).get("enhancement") == "STEEL":
                 total_mult *= 1.5
@@ -518,7 +558,9 @@ def score_hand(
         discards_left=discards_left,
         hands_left=hands_left,
         joker_limit=joker_limit,
+        deck_count=deck_count,
         pareidolia="j_pareidolia" in joker_keys_set,
+        smeared="j_smeared" in joker_keys_set,
         ancient_suit=ancient_suit,
     )
 
@@ -546,6 +588,7 @@ def score_hand_detailed(
     hands_left: int = 1,
     joker_limit: int = 5,
     ancient_suit: str | None = None,
+    deck_count: int = 0,
 ) -> dict:
     """Like score_hand but returns a full breakdown dict for logging."""
     from balatro_bot.joker_effects import ScoreContext, apply_joker_effects_detailed, retrigger_count
@@ -570,11 +613,15 @@ def score_hand_detailed(
     if not jokers:
         total_chips = base_chips
         total_mult = float(base_mult)
-        for _, chips, mult, xmult in card_details:
+        for c, (_, chips, mult, xmult) in zip(scoring_cards, card_details):
             total_chips += chips
             total_mult += mult
             if xmult != 1.0:
                 total_mult *= xmult
+            total_mult += card_edition_mult_value(c)
+            exmv = card_edition_xmult_value(c)
+            if exmv != 1.0:
+                total_mult *= exmv
         for c in (held_cards or []):
             if not is_debuffed(c) and _modifier(c).get("enhancement") == "STEEL":
                 total_mult *= 1.5
@@ -602,7 +649,9 @@ def score_hand_detailed(
         discards_left=discards_left,
         hands_left=hands_left,
         joker_limit=joker_limit,
+        deck_count=deck_count,
         pareidolia="j_pareidolia" in joker_keys_set,
+        smeared="j_smeared" in joker_keys_set,
         ancient_suit=ancient_suit,
     )
 
@@ -736,6 +785,7 @@ def enumerate_hands(
     required_card_indices: set[int] | None = None,
     ancient_suit: str | None = None,
     excluded_hands: set[str] | None = None,
+    deck_count: int = 0,
 ) -> list[HandCandidate]:
     """Enumerate all valid poker hands from the cards in hand."""
     candidates: list[HandCandidate] = []
@@ -765,6 +815,7 @@ def enumerate_hands(
                 jokers=jokers, played_cards=subset, held_cards=held,
                 money=money, discards_left=discards_left, hands_left=hands_left,
                 joker_limit=joker_limit, ancient_suit=ancient_suit,
+                deck_count=deck_count,
             )
 
             candidates.append(HandCandidate(
@@ -803,6 +854,7 @@ def best_hand(
     required_card_indices: set[int] | None = None,
     ancient_suit: str | None = None,
     excluded_hands: set[str] | None = None,
+    deck_count: int = 0,
 ) -> HandCandidate | None:
     """Return the single best hand playable from the given cards."""
     candidates = enumerate_hands(
@@ -815,6 +867,7 @@ def best_hand(
         required_card_indices=required_card_indices,
         ancient_suit=ancient_suit,
         excluded_hands=excluded_hands,
+        deck_count=deck_count,
     )
     return candidates[0] if candidates else None
 
@@ -857,7 +910,7 @@ def discard_candidates(
     chips_remaining: int = 0,
     jokers: list[dict] | None = None,
     required_hand: str | None = None,
-) -> list[tuple[list[int], str]]:
+) -> list[ChaseCandidate]:
     """Suggest discard sets that improve toward better hands."""
     best = best_hand(hand_cards, hand_levels, max_select, jokers=jokers, required_hand=required_hand)
     if not best:
@@ -983,12 +1036,12 @@ def discard_candidates(
 
     strategies.sort(key=chase_score, reverse=True)
 
-    results = []
+    results: list[ChaseCandidate] = []
     has_blackboard = any(j.get("key") == "j_blackboard" for j in (jokers or []))
 
-    for chase_name, keep, _prob, reason in strategies:
+    for chase_name, keep, prob, reason in strategies:
         to_discard = cards_not_in(hand_cards, set(keep), blackboard=has_blackboard, rank_affinity=rank_aff)[:max_discard]
         if to_discard:
-            results.append((to_discard, reason))
+            results.append(ChaseCandidate(to_discard, reason, chase_name, list(keep), prob))
 
     return results

@@ -21,8 +21,17 @@ def _half(ctx: ScoreContext, j: dict) -> None:
         ctx.mult += ab.get("mult", 20)
 
 def _stencil(ctx: ScoreContext, j: dict) -> None:
-    empty = (ctx.joker_limit - len(ctx.jokers)) + 1
-    ctx.mult *= max(1, empty)
+    # "X1 Mult for each empty Joker slot. Joker Stencils included."
+    # Each Stencil counts all Stencils as empty, not just itself.
+    empty_slots = ctx.joker_limit - len(ctx.jokers)
+    stencil_count = sum(1 for jk in ctx.jokers if jk.get("key") == "j_stencil")
+    value = empty_slots + stencil_count
+    ctx.mult *= max(1, value)
+
+def _blue_joker(ctx: ScoreContext, j: dict) -> None:
+    # +N Chips per remaining card in deck (ability.extra = chips per card, default 2)
+    chips_per_card = _ability(j).get("extra", 2)
+    ctx.chips += chips_per_card * ctx.deck_count
 
 def _banner(ctx: ScoreContext, j: dict) -> None:
     ctx.chips += _ability(j).get("extra", 30) * ctx.discards_left
@@ -36,6 +45,8 @@ def _loyalty_card(ctx: ScoreContext, j: dict) -> None:
     ab = _ability(j)
     remaining = ab.get("loyalty_remaining")
     if remaining is not None:
+        # loyalty_remaining counts down each hand played. At 0, the card fires.
+        # The snapshot is pre-play state: remaining=0 means it fires this hand.
         if remaining == 0:
             ctx.mult *= ab.get("Xmult", 4)
     else:
@@ -82,26 +93,23 @@ def _supernova(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += played
 
 def _green_joker(ctx: ScoreContext, j: dict) -> None:
-    """Green Joker increments in context.before (before scoring), so add hand_add."""
-    ab = _ability(j)
-    ctx.mult += _ab_mult(j, fallback=5) + ab.get("hand_add", 1)
+    """Green Joker: parsed value already reflects the current accumulated mult."""
+    ctx.mult += _ab_mult(j, fallback=5)
 
 def _ride_the_bus(ctx: ScoreContext, j: dict) -> None:
-    """Ride the Bus: +extra per hand without face cards. Resets on face cards.
-    Increments in context.before, so snapshot is stale by +extra when no faces."""
+    """Ride the Bus: +mult per hand without face cards, resets on face cards.
+    The ability field is pre-increment, so add +extra when no faces are scored."""
     ab = _ability(j)
     base = _ab_mult(j, fallback=5)
     has_face = any(card_rank(c) in FACE_RANKS for c in ctx.scoring_cards if card_rank(c))
     if has_face:
-        # Resets to 0 in context.before — game scores 0
-        pass
+        pass  # game resets to 0 before scoring
     else:
-        # Gains +extra in context.before, then scores the new total
         ctx.mult += base + ab.get("extra", 1)
 
 def _runner(ctx: ScoreContext, j: dict) -> None:
-    """Runner always scores accumulated chips. Gains +chip_mod on Straights
-    (incremented in context.before, so snapshot is stale by chip_mod)."""
+    """Runner: always scores accumulated chips. The ability field is pre-increment,
+    so add +chip_mod when a Straight is played."""
     ab = _ability(j)
     base = _ab_chips(j, fallback=30)
     if _hand_contains(ctx, "Straight", "Straight Flush"):
@@ -109,8 +117,8 @@ def _runner(ctx: ScoreContext, j: dict) -> None:
     ctx.chips += base
 
 def _square(ctx: ScoreContext, j: dict) -> None:
-    """Square always scores accumulated chips. Gains +chip_mod on exactly-4-card plays
-    (incremented in context.before, so snapshot is stale by chip_mod)."""
+    """Square: always scores accumulated chips. The ability field is pre-increment,
+    so add +chip_mod when exactly 4 cards are played."""
     ab = _ability(j)
     base = _ab_chips(j, fallback=20)
     if len(ctx.played_cards) == 4:
@@ -118,8 +126,8 @@ def _square(ctx: ScoreContext, j: dict) -> None:
     ctx.chips += base
 
 def _trousers(ctx: ScoreContext, j: dict) -> None:
-    """Trousers always scores accumulated mult. Gains +extra on Two Pair
-    (incremented in context.before, so snapshot is stale by extra)."""
+    """Trousers: always scores accumulated mult. The ability field is pre-increment,
+    so add +extra when Two Pair is played."""
     ab = _ability(j)
     base = _ab_mult(j, fallback=6)
     if _hand_contains(ctx, "Two Pair"):
@@ -128,7 +136,7 @@ def _trousers(ctx: ScoreContext, j: dict) -> None:
 
 def _blackboard(ctx: ScoreContext, j: dict) -> None:
     if ctx.held_cards and all(
-        card_suits(c) & {"S", "C"} for c in ctx.held_cards if card_suits(c)
+        card_suits(c, smeared=ctx.smeared) & {"S", "C"} for c in ctx.held_cards if card_suits(c, smeared=ctx.smeared)
     ):
         ctx.mult *= _ability(j).get("extra", 3.0)
 
@@ -168,8 +176,8 @@ def _walkie_talkie(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += ab.get("mult", 4) * count
 
 def _seeing_double(ctx: ScoreContext, j: dict) -> None:
-    has_club  = any("C" in card_suits(c) for c in ctx.scoring_cards if not is_debuffed(c))
-    has_other = any(card_suits(c) - {"C"} for c in ctx.scoring_cards if not is_debuffed(c))
+    has_club  = any("C" in card_suits(c, smeared=ctx.smeared) for c in ctx.scoring_cards if not is_debuffed(c))
+    has_other = any(card_suits(c, smeared=ctx.smeared) - {"C"} for c in ctx.scoring_cards if not is_debuffed(c))
     if has_club and has_other:
         ctx.mult *= _ability(j).get("extra", 2.0)
 
@@ -179,7 +187,7 @@ def _flower_pot(ctx: ScoreContext, j: dict) -> None:
     suits_present: set[str] = set()
     for c in ctx.scoring_cards:
         if not is_debuffed(c):
-            suits_present |= card_suits(c)
+            suits_present |= card_suits(c, smeared=ctx.smeared)
     if len(suits_present) >= 4:
         ctx.mult *= _ability(j).get("extra", 3.0)
 
@@ -245,13 +253,10 @@ def _triboulet(ctx: ScoreContext, j: dict) -> None:
     pass
 
 def _baseball(ctx: ScoreContext, j: dict) -> None:
-    xm = _ability(j).get("extra", 1.5)
-    uncommon_count = sum(
-        1 for other in ctx.jokers
-        if other is not j and other.get("value", {}).get("rarity") == 2
-    )
-    if uncommon_count > 0:
-        ctx.mult *= xm ** uncommon_count
+    # Baseball Card is a modifier, not a standalone effect.
+    # It causes each Uncommon joker to trigger an additional x1.5 after their own
+    # effect. This is handled in apply_joker_effects, not here.
+    pass
 
 def _bull(ctx: ScoreContext, j: dict) -> None:
     ctx.chips += _ability(j).get("extra", 2) * ctx.money
@@ -270,6 +275,7 @@ def _wee(ctx: ScoreContext, j: dict) -> None:
 COMPLEX_EFFECTS: dict[str, object] = {
     "j_half": _half,
     "j_stencil": _stencil,
+    "j_blue_joker": _blue_joker,
     "j_banner": _banner,
     "j_mystic_summit": _mystic_summit,
     "j_loyalty_card": _loyalty_card,

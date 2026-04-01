@@ -10,7 +10,7 @@ from balatro_bot.constants import (
 )
 from balatro_bot.strategy import compute_strategy, JOKER_HAND_AFFINITY
 
-from balatro_bot.rules._helpers import _find_tarot_targets
+from balatro_bot.rules._helpers import _find_tarot_targets, evaluate_hex
 
 if TYPE_CHECKING:
     from typing import Any
@@ -310,6 +310,9 @@ class PickFromSpectralPack:
         jokers = state.get("jokers", {}).get("cards", [])
         joker_slots = state.get("jokers", {})
         ante = state.get("ante_num", 1)
+        hand_levels = state.get("hands", {})
+        joker_keys = {j.get("key") for j in jokers}
+        strat = compute_strategy(jokers, hand_levels) if jokers else None
 
         best_idx = None
         best_score = 0.0
@@ -324,19 +327,9 @@ class PickFromSpectralPack:
             if key in ("c_ankh", "c_hex") and not jokers:
                 score = 0.0
             elif key == "c_hex":
-                # Hex destroys ALL jokers except 1 — run-ending in late game.
-                # Block if: joker slots full, any scaling joker active, or ante >= 5.
-                joker_count = joker_slots.get("count", 0)
-                joker_limit = joker_slots.get("limit", 5)
-                owned_keys = {j.get("key") for j in jokers}
-                if joker_count >= joker_limit:
-                    score = 0.0  # all slots filled — established lineup
-                elif owned_keys & SCALING_JOKERS:
-                    score = 0.0  # would destroy scaling investment
-                elif ante >= 5:
-                    score = 0.0  # too late to rebuild
+                # Nuanced Hex evaluation — considers joker dominance and ante
+                score = evaluate_hex(jokers, ante, hand_levels)
             elif key == "c_ankh":
-                # Ankh clones a joker — needs a free slot for the copy
                 if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
                     score = 0.0
             elif key == "c_wraith":
@@ -345,6 +338,29 @@ class PickFromSpectralPack:
             elif key == "c_ectoplasm":
                 if not jokers or ante < 3:
                     score = 0.0
+                elif joker_keys & SCALING_JOKERS:
+                    score += 1.5  # xmult stacks multiplicatively with scaling jokers
+
+            # Joker-aware bonuses for deck-manipulating spectrals
+            if score > 0.0 and strat:
+                if key == "c_familiar" and strat.has_archetype("face_card"):
+                    score += 1.5  # adds face cards to deck
+                if key == "c_grim" and strat.rank_affinity("A") > 0:
+                    score += 1.0  # adds aces
+                if key == "c_incantation":
+                    # adds number cards — check if any number ranks have affinity
+                    for r in ("2", "3", "4", "5", "6", "7", "8", "9"):
+                        if strat.rank_affinity(r) > 0:
+                            score += 1.0
+                            break
+                if key == "c_aura":
+                    # random edition — more valuable with uneditioned jokers
+                    uneditioned = sum(
+                        1 for j in jokers
+                        if not (isinstance(j.get("modifier"), dict) and j["modifier"].get("edition"))
+                    )
+                    if uneditioned >= 3:
+                        score += 1.0
 
             if score > best_score:
                 best_score = score

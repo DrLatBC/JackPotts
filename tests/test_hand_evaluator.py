@@ -146,10 +146,10 @@ class TestDiscard:
         cards = [card("K", "H"), card("K", "D"), card("3", "C"), card("5", "S"), card("7", "H")]
         suggestions = discard_candidates(cards)
         assert len(suggestions) > 0
-        indices, reason = suggestions[0]
-        assert 0 not in indices
-        assert 1 not in indices
-        assert "keep Pair" in reason
+        candidate = suggestions[0]
+        assert 0 not in candidate.discard_indices
+        assert 1 not in candidate.discard_indices
+        assert "keep Pair" in candidate.reason
 
 
 # ---------------------------------------------------------------------------
@@ -313,8 +313,8 @@ class TestParseEffectValue:
         _, _, total_parsed = score_hand("Pair", cards, jokers=[j_parsed])
         _, _, total_fallback = score_hand("Pair", cards, jokers=[j_no_effect])
         assert total_parsed > total_fallback
-        assert total_parsed == 450
-        assert total_fallback == 240
+        assert total_parsed == 420  # 30 chips * (2 base + 12 parsed) = 420
+        assert total_fallback == 210  # 30 chips * (2 base + 5 fallback) = 210
 
 
 # ---------------------------------------------------------------------------

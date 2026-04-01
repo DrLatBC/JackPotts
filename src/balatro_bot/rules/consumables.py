@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from balatro_bot.actions import UseConsumable, SellConsumable, RearrangeHand, Action
+from balatro_bot.actions import UseConsumable, SellConsumable, SellJoker, RearrangeHand, Action
 from balatro_bot.constants import (
     PLANET_KEYS, SAFE_CONSUMABLE_TAROTS, TARGETING_TAROTS,
     IMMEDIATE_TARGETING, TACTICAL_TARGETING,
@@ -15,8 +15,9 @@ from balatro_bot.strategy import compute_strategy
 from balatro_bot.cards import card_suit, card_suits, card_rank, _modifier, rank_value
 from balatro_bot.rules._helpers import (
     _find_tarot_targets, _find_gold_targets, _find_enhancement_targets,
-    _find_clone_targets, score_consumable,
+    _find_clone_targets, score_consumable, evaluate_hex,
 )
+from balatro_bot.joker_valuation import evaluate_joker_value
 
 if TYPE_CHECKING:
     from typing import Any
@@ -37,6 +38,9 @@ class UseConsumables:
     _last_round: int = -1
     # Track the last tarot/planet we used, so Fool knows what it copies
     _last_used_consumable: str | None = None
+    # Hex sell-down state: sell weak jokers before using Hex
+    _hex_selling_down: bool = False
+    _hex_target_key: str | None = None
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         consumables = state.get("consumables", {}).get("cards", [])
@@ -91,6 +95,11 @@ class UseConsumables:
         consumable_limit = state.get("consumables", {}).get("limit", 2)
         slots_full = len(consumables) >= consumable_limit
 
+        # Hex sell-down: if mid-sequence, continue selling before anything else
+        hex_action = self._handle_hex_selldown(consumables, jokers, hand_levels, ante)
+        if hex_action is not None:
+            return hex_action
+
         # Score each consumable: use_value vs hold_value
         candidates: list[tuple[int, float, str, Action]] = []
 
@@ -100,15 +109,24 @@ class UseConsumables:
 
             # --- Special cases that bypass scoring ---
 
-            # Hex: sell if joker lineup established
+            # Hex: evaluate whether to sell, use, or start sell-down
             if key == "c_hex":
-                joker_count = joker_slots.get("count", 0)
-                owned_keys = {j.get("key") for j in jokers}
-                if joker_count >= joker_limit or owned_keys & SCALING_JOKERS or ante >= 5:
-                    reason = "full slots" if joker_count >= joker_limit else (
-                        "scaling joker" if owned_keys & SCALING_JOKERS else f"ante {ante}"
-                    )
-                    return SellConsumable(i, reason=f"sell Hex (would destroy joker lineup: {reason})")
+                hex_score = evaluate_hex(jokers, ante, hand_levels)
+                if hex_score <= 0.0:
+                    return SellConsumable(i, reason="sell Hex (not worth using — lineup too valuable)")
+                if len(jokers) == 1:
+                    # Single joker — use immediately if no edition
+                    if not self._has_edition(jokers[0]):
+                        return UseConsumable(i, reason=f"use Hex on {jokers[0].get('label', '?')} (solo joker, free Polychrome)")
+                    else:
+                        return SellConsumable(i, reason="sell Hex (only joker already has edition)")
+                if len(jokers) > 1:
+                    # Multiple jokers — start sell-down sequence
+                    target = self._find_hex_target(jokers, hand_levels, ante)
+                    self._hex_selling_down = True
+                    self._hex_target_key = target.get("key")
+                    # Sell the weakest non-target joker this tick
+                    return self._handle_hex_selldown(consumables, jokers, hand_levels, ante)
 
             # --- Compute use_value and hold_value ---
             use_value, action = self._score_use_now(
@@ -211,6 +229,11 @@ class UseConsumables:
         if key in SAFE_SPECTRAL_CONSUMABLES:
             if key in ("c_ankh", "c_hex") and not jokers:
                 return (0.0, None)
+            if key == "c_hex":
+                hex_val = evaluate_hex(jokers, ante, hand_levels)
+                if hex_val <= 0.0:
+                    return (0.0, None)
+                return (hex_val, UseConsumable(idx, reason=f"use Hex (score={hex_val:.1f})"))
             if key == "c_ankh" and joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
                 return (0.0, None)
             if key == "c_wraith" and joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
@@ -339,7 +362,7 @@ class UseConsumables:
                 threshold = 1.0
 
             if effect_type == "glass":
-                result = self._eval_glass(hand_cards, hand_levels, jokers, current_best, current_score)
+                result = self._eval_glass(hand_cards, hand_levels, jokers, current_best, current_score, strat=strat)
                 if result:
                     new_score, targets = result
                     improvement = new_score / max(current_score, 1)
@@ -351,7 +374,7 @@ class UseConsumables:
             else:
                 result = self._eval_enhancement(
                     hand_cards, hand_levels, jokers, current_best, current_score,
-                    extra, max_count,
+                    extra, max_count, strat=strat,
                 )
                 if result:
                     new_score, targets = result
@@ -459,35 +482,44 @@ class UseConsumables:
 
     def _eval_glass(
         self, hand_cards, hand_levels, jokers, current_best, current_score,
+        strat: Strategy | None = None,
     ) -> tuple[int, list[int]] | None:
-        """Would applying Glass to a face card in our best hand boost scoring?"""
+        """Would applying Glass to a card in our best hand boost scoring?"""
         if not current_best:
             return None
 
+        rank_aff = strat.rank_affinity_dict() if strat else {}
+        # Score each unenhanced card in the scoring hand
+        candidates = []
         for idx in current_best.card_indices:
             c = hand_cards[idx]
             r = card_rank(c)
-            if r in FACE_RANKS_TAROT and not _modifier(c).get("enhancement"):
-                estimated_new = int(current_score * 1.8)
-                return (estimated_new, [idx])
+            if not r or _modifier(c).get("enhancement"):
+                continue
+            aff = rank_aff.get(r, 0.0)
+            is_face = r in FACE_RANKS_TAROT
+            # Sort key: high affinity first, then face cards, then high chip value
+            candidates.append((idx, -aff, 0 if is_face else 1, -rank_value(r)))
 
-        # Also check non-face cards if no face cards available
-        for idx in current_best.card_indices:
-            c = hand_cards[idx]
-            r = card_rank(c)
-            if r and not _modifier(c).get("enhancement"):
-                estimated_new = int(current_score * 1.6)
-                return (estimated_new, [idx])
+        if not candidates:
+            return None
 
-        return None
+        candidates.sort(key=lambda x: (x[1], x[2], x[3]))
+        best_idx = candidates[0][0]
+        is_face = candidates[0][2] == 0
+        multiplier = 1.8 if is_face else 1.6
+        estimated_new = int(current_score * multiplier)
+        return (estimated_new, [best_idx])
 
     def _eval_enhancement(
         self, hand_cards, hand_levels, jokers, current_best, current_score,
-        enhancement, max_count,
+        enhancement, max_count, strat: Strategy | None = None,
     ) -> tuple[int, list[int]] | None:
         """Would applying this enhancement boost cards about to score?"""
         if not current_best:
             return None
+
+        rank_aff = strat.rank_affinity_dict() if strat else None
 
         # Wild (Lovers): check if it enables a Flush
         if enhancement == "Wild":
@@ -511,8 +543,8 @@ class UseConsumables:
                 return (estimated, held[:max_count])
             return None
 
-        # Other enhancements: apply to highest-value scoring card
-        targets = _find_enhancement_targets(hand_cards, max_count)
+        # Other enhancements: apply to highest-value scoring card, prefer affinity ranks
+        targets = _find_enhancement_targets(hand_cards, max_count, rank_affinity=rank_aff)
         if targets:
             scoring_set = set(current_best.card_indices)
             relevant = [t for t in targets if t in scoring_set]
@@ -521,6 +553,89 @@ class UseConsumables:
                 return (estimated, relevant[:max_count])
 
         return None
+
+    @staticmethod
+    def _has_edition(joker: dict) -> bool:
+        mod = joker.get("modifier", [])
+        return isinstance(mod, dict) and bool(mod.get("edition"))
+
+    def _find_hex_target(self, jokers, hand_levels, ante):
+        """Find the best joker to keep for Hex. Prefer uneditioned jokers."""
+        strat = compute_strategy(jokers, hand_levels)
+        scored = []
+        for j in jokers:
+            val = evaluate_joker_value(j, jokers, hand_levels, ante, strat)
+            has_ed = self._has_edition(j)
+            scored.append((j, val, has_ed))
+
+        # Prefer uneditioned (Polychrome would be wasted on an already-editioned joker)
+        uneditioned = [(j, v) for j, v, ed in scored if not ed]
+        if uneditioned:
+            uneditioned.sort(key=lambda x: x[1], reverse=True)
+            return uneditioned[0][0]
+
+        # All editioned — fall back to best overall (Polychrome overwrites)
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[0][0]
+
+    def _handle_hex_selldown(self, consumables, jokers, hand_levels, ante) -> Action | None:
+        """Multi-tick sell-down for Hex: sell weak jokers, then use Hex on the survivor."""
+        if not self._hex_selling_down:
+            return None
+
+        # Verify Hex is still in our consumables
+        hex_idx = next(
+            (i for i, c in enumerate(consumables) if c.get("key") == "c_hex"), None
+        )
+        if hex_idx is None:
+            self._hex_selling_down = False
+            self._hex_target_key = None
+            return None
+
+        # Verify target joker is still owned
+        target_idx = next(
+            (i for i, j in enumerate(jokers) if j.get("key") == self._hex_target_key), None
+        )
+        if target_idx is None:
+            self._hex_selling_down = False
+            self._hex_target_key = None
+            return None
+
+        # CRITICAL: never use Hex with 0 jokers (soft-locks the game)
+        if len(jokers) == 0:
+            self._hex_selling_down = False
+            self._hex_target_key = None
+            return None
+
+        # Only target joker remains → use Hex
+        if len(jokers) == 1:
+            self._hex_selling_down = False
+            self._hex_target_key = None
+            target_label = jokers[0].get("label", "?")
+            return UseConsumable(hex_idx, reason=f"use Hex on {target_label} (sell-down complete)")
+
+        # Sell the weakest non-target joker
+        strat = compute_strategy(jokers, hand_levels)
+        worst_idx = None
+        worst_val = float("inf")
+        for i, j in enumerate(jokers):
+            if j.get("key") == self._hex_target_key:
+                continue
+            val = evaluate_joker_value(j, jokers, hand_levels, ante, strat)
+            if val < worst_val:
+                worst_val = val
+                worst_idx = i
+
+        if worst_idx is None:
+            return None
+
+        fodder_label = jokers[worst_idx].get("label", "?")
+        remaining = len(jokers) - 2  # after this sell, how many more to go
+        target_label = jokers[target_idx].get("label", "?") if target_idx is not None else "?"
+        return SellJoker(
+            worst_idx,
+            reason=f"Hex setup: sell {fodder_label} to isolate {target_label} ({remaining} more to go)",
+        )
 
 
 # Keep old names as aliases for backwards compatibility during transition

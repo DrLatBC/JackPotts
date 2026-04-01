@@ -45,6 +45,8 @@ def card_suits(card: dict[str, Any], smeared: bool = False) -> set[str]:
     enhancement = _modifier(card).get("enhancement")
     if enhancement == "WILD":
         return set(ALL_SUITS)
+    if enhancement == "STONE":
+        return set()  # Stone cards have no suit
     suit = card_suit(card)
     if not suit:
         return set()
@@ -79,7 +81,11 @@ def card_chip_value(card: dict[str, Any]) -> int:
 
 
 def card_mult_value(card: dict[str, Any]) -> float:
-    """Additive mult this card contributes when it scores in a played hand."""
+    """Enhancement-only additive mult (excludes edition mult).
+
+    The game applies edition mult as a separate step AFTER enhancement xmult,
+    so it must not be lumped in here.  See card_edition_mult_value().
+    """
     if is_debuffed(card):
         return 0
     if is_stone(card):
@@ -89,20 +95,36 @@ def card_mult_value(card: dict[str, Any]) -> float:
     total = 0.0
     if enhancement == "MULT":
         total += 4
-    # Edition mult: use hardcoded value for known editions (API fields are unreliable —
-    # edition_mult often contains the enhancement value, not the edition value)
-    edition = mod.get("edition", "")
-    if edition in ("HOLO", "HOLOGRAPHIC"):
-        total += 10
-    elif mod.get("edition_mult"):
-        total += mod["edition_mult"]
     if enhancement == "LUCKY":
         total += 4
     return total
 
 
+def card_edition_mult_value(card: dict[str, Any]) -> float:
+    """Edition additive mult (HOLO = +10).
+
+    Applied per card AFTER enhancement xmult in the game's scoring order:
+    playing_card(chips/mult) → enhancement(xmult) → edition(mult) → edition(xmult).
+    """
+    if is_debuffed(card):
+        return 0
+    if is_stone(card):
+        return 0
+    mod = _modifier(card)
+    edition = mod.get("edition", "")
+    if edition in ("HOLO", "HOLOGRAPHIC"):
+        return mod.get("edition_mult", 10)
+    elif mod.get("edition_mult"):
+        return mod["edition_mult"]
+    return 0
+
+
 def card_xmult_value(card: dict[str, Any]) -> float:
-    """Multiplicative xmult this card contributes when it scores in a played hand."""
+    """Enhancement-only multiplicative xmult (excludes edition xmult).
+
+    Edition xmult (Polychrome) is applied separately after edition mult.
+    See card_edition_xmult_value().
+    """
     if is_debuffed(card):
         return 1.0
     if is_stone(card):
@@ -111,14 +133,25 @@ def card_xmult_value(card: dict[str, Any]) -> float:
     enhancement = mod.get("enhancement", "")
     result = 1.0
     if enhancement == "GLASS":
-        result *= 2.0
-    # Edition xmult: use hardcoded value for known editions (API fields are unreliable —
-    # edition_x_mult often contains the enhancement value, not the edition value)
-    if mod.get("edition") == "POLYCHROME":
-        result *= 1.5
-    elif mod.get("edition_x_mult"):
-        result *= mod["edition_x_mult"]
+        result *= mod.get("enhancement_x_mult", 2.0)
     return result
+
+
+def card_edition_xmult_value(card: dict[str, Any]) -> float:
+    """Edition multiplicative xmult (Polychrome = x1.5).
+
+    Applied per card AFTER edition mult in the game's scoring order.
+    """
+    if is_debuffed(card):
+        return 1.0
+    if is_stone(card):
+        return 1.0
+    mod = _modifier(card)
+    if mod.get("edition") == "POLYCHROME":
+        return mod.get("edition_x_mult", 1.5)
+    elif mod.get("edition_x_mult"):
+        return mod["edition_x_mult"]
+    return 1.0
 
 
 def rank_value(rank: str) -> int:

@@ -67,7 +67,7 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     ("j_popcorn",     "parsed_mult",  {"fallback": 12}),
     ("j_ice_cream",   "parsed_chips", {"fallback": 60}),
     ("j_cavendish",   "parsed_xmult", {"fallback": 3.0}),
-    ("j_blue_joker",  "parsed_chips", {"fallback": 70}),
+    # j_blue_joker moved to complex.py — computed from deck_count dynamically
 
     # Hand-type +mult
     ("j_jolly",  "hand_mult",  {"hands": ["Pair"],            "ability_key": "t_mult", "fallback": 8}),
@@ -106,7 +106,8 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     # j_runner — moved to complex.py (scores unconditionally + pre-scoring increment on Straight)
     # j_square — moved to complex.py (needs pre-scoring increment on 4-card plays)
     ("j_erosion",       "parsed_mult",  {"fallback": 8}),
-    ("j_hiker",         "parsed_chips", {"fallback": 10}),
+    # j_hiker — noop: Hiker permanently stamps +5 chips onto cards AFTER scoring.
+    # The accumulated bonus is already in each card's perma_bonus field.
     ("j_stone",         "parsed_chips", {"fallback": 25}),
     ("j_castle",        "parsed_chips", {"fallback": 15}),
     ("j_constellation", "parsed_xmult", {"fallback": 1.3}),

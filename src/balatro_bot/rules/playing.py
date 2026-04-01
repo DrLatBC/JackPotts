@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import PlayCards, DiscardCards, SellJoker, Action
@@ -11,7 +12,7 @@ from balatro_bot.scaling import (
 )
 from balatro_bot.constants import FACE_RANKS_SET
 from balatro_bot.cards import card_rank, rank_value, is_debuffed
-from balatro_bot.hand_evaluator import best_hand, classify_hand, cards_not_in, discard_candidates
+from balatro_bot.hand_evaluator import best_hand, classify_hand, cards_not_in, discard_candidates, score_hand, ChaseCandidate
 from balatro_bot.rules._helpers import _pad_with_junk, _sort_play_order
 
 if TYPE_CHECKING:
@@ -399,17 +400,29 @@ class PlayWinningHand:
         return None
 
 class PlayHighValueHand:
-    """Play a high-scoring hand even if it won't win, based on hands remaining."""
+    """Play a high-scoring hand even if it won't win, using round projection.
+
+    Factors in hand-saving economy: each unused hand at round end is worth $1.
+    At lower antes ($1 compounds via interest), we raise the play threshold
+    when comfortable to avoid wasting hands on marginal contributions.
+    """
     name = "play_high_value_hand"
 
-    THRESHOLDS = {
-        6: 0.15,
-        5: 0.20,
-        4: 0.25,
-        3: 0.25,
-        2: 0.20,
-        1: 0.0,   # last hand — play anything, no alternative
+    # Minimum per-hand contribution thresholds by outlook.
+    # "comfortable" — require meaningful contribution (don't waste $1 hands).
+    # "tight" — need solid contributions each hand.
+    # "hopeless" — defer to discard if possible, otherwise play anything.
+    OUTLOOK_THRESHOLDS = {
+        "won": 0.0,
+        "comfortable": 0.10,
+        "tight": 0.15,
+        "hopeless": 0.0,
     }
+
+    # At lower antes, each saved hand is worth more (compounds via interest).
+    # Raise the comfortable threshold to avoid wasting hands on weak plays.
+    # At higher antes, money matters less — scoring is everything.
+    HAND_SAVE_ANTE_THRESHOLD = 5  # apply hand-saving bonus at ante <= this
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         ctx = RoundContext.from_state(state)
@@ -420,25 +433,46 @@ class PlayHighValueHand:
         if ctx.blind_name == "The Needle":
             return None
 
-        threshold = self.THRESHOLDS.get(ctx.hands_left, 0.15 if ctx.hands_left > 6 else 0.0)
+        outlook = ctx.round_outlook
         effective_score = ctx.best.total * ctx.score_discount
 
-        # If the hand meets the threshold, play it — even if it can't solo-clear.
-        # A Full House for 60% of the blind is a good play with hands remaining.
-        # Only defer to DiscardToImprove when the hand is BELOW the threshold
-        # and we have discards to try improving.
-        if effective_score < ctx.chips_remaining * threshold and ctx.discards_left > 0:
+        # Hopeless + discards available → defer to DiscardToImprove
+        if outlook == "hopeless" and ctx.discards_left > 0:
+            log.info("PlayHighValueHand: defer (hopeless, %d discards left)", ctx.discards_left)
             return None
 
-        if effective_score >= ctx.chips_remaining * threshold:
-            indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name)
-            indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers)
-            return PlayCards(
-                indices,
-                reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}) >= {threshold:.0%} of {ctx.chips_remaining} remaining",
-                hand_name=ctx.best.hand_name,
+        threshold = self.OUTLOOK_THRESHOLDS.get(outlook, 0.15)
+
+        # Hand-saving economy: at lower antes when comfortable, raise the
+        # bar for playing — each hand saved is $1 at cash-out, and $1 early
+        # compounds via interest. Don't waste hands on 5-10% contributions
+        # when we can win with fewer plays.
+        if outlook == "comfortable" and ctx.ante <= self.HAND_SAVE_ANTE_THRESHOLD:
+            old_threshold = threshold
+            threshold = max(threshold, 0.20)
+            if threshold > old_threshold:
+                log.info("PlayHighValueHand: hand-save bump %.0f%%->%.0f%% (ante %d)", old_threshold * 100, threshold * 100, ctx.ante)
+
+        # Last hand — play anything, no alternative
+        if ctx.hands_left <= 1:
+            threshold = 0.0
+
+        if ctx.chips_remaining > 0 and effective_score < ctx.chips_remaining * threshold and ctx.discards_left > 0:
+            log.info(
+                "PlayHighValueHand: defer (%s for %d = %.0f%% of %d, need %.0f%%, outlook=%s)",
+                ctx.best.hand_name, ctx.best.total,
+                effective_score / ctx.chips_remaining * 100 if ctx.chips_remaining else 0,
+                ctx.chips_remaining, threshold * 100, outlook,
             )
-        return None
+            return None
+
+        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name)
+        indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers)
+        return PlayCards(
+            indices,
+            reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}), outlook={outlook}, {ctx.chips_remaining} remaining",
+            hand_name=ctx.best.hand_name,
+        )
 
 
 class DiscardToImprove:
@@ -446,31 +480,22 @@ class DiscardToImprove:
     If we have discards left and the best hand can't win this turn,
     try to improve by discarding.
 
-    Two modes:
-    1. Chase a draw (flush/straight) — always worth it with 2+ discards.
-    2. Discard dead cards around current hand — only when the hand is
-       hopeless (scores < 30% of what's needed). No point trimming fat
-       around a Full House that covers 80% of the blind.
+    Uses Monte Carlo sampling for expected value comparison:
+      chase_ev = hit_prob * improved_score + (1 - hit_prob) * miss_ev
+      play_ev  = current_best_score
+
+    miss_ev is estimated by sampling random draws from the deck and
+    evaluating best_hand() on each. Candidates sharing the same keep
+    set share one sampling pass.
+
+    Discard if chase_ev > play_ev.
     """
     name = "discard_to_improve"
 
-    # Below this fraction of chips_remaining, the hand is hopeless enough
-    # to justify discarding dead cards even without a specific draw.
-    # Scales with hands_left: more hands remaining = more tolerant of weak hands.
-    HOPELESS_THRESHOLDS = {
-        5: 0.15,
-        4: 0.20,
-        3: 0.25,
-        2: 0.35,
-    }
-    HOPELESS_DEFAULT = 0.50  # 1 hand left: discard if < 50% (you're losing anyway)
-
-    # If best hand covers less than this fraction of chips_remaining,
-    # the hand is desperate enough to use the last discard.
-    DESPERATE_THRESHOLD = 0.15
+    N_SAMPLES = 10  # Monte Carlo samples per unique keep set
 
     # Jokers that LOSE value when discards are used — be conservative with discards.
-    # Only discard when the hand is truly hopeless (< 20% coverage).
+    # Only discard when the outlook is hopeless (discard bonus is irrelevant if we lose).
     KEEP_DISCARDS_JOKERS = {
         "j_banner",         # +30 chips per discard remaining — direct score loss
         "j_delayed_grat",   # $2 per unused discard — economy loss
@@ -488,13 +513,19 @@ class DiscardToImprove:
         if ctx.best.total >= ctx.chips_remaining:
             return None
 
+        outlook = ctx.round_outlook
+        play_ev = ctx.best.total
+        log.info(
+            "DiscardToImprove: outlook=%s, best=%s for %d, chips_remaining=%d, hands=%d, discards=%d",
+            outlook, ctx.best.hand_name, play_ev, ctx.chips_remaining, ctx.hands_left, ctx.discards_left,
+        )
+
         # If best hand is already 5 cards (Flush, Straight, Full House, etc.),
         # discarding non-hand cards can't improve it. Only chase draws matter —
-        # UNLESS we have extra cards in hand beyond the 5 AND the hand is
-        # catastrophically hopeless, in which case discarding the extras cycles
-        # dead weight into fresh draws.
+        # UNLESS we have extra cards in hand beyond the 5 AND the outlook is
+        # hopeless, in which case discarding the extras cycles dead weight
+        # into fresh draws.
         if len(ctx.best.card_indices) >= 5:
-            # Still allow chase draws — a better 5-card hand might exist
             strat_affinity = {ht: score for ht, score in ctx.strategy.preferred_hands}
             suggestions = discard_candidates(
                 ctx.hand_cards, ctx.hand_levels,
@@ -505,39 +536,31 @@ class DiscardToImprove:
                 jokers=ctx.jokers,
                 required_hand=ctx.mouth_locked_hand,
             )
-            for indices, reason in suggestions:
-                if "chase" in reason:
-                    return DiscardCards(indices, reason=reason)
+            best_chase = self._best_chase(suggestions, ctx, play_ev)
+            if best_chase is not None:
+                return best_chase
 
-            # Desperation: extra cards in hand + hand covers < 15% of needed.
-            # Discard the non-scoring extras to cycle into fresh draws.
+            # Desperation cycle: extra cards in hand + hopeless outlook
             extra_count = len(ctx.hand_cards) - 5
-            if extra_count > 0 and ctx.chips_remaining > 0:
-                coverage = ctx.best.total / ctx.chips_remaining
-                if coverage < 0.15:
-                    extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit)
-                    to_discard = extras[:min(extra_count, ctx.discards_left)]
-                    if to_discard:
-                        return DiscardCards(
-                            to_discard,
-                            reason=f"desperation cycle: {ctx.best.hand_name} for {ctx.best.total} is only {coverage:.0%} of {ctx.chips_remaining} needed",
-                        )
+            if extra_count > 0 and outlook == "hopeless":
+                extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit)
+                to_discard = extras[:min(extra_count, ctx.discards_left)]
+                if to_discard:
+                    return DiscardCards(
+                        to_discard,
+                        reason=f"desperation cycle ({outlook}): {ctx.best.hand_name} for {ctx.best.total} vs {ctx.chips_remaining} needed",
+                    )
             return None
 
         joker_keys = {j.get("key") for j in ctx.jokers}
 
         # If we have jokers that reward keeping discards, be conservative —
-        # BUT only when the hand can actually contribute meaningfully.
-        # If best hand can't even cover 20% of what's needed, the discard
-        # bonus is irrelevant — we need a better hand or we lose.
+        # but only when the outlook isn't hopeless (if we're losing, the
+        # discard bonus is irrelevant).
         has_keep_discard_jokers = bool(joker_keys & self.KEEP_DISCARDS_JOKERS)
-        if has_keep_discard_jokers:
-            hand_covers = ctx.best.total / ctx.chips_remaining if ctx.chips_remaining > 0 else 1.0
-            if hand_covers >= 0.20:
-                # Hand is decent — save discards for the bonus
-                return None
+        if has_keep_discard_jokers and outlook != "hopeless":
+            return None
 
-        # Build strategy affinity dict for discard weighting
         strat_affinity = {ht: score for ht, score in ctx.strategy.preferred_hands}
 
         suggestions = discard_candidates(
@@ -550,44 +573,126 @@ class DiscardToImprove:
             required_hand=ctx.mouth_locked_hand,
         )
 
-        threshold = self.HOPELESS_THRESHOLDS.get(ctx.hands_left, self.HOPELESS_DEFAULT)
-        hopeless = ctx.best.total < ctx.chips_remaining * threshold
+        # Try EV-based chase first
+        best_chase = self._best_chase(suggestions, ctx, play_ev)
+        if best_chase is not None:
+            return best_chase
 
-        # If the hand already covers PlayHighValueHand's play threshold, don't
-        # burn discards on weak chases — we can already play this hand. Only
-        # accept chases with ≥50% hit probability; below that, just play.
-        play_threshold = PlayHighValueHand.THRESHOLDS.get(
-            ctx.hands_left, 0.15 if ctx.hands_left > 6 else 0.0
+        # Discard dead cards when hopeless or tight AND hand uses < 5 cards
+        if outlook in ("hopeless", "tight") and len(ctx.best.card_indices) < 5:
+            for candidate in suggestions:
+                if "chase" not in candidate.reason:
+                    return DiscardCards(candidate.discard_indices, reason=candidate.reason)
+
+        # Last resort: hopeless outlook, hand < 5 cards — discard something
+        if suggestions and outlook == "hopeless" and len(ctx.best.card_indices) < 5:
+            candidate = suggestions[0]
+            return DiscardCards(candidate.discard_indices, reason=f"discard to improve ({outlook}): {candidate.reason}")
+
+        return None
+
+    @classmethod
+    def _sample_miss_ev(cls, keep_indices: list[int], ctx: RoundContext) -> float:
+        """Monte Carlo estimate of hand value after a failed chase.
+
+        Draws N_SAMPLES random hands from the deck (keeping the specified
+        cards), evaluates best_hand() on each, and returns the average score.
+        """
+        keep_cards = [ctx.hand_cards[i] for i in keep_indices]
+        discard_count = len(ctx.hand_cards) - len(keep_cards)
+        draw_pile = ctx.deck_cards
+
+        if not draw_pile or len(draw_pile) < discard_count:
+            return ctx.best.total if ctx.best else 0
+
+        total = 0
+        for _ in range(cls.N_SAMPLES):
+            drawn = random.sample(draw_pile, discard_count)
+            new_hand = keep_cards + drawn
+            result = best_hand(
+                new_hand,
+                hand_levels=ctx.hand_levels,
+                jokers=ctx.jokers,
+                money=ctx.money,
+                discards_left=max(0, ctx.discards_left - 1),
+                hands_left=ctx.hands_left,
+                ancient_suit=ctx.ancient_suit,
+            )
+            total += result.total if result else 0
+        return total / cls.N_SAMPLES
+
+    @staticmethod
+    def _chase_ev(candidate: ChaseCandidate, ctx: RoundContext, miss_ev: float) -> float:
+        """Expected value of taking a chase discard.
+
+        miss_ev is pre-computed via _sample_miss_ev for the candidate's keep set.
+        """
+        if candidate.chase_hand == "redraw":
+            # Redraw has no specific target — miss_ev IS the expected value
+            return miss_ev
+
+        keep_cards = [ctx.hand_cards[i] for i in candidate.keep_indices]
+        # held_cards is empty: all kept cards are played, discarded cards are gone
+        _, _, improved = score_hand(
+            candidate.chase_hand,
+            keep_cards,
+            hand_levels=ctx.hand_levels,
+            jokers=ctx.jokers,
+            played_cards=keep_cards,
+            held_cards=[],
+            money=ctx.money,
+            discards_left=max(0, ctx.discards_left - 1),
+            hands_left=ctx.hands_left,
+            ancient_suit=ctx.ancient_suit,
         )
-        hand_is_playable = (
-            ctx.chips_remaining > 0
-            and ctx.best.total >= ctx.chips_remaining * play_threshold
-        )
 
-        for indices, reason in suggestions:
-            if "chase" in reason:
-                if hand_is_playable:
-                    # Parse hit probability from reason: "chase X (NN% to hit)"
-                    try:
-                        chase_prob = int(reason.split("(")[1].split("%")[0]) / 100
-                    except (IndexError, ValueError):
-                        chase_prob = 1.0
-                    if chase_prob < 0.50:
-                        continue  # hand is playable — skip weak chase
-                return DiscardCards(indices, reason=reason)
-            # Discard dead cards when the hand is hopeless AND the
-            # best hand uses < 5 cards (otherwise there are no dead cards
-            # in the played hand — discarding around a Flush is pointless).
-            if hopeless and len(ctx.best.card_indices) < 5:
-                return DiscardCards(indices, reason=reason)
+        return candidate.hit_prob * improved + (1 - candidate.hit_prob) * miss_ev
 
-        # Last resort: if the hand can't win and we have discards, discard
-        # SOMETHING — but only if the best hand uses < 5 cards. A 5-card hand
-        # (Flush, Straight, Full House) can't be improved by discarding around it.
-        if suggestions and len(ctx.best.card_indices) < 5:
-            indices, reason = suggestions[0]
-            return DiscardCards(indices, reason=f"discard to improve (below play threshold): {reason}")
+    @classmethod
+    def _best_chase(cls, suggestions: list[ChaseCandidate], ctx: RoundContext, play_ev: float) -> DiscardCards | None:
+        """Find the best chase candidate whose EV exceeds play_ev.
 
+        Groups candidates by keep set so Monte Carlo sampling is shared
+        across candidates that discard the same cards.
+        """
+        # Build miss_ev cache — one sample pass per unique keep set
+        miss_ev_cache: dict[tuple[int, ...], float] = {}
+        for candidate in suggestions:
+            if "chase" not in candidate.reason:
+                continue
+            key = tuple(sorted(candidate.keep_indices))
+            if key not in miss_ev_cache:
+                miss_ev_cache[key] = cls._sample_miss_ev(candidate.keep_indices, ctx)
+                log.info("MC miss_ev for keep=%s: %.0f (play_ev=%.0f)", key, miss_ev_cache[key], play_ev)
+
+        # Find best chase by EV
+        best = None
+        best_ev = play_ev  # only chase if EV strictly exceeds playing
+
+        for candidate in suggestions:
+            if "chase" not in candidate.reason:
+                continue
+            key = tuple(sorted(candidate.keep_indices))
+            ev = cls._chase_ev(candidate, ctx, miss_ev_cache[key])
+            log.info(
+                "chase EV: %s %.0f%% -> EV %.0f (miss=%.0f, play=%.0f) %s",
+                candidate.chase_hand, candidate.hit_prob * 100, ev,
+                miss_ev_cache[key], play_ev,
+                "ACCEPT" if ev > best_ev else "reject",
+            )
+            if ev > best_ev:
+                best_ev = ev
+                best = candidate
+
+        if best is not None:
+            margin = best_ev / play_ev if play_ev > 0 else float("inf")
+            log.info("chase ACCEPTED: %s EV %.0f vs play %.0f (%.1fx)", best.chase_hand, best_ev, play_ev, margin)
+            return DiscardCards(
+                best.discard_indices,
+                reason=f"{best.reason} [EV {best_ev:.0f} vs play {play_ev:.0f}, {margin:.1f}x]",
+            )
+        if miss_ev_cache:
+            log.info("all chases rejected (play_ev=%.0f beats all)", play_ev)
         return None
 
 
