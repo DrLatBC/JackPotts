@@ -100,10 +100,13 @@ def _green_joker(ctx: ScoreContext, j: dict) -> None:
 
 def _ride_the_bus(ctx: ScoreContext, j: dict) -> None:
     """Ride the Bus: +mult per hand without face cards, resets on face cards.
-    The ability field is pre-increment, so add +extra when no faces are scored."""
+    The ability field is pre-increment, so add +extra when no faces are scored.
+    Pareidolia makes ALL cards face cards, so Ride the Bus always resets."""
     ab = _ability(j)
     base = _ab_mult(j, fallback=5)
-    has_face = any(card_rank(c) in FACE_RANKS for c in ctx.scoring_cards if card_rank(c))
+    has_face = ctx.pareidolia or any(
+        card_rank(c) in FACE_RANKS for c in ctx.scoring_cards if card_rank(c)
+    )
     if has_face:
         pass  # game resets to 0 before scoring
     else:
@@ -184,14 +187,43 @@ def _seeing_double(ctx: ScoreContext, j: dict) -> None:
         ctx.mult *= _ability(j).get("extra", 2.0)
 
 def _flower_pot(ctx: ScoreContext, j: dict) -> None:
-    # Game checks scoring_hand, not all played cards. Only scoring cards
-    # contribute suits toward the 4-suit requirement.
-    suits_present: set[str] = set()
-    for c in ctx.scoring_cards:
-        if not is_debuffed(c):
-            suits_present |= card_suits(c, smeared=ctx.smeared)
-    if len(suits_present) >= 4:
-        ctx.mult *= _ability(j).get("extra", 3.0)
+    # Flower Pot requires at least 4 non-debuffed scoring cards AND
+    # representation of all 4 suits (or both colors when Smeared).
+    # WILD cards can fill ONE missing suit each, not all 4 simultaneously.
+    # With Smeared Joker the requirement loosens: need 2+ black (C/S)
+    # AND 2+ red (H/D) cards instead of all 4 individual suits.
+    non_debuffed = [c for c in ctx.scoring_cards if not is_debuffed(c)]
+    if len(non_debuffed) < 4:
+        return
+    if ctx.smeared:
+        red_count = 0
+        black_count = 0
+        for c in non_debuffed:
+            if _modifier(c).get("enhancement") == "WILD":
+                # WILD counts as one card of any color — assign to whichever
+                # color is more needed (greedy: fill the smaller bucket first)
+                if red_count <= black_count:
+                    red_count += 1
+                else:
+                    black_count += 1
+            else:
+                suit = c.get("value", {}).get("suit")
+                if suit in ("H", "D"):
+                    red_count += 1
+                elif suit in ("C", "S"):
+                    black_count += 1
+        if red_count >= 2 and black_count >= 2:
+            ctx.mult *= _ability(j).get("extra", 3.0)
+    else:
+        natural_suits: set[str] = set()
+        wild_count = 0
+        for c in non_debuffed:
+            if _modifier(c).get("enhancement") == "WILD":
+                wild_count += 1
+            else:
+                natural_suits |= card_suits(c, smeared=False)
+        if len(natural_suits) + wild_count >= 4:
+            ctx.mult *= _ability(j).get("extra", 3.0)
 
 def _blueprint(ctx: ScoreContext, j: dict) -> None:
     # Import JOKER_EFFECTS lazily to avoid circular import
@@ -313,6 +345,29 @@ def _obelisk(ctx: ScoreContext, j: dict) -> None:
         ctx.mult *= base_xmult + extra
 
 
+def _steel_joker(ctx: ScoreContext, j: dict) -> None:
+    """Steel Joker: X Mult = 1 + extra * (Steel cards in full deck).
+
+    The game dynamically counts Steel-enhanced cards across G.playing_cards
+    (all cards in the deck: draw pile + hand + played) at scoring time.
+    The API's ability.x_mult is NOT updated — it stays at the default 1.0.
+    We must count Steel cards ourselves from the available card data.
+    """
+    ab = _ability(j)
+    extra = ab.get("extra", 0.2)
+
+    steel_count = 0
+    # Full deck = draw pile (deck_cards) + held cards + played cards
+    for source in (ctx.deck_cards or [], ctx.held_cards, ctx.played_cards):
+        for c in source:
+            if not is_debuffed(c) and _modifier(c).get("enhancement") == "STEEL":
+                steel_count += 1
+
+    xmult = 1 + extra * steel_count
+    if xmult > 1:
+        ctx.mult *= xmult
+
+
 # Collected dict of complex effects for the registry
 COMPLEX_EFFECTS: dict[str, object] = {
     "j_half": _half,
@@ -362,4 +417,5 @@ COMPLEX_EFFECTS: dict[str, object] = {
     "j_wee": _wee,
     "j_obelisk": _obelisk,
     "j_vampire": _vampire,
+    "j_steel_joker": _steel_joker,
 }

@@ -16,6 +16,9 @@ _RE_SCORE_SCORING = re.compile(r"scoring=\[([^\]]+)\]\(\d+\)")
 _RE_SCORE_ENHS = re.compile(r"enhs=\[([^\]]*)\]")
 _RE_SCORE_SEALS = re.compile(r"seals=\[([^\]]*)\]")
 _RE_SCORE_EDS = re.compile(r"eds=\[([^\]]*)\]")
+_RE_SCORE_BLIND = re.compile(r"blind=(.+?)\s+ante=")
+_RE_SCORE_ANTE = re.compile(r"ante=(\d+)")
+_RE_SCORE_HANDS_LEFT = re.compile(r"hands_left=(\d+)")
 # Rank: digits or face letter immediately before a suit symbol
 _RE_RANK = re.compile(r"(10|[2-9JQKA])[\u2660\u2665\u2666\u2663]")
 _RE_SUIT = re.compile(r"[\u2660\u2665\u2666\u2663]")
@@ -45,6 +48,9 @@ def parse_scoring_log(path: Path) -> dict:
         "enh_in_all": Counter(), "enh_in_mismatch": Counter(),
         "seal_in_all": Counter(), "seal_in_mismatch": Counter(),
         "ed_in_all": Counter(), "ed_in_mismatch": Counter(),
+        "blind_in_all": Counter(), "blind_in_mismatch": Counter(),
+        "ante_in_all": Counter(), "ante_in_mismatch": Counter(),
+        "hands_left_in_all": Counter(), "hands_left_in_mismatch": Counter(),
         "actual_values": [],
     }
     if not path.exists():
@@ -68,6 +74,12 @@ def parse_scoring_log(path: Path) -> dict:
     seal_in_mismatch: Counter = Counter()
     ed_in_all: Counter = Counter()
     ed_in_mismatch: Counter = Counter()
+    blind_in_all: Counter = Counter()
+    blind_in_mismatch: Counter = Counter()
+    ante_in_all: Counter = Counter()
+    ante_in_mismatch: Counter = Counter()
+    hands_left_in_all: Counter = Counter()
+    hands_left_in_mismatch: Counter = Counter()
     actual_values: list[int] = []
 
     for line in text.splitlines():
@@ -117,6 +129,20 @@ def parse_scoring_log(path: Path) -> dict:
         for v in hand_eds:
             ed_in_all[v] += 1
 
+        # Blind, ante, hands_left (may be absent in older logs)
+        blind_m = _RE_SCORE_BLIND.search(line)
+        blind_val = blind_m.group(1) if blind_m else None
+        ante_m = _RE_SCORE_ANTE.search(line)
+        ante_val = ante_m.group(1) if ante_m else None
+        hl_m = _RE_SCORE_HANDS_LEFT.search(line)
+        hl_val = hl_m.group(1) if hl_m else None
+        if blind_val:
+            blind_in_all[blind_val] += 1
+        if ante_val:
+            ante_in_all[ante_val] += 1
+        if hl_val:
+            hands_left_in_all[hl_val] += 1
+
         mm = _RE_SCORE_MISMATCH.search(line)
         if mm:
             mismatches += 1
@@ -136,6 +162,12 @@ def parse_scoring_log(path: Path) -> dict:
                 seal_in_mismatch[v] += 1
             for v in hand_eds:
                 ed_in_mismatch[v] += 1
+            if blind_val:
+                blind_in_mismatch[blind_val] += 1
+            if ante_val:
+                ante_in_mismatch[ante_val] += 1
+            if hl_val:
+                hands_left_in_mismatch[hl_val] += 1
 
     return {
         "total_scores": total, "mismatches": mismatches, "mismatch_diffs": diffs,
@@ -146,5 +178,8 @@ def parse_scoring_log(path: Path) -> dict:
         "enh_in_all": enh_in_all, "enh_in_mismatch": enh_in_mismatch,
         "seal_in_all": seal_in_all, "seal_in_mismatch": seal_in_mismatch,
         "ed_in_all": ed_in_all, "ed_in_mismatch": ed_in_mismatch,
+        "blind_in_all": blind_in_all, "blind_in_mismatch": blind_in_mismatch,
+        "ante_in_all": ante_in_all, "ante_in_mismatch": ante_in_mismatch,
+        "hands_left_in_all": hands_left_in_all, "hands_left_in_mismatch": hands_left_in_mismatch,
         "actual_values": actual_values,
     }

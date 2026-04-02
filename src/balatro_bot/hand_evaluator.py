@@ -542,6 +542,12 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
 
     for card in scored_in_play_order:
         triggers = retrigger_count(card, ctx)
+        _is_first_face_card = False
+        if not _first_face_found and not is_debuffed(card):
+            rank_check = card_rank(card)
+            if ctx.pareidolia or rank_check in FACE_RANKS:
+                _is_first_face_card = True
+                _first_face_found = True
         for _t in range(triggers):
             # 1. Base chips + enhancement chips + edition chips (Foil)
             ctx.chips += card_chip_value(card)
@@ -588,9 +594,19 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
                     elif kind == "ranks_xmult" and rank in eff[1]:
                         ctx.mult *= eff[2]
                     elif kind == "first_face_xmult":
-                        if not _first_face_found and (ctx.pareidolia or rank in FACE_RANKS):
-                            _first_face_found = True
+                        # Photograph: x2 on every trigger of the FIRST face card,
+                        # but not on subsequent face cards.
+                        if _is_first_face_card:
                             ctx.mult *= eff[1]
+            # 7. Gold Seal: +$3 per trigger (updates money for Bull mid-scoring)
+            if not is_debuffed(card):
+                seal = _modifier(card).get("seal", "")
+                if seal == "GOLD":
+                    ctx.money += 3
+
+    # 8. The Tooth: -$1 per card played (all played cards, not just scoring)
+    if ctx.blind_name == "The Tooth":
+        ctx.money -= len(ctx.played_cards)
 
     # Held-in-hand effects: Steel, Baron, Shoot the Moon (fire before joker effects)
     # Mime retriggers all held card abilities (doubles each held card's effects)
@@ -633,6 +649,8 @@ def score_hand(
     joker_limit: int = 5,
     ancient_suit: str | None = None,
     deck_count: int = 0,
+    deck_cards: list[dict] | None = None,
+    blind_name: str = "",
 ) -> tuple[int, int, int]:
     """Compute (chips, mult, total) for a hand."""
     base_chips, base_mult, _ = HAND_INFO[hand_name]
@@ -658,7 +676,7 @@ def score_hand(
         for c in (held_cards or []):
             if not is_debuffed(c) and _modifier(c).get("enhancement") == "STEEL":
                 total_mult *= 1.5
-        total = math.floor(total_chips * total_mult)
+        total = math.floor(total_chips * total_mult + 1e-9)
         return total_chips, total_mult, total
 
     from balatro_bot.joker_effects import ScoreContext, apply_joker_effects, retrigger_count
@@ -678,9 +696,11 @@ def score_hand(
         hands_left=hands_left,
         joker_limit=joker_limit,
         deck_count=deck_count,
+        deck_cards=deck_cards,
         pareidolia="j_pareidolia" in joker_keys_set,
         smeared="j_smeared" in joker_keys_set,
         ancient_suit=ancient_suit,
+        blind_name=blind_name,
     )
 
     # Before phase: Vampire strips enhancements and pre-increments xmult
@@ -695,7 +715,7 @@ def score_hand(
 
     apply_joker_effects(ctx)
 
-    total = math.floor(ctx.chips * ctx.mult)
+    total = math.floor(ctx.chips * ctx.mult + 1e-9)
 
     return ctx.chips, ctx.mult, total
 
@@ -713,6 +733,8 @@ def score_hand_detailed(
     joker_limit: int = 5,
     ancient_suit: str | None = None,
     deck_count: int = 0,
+    deck_cards: list[dict] | None = None,
+    blind_name: str = "",
 ) -> dict:
     """Like score_hand but returns a full breakdown dict for logging."""
     from balatro_bot.joker_effects import ScoreContext, apply_joker_effects_detailed, retrigger_count
@@ -756,7 +778,7 @@ def score_hand_detailed(
             "pre_joker_chips": total_chips, "pre_joker_mult": total_mult,
             "joker_contributions": [],
             "post_joker_chips": total_chips, "post_joker_mult": total_mult,
-            "total": math.floor(total_chips * total_mult),
+            "total": math.floor(total_chips * total_mult + 1e-9),
         }
 
     joker_keys_set = {j.get("key") for j in jokers}
@@ -774,9 +796,11 @@ def score_hand_detailed(
         hands_left=hands_left,
         joker_limit=joker_limit,
         deck_count=deck_count,
+        deck_cards=deck_cards,
         pareidolia="j_pareidolia" in joker_keys_set,
         smeared="j_smeared" in joker_keys_set,
         ancient_suit=ancient_suit,
+        blind_name=blind_name,
     )
 
     # Before phase: Vampire strips enhancements and pre-increments xmult
@@ -791,7 +815,7 @@ def score_hand_detailed(
 
     joker_contributions = apply_joker_effects_detailed(ctx)
 
-    total = math.floor(ctx.chips * ctx.mult)
+    total = math.floor(ctx.chips * ctx.mult + 1e-9)
     return {
         "hand_name": hand_name,
         "base_chips": base_chips, "base_mult": base_mult,
@@ -915,6 +939,8 @@ def enumerate_hands(
     ancient_suit: str | None = None,
     excluded_hands: set[str] | None = None,
     deck_count: int = 0,
+    deck_cards: list[dict] | None = None,
+    blind_name: str = "",
 ) -> list[HandCandidate]:
     """Enumerate all valid poker hands from the cards in hand."""
     candidates: list[HandCandidate] = []
@@ -927,6 +953,9 @@ def enumerate_hands(
     shortcut     = "j_shortcut" in joker_keys
     smeared      = "j_smeared" in joker_keys
 
+    # Import play-order sorting so estimates match actual play order
+    from balatro_bot.rules._helpers import _sort_play_order
+
     for size in range(min_select, min(max_select, n) + 1):
         for indices in combinations(range(n), size):
             if required_card_indices and not required_card_indices.issubset(set(indices)):
@@ -937,14 +966,23 @@ def enumerate_hands(
                 shortcut=shortcut, smeared=smeared,
             )
 
+            # Reorder played cards to match actual play order (additive first,
+            # multiplicative last) so the score estimate reflects reality.
+            if jokers:
+                play_order = _sort_play_order(list(indices), hand_cards, jokers)
+                played_in_order = [hand_cards[i] for i in play_order]
+            else:
+                played_in_order = subset
+
             scoring = subset if has_splash else _scoring_cards_for(hand_name, subset)
             held = [hand_cards[i] for i in indices_set - set(indices)] if jokers else []
             chips, mult, total = score_hand(
                 hand_name, scoring, hand_levels,
-                jokers=jokers, played_cards=subset, held_cards=held,
+                jokers=jokers, played_cards=played_in_order, held_cards=held,
                 money=money, discards_left=discards_left, hands_left=hands_left,
                 joker_limit=joker_limit, ancient_suit=ancient_suit,
-                deck_count=deck_count,
+                deck_count=deck_count, deck_cards=deck_cards,
+                blind_name=blind_name,
             )
 
             candidates.append(HandCandidate(
@@ -984,6 +1022,8 @@ def best_hand(
     ancient_suit: str | None = None,
     excluded_hands: set[str] | None = None,
     deck_count: int = 0,
+    deck_cards: list[dict] | None = None,
+    blind_name: str = "",
 ) -> HandCandidate | None:
     """Return the single best hand playable from the given cards."""
     candidates = enumerate_hands(
@@ -996,7 +1036,8 @@ def best_hand(
         required_card_indices=required_card_indices,
         ancient_suit=ancient_suit,
         excluded_hands=excluded_hands,
-        deck_count=deck_count,
+        deck_count=deck_count, deck_cards=deck_cards,
+        blind_name=blind_name,
     )
     return candidates[0] if candidates else None
 

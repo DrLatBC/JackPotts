@@ -27,10 +27,12 @@ class ScoreContext:
     hands_left: int
     joker_limit: int = 5
     deck_count: int = 0
+    deck_cards: list[dict] | None = None
     pareidolia: bool = False
     smeared: bool = False
     ancient_suit: str | None = None
     vampire_xmult: float | None = None  # Pre-computed Vampire xmult (after before-phase increment)
+    blind_name: str = ""
 
 
 def _count_suit_in_scoring(ctx: ScoreContext, suit: str) -> int:
@@ -50,10 +52,20 @@ def _count_face_in_scoring(ctx: ScoreContext) -> int:
 
 
 def _hand_contains(ctx: ScoreContext, *hand_types: str) -> bool:
+    """Check if the played hand 'contains' the given sub-hand type(s).
+
+    In Balatro, jokers like Sly/Jolly/Droll fire when the hand *contains*
+    a sub-hand, not just when the classified type matches.  A Flush with
+    two same-rank cards contains a Pair; a Flush with two distinct pairs
+    contains Two Pair; etc.  The game checks the actual cards for rank
+    patterns, so we must too.
+    """
     name = ctx.hand_name
     for ht in hand_types:
         if name == ht:
             return True
+
+    # --- Hand-type hierarchy (classified name implies sub-types) ---
     if "Pair" in hand_types:
         if name in ("Pair", "Two Pair", "Three of a Kind", "Full House",
                      "Four of a Kind", "Five of a Kind", "Flush House", "Flush Five"):
@@ -74,6 +86,26 @@ def _hand_contains(ctx: ScoreContext, *hand_types: str) -> bool:
     if "Flush" in hand_types:
         if name in ("Flush", "Straight Flush", "Flush House", "Flush Five"):
             return True
+
+    # --- Card-based detection for rank sub-hands hidden in other types ---
+    # A Flush can contain Pair/Two Pair/Trips/Quads from duplicate ranks.
+    # Only check rank-based sub-hands; Flush/Straight are already covered above.
+    _rank_types = {"Pair", "Two Pair", "Three of a Kind", "Four of a Kind"}
+    if _rank_types & set(hand_types):
+        from collections import Counter
+        rank_counts = Counter(
+            card_rank(c) for c in ctx.played_cards if card_rank(c)
+        )
+        counts = sorted(rank_counts.values(), reverse=True)
+        if "Pair" in hand_types and counts and counts[0] >= 2:
+            return True
+        if "Two Pair" in hand_types and len([c for c in counts if c >= 2]) >= 2:
+            return True
+        if "Three of a Kind" in hand_types and counts and counts[0] >= 3:
+            return True
+        if "Four of a Kind" in hand_types and counts and counts[0] >= 4:
+            return True
+
     return False
 
 

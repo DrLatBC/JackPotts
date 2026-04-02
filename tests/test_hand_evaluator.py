@@ -313,8 +313,9 @@ class TestParseEffectValue:
         _, _, total_parsed = score_hand("Pair", cards, jokers=[j_parsed])
         _, _, total_fallback = score_hand("Pair", cards, jokers=[j_no_effect])
         assert total_parsed > total_fallback
-        assert total_parsed == 420  # 30 chips * (2 base + 12 parsed) = 420
-        assert total_fallback == 210  # 30 chips * (2 base + 5 fallback) = 210
+        # Green Joker adds _ab_mult + hand_add(1): 12 + 1 = 13 mult
+        assert total_parsed == 450  # 30 chips * (2 base + 12 parsed + 1 hand_add) = 450
+        assert total_fallback == 90  # 30 chips * (2 base + 0 fallback + 1 hand_add) = 90
 
 
 # ---------------------------------------------------------------------------

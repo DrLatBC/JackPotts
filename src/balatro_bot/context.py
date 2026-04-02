@@ -35,6 +35,53 @@ def flint_halve_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
     return halved
 
 
+# Per-level chip/mult increments for each hand type (fixed in Balatro).
+_HAND_LEVEL_INCREMENTS: dict[str, tuple[int, int]] = {
+    "High Card":       (5, 1),
+    "Pair":            (15, 1),
+    "Two Pair":        (20, 1),
+    "Three of a Kind": (20, 2),
+    "Straight":        (30, 3),
+    "Flush":           (15, 2),
+    "Full House":      (25, 2),
+    "Four of a Kind":  (30, 3),
+    "Straight Flush":  (40, 4),
+    "Five of a Kind":  (35, 3),
+    "Flush House":     (40, 4),
+    "Flush Five":      (40, 4),
+}
+
+
+def arm_reduce_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
+    """Return a copy of hand_levels with each type reduced by 1 level (The Arm).
+
+    The Arm decreases the level of the played poker hand by 1 BEFORE scoring.
+    Since any hand type could be played, we reduce all of them.  Level cannot
+    go below 1.
+    """
+    from balatro_bot.constants import HAND_INFO
+
+    reduced = {}
+    for hand_name, data in hand_levels.items():
+        if not isinstance(data, dict):
+            reduced[hand_name] = data
+            continue
+        d = dict(data)
+        level = d.get("level", 1)
+        if level <= 1:
+            reduced[hand_name] = d
+            continue
+        chip_inc, mult_inc = _HAND_LEVEL_INCREMENTS.get(hand_name, (0, 0))
+        base_chips, base_mult, _ = HAND_INFO.get(hand_name, (0, 0, 0))
+        if "chips" in d:
+            d["chips"] = max(d["chips"] - chip_inc, base_chips)
+        if "mult" in d:
+            d["mult"] = max(d["mult"] - mult_inc, base_mult)
+        d["level"] = level - 1
+        reduced[hand_name] = d
+    return reduced
+
+
 @dataclass
 class RoundContext:
     blind_score: int
@@ -109,6 +156,10 @@ class RoundContext:
         if blind_name == "The Flint":
             hand_levels = flint_halve_hand_levels(hand_levels)
 
+        # The Arm: decrease hand level by 1 before scoring
+        if blind_name == "The Arm":
+            hand_levels = arm_reduce_hand_levels(hand_levels)
+
         min_cards = 5 if blind_name == "The Psychic" else 1
 
         mouth_locked_hand = None
@@ -178,6 +229,8 @@ class RoundContext:
                 required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
                 ancient_suit=ancient_suit,
                 excluded_hands=eye_used_hands,
+                deck_cards=deck_cards,
+                blind_name=blind_name,
             ),
             mouth_locked_hand=mouth_locked_hand,
             score_discount=score_discount,

@@ -118,9 +118,34 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
         has_splash = "j_splash" in joker_keys
         scoring = played if has_splash else _scoring_cards_for(hand_name, played)
 
+        # Apply boss blind level adjustments for scoring estimate
+        # NOTE: The Flint halving is already applied in the snapshot (line ~675),
+        # so we must NOT halve again here — that caused double-halving.
+        hand_levels = snapshot["hand_levels"]
+        blind_name = snapshot.get("blind_name", "")
+        if blind_name == "The Arm":
+            from balatro_bot.context import arm_reduce_hand_levels
+            hand_levels = arm_reduce_hand_levels(hand_levels)
+
+        # Boss blind hand-type restrictions — zero estimate when hand is invalid
+        blind_zeroed = False
+        if blind_name == "The Mouth":
+            for ht, data in hand_levels.items():
+                if isinstance(data, dict) and data.get("played_this_round", 0) > 0:
+                    if hand_name != ht:
+                        blind_zeroed = True
+                    break
+        elif blind_name == "The Eye":
+            for ht, data in hand_levels.items():
+                if ht == hand_name and isinstance(data, dict) and data.get("played_this_round", 0) > 0:
+                    blind_zeroed = True
+                    break
+        elif blind_name == "The Psychic" and len(played) < 5:
+            blind_zeroed = True
+
         detail = score_hand_detailed(
             hand_name, scoring,
-            hand_levels=snapshot["hand_levels"],
+            hand_levels=hand_levels,
             jokers=snapshot["jokers"],
             played_cards=played,
             held_cards=snapshot["held"],
@@ -130,7 +155,12 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
             joker_limit=snapshot["joker_limit"],
             ancient_suit=snapshot.get("ancient_suit"),
             deck_count=snapshot.get("deck_count", 0),
+            deck_cards=snapshot.get("deck_cards"),
+            blind_name=blind_name,
         )
+
+        if blind_zeroed:
+            detail["total"] = 0
 
         post_chips = new_state.get("round", {}).get("chips", 0)
         actual_chips = post_chips - pre_chips
@@ -163,6 +193,9 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
                 noise_sources.append("misprint")
             if "j_bloodstone" in joker_keys:
                 noise_sources.append("bloodstone")
+            # Space Joker: 1/8 chance to upgrade hand level — unpredictable
+            if "j_space" in joker_keys:
+                noise_sources.append("space")
             # Lucky cards: 1/5 chance for +20 mult per scored Lucky card
             if any(
                 isinstance(c.get("modifier", {}), dict)
@@ -191,13 +224,15 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
 
         _scoring_log.info(
             "%s [%s] scoring=[%s](%d) | base: %d/%d | pre-joker: %d/%.1f | jokers: [%s] | "
-            "final: %d/%.1f | enhs=[%s] seals=[%s] eds=[%s] | est=%d actual=%d%s",
+            "final: %d/%.1f | enhs=[%s] seals=[%s] eds=[%s] | "
+            "blind=%s ante=%d hands_left=%d | est=%d actual=%d%s",
             detail["hand_name"], cards_str, scoring_str, len(scoring),
             detail["base_chips"], detail["base_mult"],
             detail["pre_joker_chips"], detail["pre_joker_mult"],
             joker_str,
             detail["post_joker_chips"], detail["post_joker_mult"],
             enhs_str, seals_str, eds_str,
+            snapshot.get("blind_name", ""), snapshot.get("ante", 0), snapshot.get("hands_left", 0),
             detail["total"], actual_chips,
             mismatch,
         )
@@ -659,8 +694,15 @@ def run_bot(
                     snap_hand_levels = flint_halve_hand_levels(snap_hand_levels)
                     break
 
+            # Detect current blind name for snapshot
+            snap_blind_name = ""
+            for b in state.get("blinds", {}).values():
+                if isinstance(b, dict) and b.get("status") == "CURRENT":
+                    snap_blind_name = b.get("name", "")
+                    break
+
             play_snapshot = {
-                "played": [hand_cards_snap[i] for i in params.get("cards", []) if i < len(hand_cards_snap)],
+                "played": [hand_cards_snap[i] for i in sorted(params.get("cards", [])) if i < len(hand_cards_snap)],
                 "held": [c for j, c in enumerate(hand_cards_snap) if j not in play_indices],
                 "jokers": state.get("jokers", {}).get("cards", []),
                 "hand_levels": snap_hand_levels,
@@ -673,6 +715,9 @@ def run_bot(
                 "hand_name": getattr(action, "hand_name", ""),
                 "ancient_suit": state.get("round", {}).get("ancient_suit"),
                 "deck_count": state.get("cards", {}).get("count", 0),
+                "deck_cards": state.get("cards", {}).get("cards", []),
+                "blind_name": snap_blind_name,
+                "ante": state.get("ante_num", 1),
             }
 
         # Capture expected hand score for chip accounting on timeout

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suit, card_suits, card_xmult_value, rank_value, is_debuffed, _modifier
+from balatro_bot.cards import card_rank, card_suit, card_suits, card_xmult_value, card_chip_value, rank_value, is_debuffed, _modifier
 from balatro_bot.constants import (
     FEWER_CARDS_JOKERS, ALL_SCORE_JOKERS, EXACT_4_JOKERS,
     FACE_RANKS_TAROT, PLANET_KEYS, NO_TARGET_TAROTS, TARGETING_TAROTS,
@@ -80,6 +80,7 @@ def _sort_play_order(
     indices: list[int],
     hand_cards: list[dict],
     jokers: list[dict],
+    strategy: "Strategy | None" = None,
 ) -> list[int]:
     """Sort card play indices so additive effects fire before multiplicative.
 
@@ -96,7 +97,11 @@ def _sort_play_order(
     has_hanging_chad = "j_hanging_chad" in joker_keys
     has_photograph = "j_photograph" in joker_keys
     has_triboulet = "j_triboulet" in joker_keys
+    has_dna = "j_dna" in joker_keys
     pareidolia = "j_pareidolia" in joker_keys
+
+    def _is_face(idx: int) -> bool:
+        return pareidolia or card_rank(hand_cards[idx]) in ("J", "Q", "K")
 
     def _total_xmult(idx: int) -> float:
         """Per-trigger xmult for this card (card ×mult + per-card joker ×mult)."""
@@ -109,6 +114,11 @@ def _sort_play_order(
             xm *= 2.0
         return xm
 
+    def _sort_rest(rest: list[int]) -> list[int]:
+        """Sort non-first cards: additive left, multiplicative right."""
+        rest.sort(key=lambda i: (0 if card_xmult_value(hand_cards[i]) <= 1.0 else 1, i))
+        return rest
+
     if has_hanging_chad:
         # First card gets 3 triggers — pick the card that benefits most.
         def _first_position_score(idx: int) -> float:
@@ -116,20 +126,45 @@ def _sort_play_order(
             if is_debuffed(c):
                 return 0.0
             xm = _total_xmult(idx)
-            rank = card_rank(c)
-            is_face = pareidolia or rank in ("J", "Q", "K")
-            if has_photograph and is_face:
+            if has_photograph and _is_face(idx):
                 xm *= 2.0  # Photograph ×2 per trigger on first face
             # xm^3 (first) vs xm (elsewhere) — higher ratio = more benefit
             return xm ** 3
 
         best_first = max(indices, key=_first_position_score)
         rest = [i for i in indices if i != best_first]
-        # Sort rest: additive left (xmult<=1), multiplicative right (xmult>1)
-        rest.sort(key=lambda i: (0 if card_xmult_value(hand_cards[i]) <= 1.0 else 1, i))
-        return [best_first] + rest
+        return [best_first] + _sort_rest(rest)
 
-    # No Hanging Chad: simple sort — additive left, ×mult right
+    # Photograph without Hanging Chad: put best face card first for xmult
+    if has_photograph:
+        face_indices = [i for i in indices if not is_debuffed(hand_cards[i]) and _is_face(i)]
+        if face_indices:
+            best_face = max(face_indices, key=_total_xmult)
+            rest = [i for i in indices if i != best_face]
+            return [best_face] + _sort_rest(rest)
+
+    # DNA: first card played gets copied to deck — pick the most strategic card
+    if has_dna:
+        def _dna_value(idx: int) -> float:
+            c = hand_cards[idx]
+            if is_debuffed(c):
+                return -1.0
+            rank = card_rank(c)
+            suit = card_suit(c)
+            score = 0.0
+            if strategy:
+                score += strategy.rank_affinity(rank) if rank else 0.0
+                score += strategy.suit_affinity(suit) if suit else 0.0
+            # Fallback: prefer high chip-value cards when no strategy signal
+            if score == 0.0:
+                score = card_chip_value(c) / 100.0
+            return score
+
+        best_dna = max(indices, key=_dna_value)
+        rest = [i for i in indices if i != best_dna]
+        return [best_dna] + _sort_rest(rest)
+
+    # Default: additive left, ×mult right
     return sorted(indices, key=lambda i: (
         0 if card_xmult_value(hand_cards[i]) <= 1.0 else 1,
         i,  # stability tiebreak: preserve original order within group

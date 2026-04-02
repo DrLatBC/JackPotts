@@ -558,6 +558,21 @@ def generate_markdown(stats: dict, batch_label: str) -> str:
                 stats.get("ed_in_all", Counter()), stats.get("ed_in_mismatch", Counter()),
                 "Edition", min_appearances=2,
             )
+            _lift_table(
+                "Blind Mismatch Lift",
+                stats.get("blind_in_all", Counter()), stats.get("blind_in_mismatch", Counter()),
+                "Blind",
+            )
+            _lift_table(
+                "Ante Mismatch Lift",
+                stats.get("ante_in_all", Counter()), stats.get("ante_in_mismatch", Counter()),
+                "Ante",
+            )
+            _lift_table(
+                "Hands-Left Mismatch Lift",
+                stats.get("hands_left_in_all", Counter()), stats.get("hands_left_in_mismatch", Counter()),
+                "Hands Left",
+            )
 
     milk_total = sum(stats["milk_actions"].values())
     if milk_total:

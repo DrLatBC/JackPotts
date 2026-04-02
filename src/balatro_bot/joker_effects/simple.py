@@ -123,7 +123,7 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     ("j_throwback",     "parsed_xmult", {"fallback": 1.5}),
     ("j_canio",         "parsed_xmult", {"fallback": 2.0}),
     ("j_yorick",        "parsed_xmult", {"fallback": 2.0}),
-    ("j_steel_joker",   "parsed_xmult", {"fallback": 1.2}),
+    # j_steel_joker: moved to complex.py (dynamic Steel card counting)
 ]
 
 
