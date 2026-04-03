@@ -116,7 +116,7 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     ("j_hologram",      "parsed_xmult", {"fallback": 1.5}),
     # j_obelisk — moved to complex.py (needs most-played hand check + pre-scoring increment)
     ("j_ramen",         "parsed_xmult", {"fallback": 1.5}),
-    ("j_lucky_cat",     "parsed_xmult", {"fallback": 1.5}),
+    # j_lucky_cat — moved to complex.py (EV pre-increment for Lucky triggers)
     ("j_campfire",      "parsed_xmult", {"fallback": 1.5}),
     ("j_hit_the_road",  "parsed_xmult", {"fallback": 1.5}),
     ("j_glass",         "parsed_xmult", {"fallback": 1.5}),

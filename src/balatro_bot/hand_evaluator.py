@@ -24,6 +24,7 @@ from balatro_bot.cards import (
     card_suits,
     card_xmult_value,
     is_debuffed,
+    is_joker_debuffed,
     is_stone,
     rank_value,
 )
@@ -55,8 +56,11 @@ def _rank_counts(cards: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _is_flush(cards: list[dict], smeared: bool = False) -> bool:
-    """True if all non-Stone cards share at least one common suit.
+def _is_flush(cards: list[dict], smeared: bool = False, four_fingers: bool = False) -> bool:
+    """True if enough non-Stone cards share at least one common suit.
+
+    Normally all non-Stone cards must share a suit.  With four_fingers,
+    only 4 cards need to share a suit (the 5th can be off-suit).
 
     Stone cards have no suit and cannot form poker hands, so they are
     excluded from the flush check (same as _is_straight skips them).
@@ -64,12 +68,21 @@ def _is_flush(cards: list[dict], smeared: bool = False) -> bool:
     suited = [c for c in cards if not is_stone(c)]
     if not suited:
         return False
-    common = card_suits(suited[0], smeared=smeared)
-    for c in suited[1:]:
-        common &= card_suits(c, smeared=smeared)
-        if not common:
-            return False
-    return bool(common)
+    if not four_fingers:
+        # Standard: all cards must share a suit
+        common = card_suits(suited[0], smeared=smeared)
+        for c in suited[1:]:
+            common &= card_suits(c, smeared=smeared)
+            if not common:
+                return False
+        return bool(common)
+    else:
+        # Four Fingers: at least 4 cards sharing a suit
+        suit_counts: dict[str, int] = {}
+        for c in suited:
+            for s in card_suits(c, smeared=smeared):
+                suit_counts[s] = suit_counts.get(s, 0) + 1
+        return any(v >= 4 for v in suit_counts.values())
 
 
 def _is_straight(cards: list[dict], four_fingers: bool = False, shortcut: bool = False) -> bool:
@@ -112,7 +125,7 @@ def classify_hand(
     # Stone cards can't form poker hands — use non-Stone count for
     # flush/straight minimum card requirements.
     n_rankable = sum(1 for c in cards if not is_stone(c))
-    flush    = _is_flush(cards, smeared=smeared) and n_rankable >= min_sf
+    flush    = _is_flush(cards, smeared=smeared, four_fingers=four_fingers) and n_rankable >= min_sf
     straight = _is_straight(cards, four_fingers, shortcut=shortcut) and n_rankable >= min_sf
 
     max_kind = counts_sorted[0] if counts_sorted else 0
@@ -443,7 +456,7 @@ def _apply_before_phase(scoring_cards, played_cards, jokers):
     """
     vampire = None
     for j in (jokers or []):
-        if j.get("key") == "j_vampire":
+        if j.get("key") == "j_vampire" and not is_joker_debuffed(j):
             vampire = j
             break
     if not vampire:
@@ -509,6 +522,8 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     _per_card = []
     _first_face_found = False  # shared state for Photograph
     for j in (jokers or []):
+        if is_joker_debuffed(j):
+            continue
         k = j.get("key", "")
         ab = j.get("value", {}).get("ability", {})
         if k == "j_greedy_joker":
@@ -547,6 +562,8 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
             xm = ab.get("Xmult", 1.5)
             odds = ab.get("odds", 2)
             _per_card.append(("suit_expected_xmult", "H", xm, odds))
+        elif k == "j_hiker":
+            _per_card.append(("all_chips", ab.get("extra", 5)))
 
     # Midas Mask: face cards become Gold when scored — this strips any existing
     # enhancement (MULT, BONUS, GLASS, etc.) before per-card scoring fires.
@@ -622,6 +639,12 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
                         # but not on subsequent face cards.
                         if _is_first_face_card:
                             ctx.mult *= eff[1]
+                    elif kind == "all_chips":
+                        # Hiker: stamps +5 onto perma_bonus AFTER each trigger.
+                        # Trigger 0 sees no bonus; trigger 1 sees +5; trigger 2 sees +10.
+                        # The card's existing perma_bonus (from prior hands) is already
+                        # in card_chip_value, so only retrigger accumulation matters here.
+                        ctx.chips += eff[1] * _t
             # 7. Gold Seal: +$3 per trigger (updates money for Bull mid-scoring)
             if not is_debuffed(card):
                 seal = _modifier(card).get("seal", "")
@@ -705,7 +728,7 @@ def score_hand(
 
     from balatro_bot.joker_effects import ScoreContext, apply_joker_effects, retrigger_count
 
-    joker_keys_set = {j.get("key") for j in jokers}
+    joker_keys_set = {j.get("key") for j in jokers if not is_joker_debuffed(j)}
     ctx = ScoreContext(
         chips=base_chips,
         mult=float(base_mult),
@@ -805,7 +828,7 @@ def score_hand_detailed(
             "total": math.floor(total_chips * total_mult),
         }
 
-    joker_keys_set = {j.get("key") for j in jokers}
+    joker_keys_set = {j.get("key") for j in jokers if not is_joker_debuffed(j)}
     ctx = ScoreContext(
         chips=base_chips,
         mult=float(base_mult),
@@ -855,17 +878,45 @@ def score_hand_detailed(
 # Scoring cards extraction
 # ---------------------------------------------------------------------------
 
-def _scoring_cards_for(hand_name: str, cards: list[dict]) -> list[dict]:
+def _scoring_cards_for(
+    hand_name: str, cards: list[dict],
+    four_fingers: bool = False, smeared: bool = False,
+) -> list[dict]:
     """Return the subset of cards that actually score for the hand type.
 
     Stone cards always score when played (they contribute +50 chips regardless
     of hand type), so they're appended to the result even if they aren't part
     of the poker hand formation.
+
+    With Four Fingers, a Flush/Straight Flush formed by only 4 suited cards
+    does not score the off-suit 5th card.
     """
     rc = _rank_counts(cards)
     counts_sorted = sorted(rc.items(), key=lambda x: (-x[1], -rank_value(x[0])))
 
-    if hand_name in ("Flush", "Straight", "Straight Flush", "Flush Five", "Flush House"):
+    if hand_name in ("Flush", "Straight Flush", "Flush Five", "Flush House"):
+        if four_fingers:
+            # Check if all non-Stone cards share a suit (standard flush)
+            suited = [c for c in cards if not is_stone(c)]
+            if suited:
+                common = card_suits(suited[0], smeared=smeared)
+                for c in suited[1:]:
+                    common &= card_suits(c, smeared=smeared)
+                if not common:
+                    # Four Fingers flush: only 4 cards share a suit.
+                    # Find the flush suit and keep only those cards.
+                    suit_groups: dict[str, list[dict]] = {}
+                    for c in suited:
+                        for s in card_suits(c, smeared=smeared):
+                            suit_groups.setdefault(s, []).append(c)
+                    # Pick the suit with the most cards
+                    flush_suit = max(suit_groups, key=lambda s: len(suit_groups[s]))
+                    flush_cards = suit_groups[flush_suit]
+                    # Append Stone cards (always score)
+                    stone_cards = [c for c in cards if is_stone(c)]
+                    return flush_cards + [c for c in stone_cards if c not in flush_cards]
+        return list(cards)
+    if hand_name == "Straight":
         return list(cards)
 
     if hand_name == "Five of a Kind":
@@ -971,7 +1022,7 @@ def enumerate_hands(
     n = len(hand_cards)
     indices_set = set(range(n))
 
-    joker_keys = {j.get("key") for j in (jokers or [])}
+    joker_keys = {j.get("key") for j in (jokers or []) if not is_joker_debuffed(j)}
     four_fingers = "j_four_fingers" in joker_keys
     has_splash   = "j_splash" in joker_keys
     shortcut     = "j_shortcut" in joker_keys
@@ -998,7 +1049,7 @@ def enumerate_hands(
             else:
                 played_in_order = subset
 
-            scoring = subset if has_splash else _scoring_cards_for(hand_name, subset)
+            scoring = subset if has_splash else _scoring_cards_for(hand_name, subset, four_fingers=four_fingers, smeared=smeared)
             held = [hand_cards[i] for i in indices_set - set(indices)] if jokers else []
             chips, mult, total = score_hand(
                 hand_name, scoring, hand_levels,

@@ -10,7 +10,7 @@ from balatro_bot.rules import (
     PlayHighValueHand, DiscardToImprove, PlayBestAvailable,
     AlwaysSelectBlind, SkipForTag,
     SellInvisible, SellDietCola,
-    SellWeakJoker, FeedCampfire, ReorderJokersForCeremonial, ReorderJokersForScoring,
+    SellWeakJoker, FeedCampfire, ReorderJokersForScoring,
     BuyJokersInShop, BuyConsumablesInShop, BuyPacksInShop,
     BuyVouchersInShop, RerollShop, LeaveShop,
     AlwaysCashOut,

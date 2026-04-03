@@ -29,9 +29,9 @@ def _stencil(ctx: ScoreContext, j: dict) -> None:
     ctx.mult *= max(1, value)
 
 def _blue_joker(ctx: ScoreContext, j: dict) -> None:
-    # +N Chips per remaining card in deck (ability.extra = chips per card, default 2)
-    chips_per_card = _ability(j).get("extra", 2)
-    ctx.chips += chips_per_card * ctx.deck_count
+    # Use parsed "Currently +N Chips" from API text — more reliable than
+    # computing from deck_count, which may disagree with what the game sees.
+    ctx.chips += _ab_chips(j, fallback=2 * ctx.deck_count)
 
 def _banner(ctx: ScoreContext, j: dict) -> None:
     ctx.chips += _ability(j).get("extra", 30) * ctx.discards_left
@@ -60,7 +60,8 @@ def _misprint(ctx: ScoreContext, j: dict) -> None:
 
 def _raised_fist(ctx: ScoreContext, j: dict) -> None:
     # Raised Fist uses chip values (J/Q/K=10, A=11), not rank order (J=11..A=14)
-    held_chips = [RANK_CHIPS.get(card_rank(c), 0) for c in ctx.held_cards if card_rank(c)]
+    # Debuffed held cards contribute 0 chips (boss blinds like The Window)
+    held_chips = [0 if is_debuffed(c) else RANK_CHIPS.get(card_rank(c), 0) for c in ctx.held_cards if card_rank(c)]
     if held_chips:
         ctx.mult += 2 * min(held_chips)
 
@@ -143,13 +144,15 @@ def _blackboard(ctx: ScoreContext, j: dict) -> None:
     # All held cards must be Spades or Clubs.  Stone cards return an empty
     # suit set which must FAIL the check (the game treats them as no-suit,
     # not as "skip").  So no `if card_suits(...)` filter — every card votes.
-    if ctx.held_cards and all(
-        card_suits(c, smeared=ctx.smeared) & {"S", "C"} for c in ctx.held_cards
+    # Debuffed held cards are ignored (don't break the all-Spades/Clubs check)
+    active_held = [c for c in ctx.held_cards if not is_debuffed(c)]
+    if all(
+        card_suits(c, smeared=ctx.smeared) & {"S", "C"} for c in active_held
     ):
         ctx.mult *= _ability(j).get("extra", 3.0)
 
 def _baron(ctx: ScoreContext, j: dict) -> None:
-    kings = sum(1 for c in ctx.held_cards if card_rank(c) == "K")
+    kings = sum(1 for c in ctx.held_cards if not is_debuffed(c) and card_rank(c) == "K")
     if kings > 0:
         ctx.mult *= _ability(j).get("extra", 1.5) ** kings
 
@@ -190,21 +193,19 @@ def _seeing_double(ctx: ScoreContext, j: dict) -> None:
         ctx.mult *= _ability(j).get("extra", 2.0)
 
 def _flower_pot(ctx: ScoreContext, j: dict) -> None:
-    # Flower Pot requires at least 4 non-debuffed scoring cards AND
-    # representation of all 4 suits (or both colors when Smeared).
+    # Flower Pot requires at least 4 scoring cards with representation of
+    # all 4 suits (or both colors when Smeared).  Debuffed cards still
+    # contribute their suit to the check — they just don't add chips/mult.
     # WILD cards can fill ONE missing suit each, not all 4 simultaneously.
     # With Smeared Joker the requirement loosens: need 2+ black (C/S)
     # AND 2+ red (H/D) cards instead of all 4 individual suits.
-    non_debuffed = [c for c in ctx.scoring_cards if not is_debuffed(c)]
-    if len(non_debuffed) < 4:
+    if len(ctx.scoring_cards) < 4:
         return
     if ctx.smeared:
         red_count = 0
         black_count = 0
-        for c in non_debuffed:
-            if _modifier(c).get("enhancement") == "WILD":
-                # WILD counts as one card of any color — assign to whichever
-                # color is more needed (greedy: fill the smaller bucket first)
+        for c in ctx.scoring_cards:
+            if not is_debuffed(c) and _modifier(c).get("enhancement") == "WILD":
                 if red_count <= black_count:
                     red_count += 1
                 else:
@@ -220,8 +221,8 @@ def _flower_pot(ctx: ScoreContext, j: dict) -> None:
     else:
         natural_suits: set[str] = set()
         wild_count = 0
-        for c in non_debuffed:
-            if _modifier(c).get("enhancement") == "WILD":
+        for c in ctx.scoring_cards:
+            if not is_debuffed(c) and _modifier(c).get("enhancement") == "WILD":
                 wild_count += 1
             else:
                 natural_suits |= card_suits(c, smeared=False)
@@ -249,7 +250,7 @@ def _brainstorm(ctx: ScoreContext, j: dict) -> None:
                 effect(ctx, left)
 
 def _shoot_the_moon(ctx: ScoreContext, j: dict) -> None:
-    queens = sum(1 for c in ctx.held_cards if card_rank(c) == "Q")
+    queens = sum(1 for c in ctx.held_cards if not is_debuffed(c) and card_rank(c) == "Q")
     ctx.mult += _ability(j).get("extra", 13) * queens
 
 def _drivers_license(ctx: ScoreContext, j: dict) -> None:
@@ -305,7 +306,33 @@ def _idol(ctx: ScoreContext, j: dict) -> None:
     ctx.mult *= _ability(j).get("extra", 2.0) ** 0.2
 
 def _wee(ctx: ScoreContext, j: dict) -> None:
-    ctx.chips += _ab_chips(j, fallback=16)
+    # Wee Joker gains +chip_mod chips per scored 2.  The API snapshot shows
+    # the pre-play accumulated value; add the increment for 2s in this hand.
+    base = _ab_chips(j, fallback=16)
+    chip_mod = _ability(j).get("chip_mod", 8)
+    twos = sum(1 for c in ctx.scoring_cards if not is_debuffed(c) and card_rank(c) == "2")
+    ctx.chips += base + chip_mod * twos
+
+
+def _lucky_cat(ctx: ScoreContext, j: dict) -> None:
+    """Lucky Cat: xMult that gains +extra each time a Lucky card's mult triggers.
+
+    Lucky mult trigger chance is 1/5 (2/5 with Oops).  EV pre-increment:
+    count Lucky cards scored × triggers × probability × extra.
+    """
+    from balatro_bot.joker_effects import retrigger_count
+    base_xmult = _ab_xmult(j, fallback=1.5)
+    extra = _ability(j).get("extra", 0.25)
+    has_oops = any(jk.get("key") == "j_oops" for jk in ctx.jokers)
+    prob = 2 / 5 if has_oops else 1 / 5
+    lucky_triggers = sum(
+        retrigger_count(c, ctx)
+        for c in ctx.scoring_cards
+        if not is_debuffed(c)
+        and isinstance(c.get("modifier", {}), dict)
+        and c.get("modifier", {}).get("enhancement") == "LUCKY"
+    )
+    ctx.mult *= base_xmult + extra * prob * lucky_triggers
 
 
 def _vampire(ctx: ScoreContext, j: dict) -> None:
@@ -410,6 +437,7 @@ COMPLEX_EFFECTS: dict[str, object] = {
     "j_stuntman": _stuntman,
     "j_idol": _idol,
     "j_wee": _wee,
+    "j_lucky_cat": _lucky_cat,
     "j_obelisk": _obelisk,
     "j_vampire": _vampire,
     "j_steel_joker": _steel_joker,

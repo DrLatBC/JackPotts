@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from balatro_bot.cards import is_joker_debuffed
 from balatro_bot.joker_effects.context import ScoreContext, _noop
 from balatro_bot.joker_effects.simple import SIMPLE_EFFECTS
 from balatro_bot.joker_effects.complex import COMPLEX_EFFECTS
@@ -18,8 +19,8 @@ JOKER_EFFECTS.update(COMPLEX_EFFECTS)
 for key in ("j_hack", "j_dusk", "j_sock_and_buskin", "j_hanging_chad", "j_seltzer", "j_mime"):
     JOKER_EFFECTS[key] = _noop
 
-# --- Post-scoring jokers (effect already reflected in card data) ---
-# Hiker: +5 chips permanently stamped onto cards after scoring; already in perma_bonus
+# --- Per-card jokers handled in _apply_card_scoring (hand_evaluator.py) ---
+# Hiker: +5 chips per card per trigger — handled as "all_chips" in per-card loop
 JOKER_EFFECTS["j_hiker"] = _noop
 
 # --- Held-in-hand phase jokers (applied in _apply_card_scoring, before joker effects) ---
@@ -114,6 +115,8 @@ def apply_joker_effects(ctx: ScoreContext) -> None:
     baseball_xm = _get_baseball_xmult(ctx)
 
     for joker in ctx.jokers:
+        if is_joker_debuffed(joker):
+            continue
         _apply_joker_edition_pre(ctx, joker)
         key = joker.get("key", "")
         effect = JOKER_EFFECTS.get(key)
@@ -134,6 +137,8 @@ def apply_joker_effects_detailed(ctx: ScoreContext) -> list[tuple[str, float, fl
     baseball_xm = _get_baseball_xmult(ctx)
     contributions: list[tuple[str, float, float, float]] = []
     for joker in ctx.jokers:
+        if is_joker_debuffed(joker):
+            continue
         key = joker.get("key", "")
         label = joker.get("label", key)
         pre_chips, pre_mult = ctx.chips, ctx.mult

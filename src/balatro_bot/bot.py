@@ -8,15 +8,10 @@ import random
 import string
 import time
 from collections import defaultdict
-from typing import TYPE_CHECKING
-
 import httpx
 from balatrobot import APIError, BalatroClient
 
 from balatro_bot.engine import RuleEngine
-
-if TYPE_CHECKING:
-    pass
 
 log = logging.getLogger("balatro_bot")
 
@@ -116,7 +111,9 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
 
         joker_keys = {j.get("key") for j in snapshot["jokers"]}
         has_splash = "j_splash" in joker_keys
-        scoring = played if has_splash else _scoring_cards_for(hand_name, played)
+        four_fingers = "j_four_fingers" in joker_keys
+        smeared = "j_smeared" in joker_keys
+        scoring = played if has_splash else _scoring_cards_for(hand_name, played, four_fingers=four_fingers, smeared=smeared)
 
         # Apply boss blind level adjustments for scoring estimate
         # NOTE: The Flint halving is already applied in the snapshot (line ~675),
@@ -130,11 +127,19 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
         # Boss blind hand-type restrictions — zero estimate when hand is invalid
         blind_zeroed = False
         if blind_name == "The Mouth":
+            # The Mouth locks the first hand type played this round.
+            # Check if a *different* type was already played successfully;
+            # if the current type itself was played, it's the locked type.
+            current_played = False
+            other_played = False
             for ht, data in hand_levels.items():
                 if isinstance(data, dict) and data.get("played_this_round", 0) > 0:
-                    if hand_name != ht:
-                        blind_zeroed = True
-                    break
+                    if ht == hand_name:
+                        current_played = True
+                    else:
+                        other_played = True
+            if other_played and not current_played:
+                blind_zeroed = True
         elif blind_name == "The Eye":
             for ht, data in hand_levels.items():
                 if ht == hand_name and isinstance(data, dict) and data.get("played_this_round", 0) > 0:
@@ -203,13 +208,27 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
                 for c in scoring
             ):
                 noise_sources.append("lucky")
+            # Hook swaps in post-play jokers, causing double-counting of
+            # scaling joker pre-increments and Ramen discard decay.
+            # Not worth modelling — tag as noise.
+            if blind_name == "The Hook":
+                hook_noisy = {"j_ramen", "j_green_joker", "j_ride_the_bus",
+                              "j_runner", "j_square", "j_trousers", "j_wee",
+                              "j_lucky_cat", "j_obelisk"}
+                for jk in joker_keys & hook_noisy:
+                    noise_sources.append(f"hook+{jk.removeprefix('j_')}")
             if noise_sources:
                 diff = actual_chips - detail["total"]
                 mismatch = f" MISMATCH_NOISE(diff={diff:+d}, {'+'.join(noise_sources)})"
                 is_mismatch = False
         if is_mismatch:
-            mismatch = f" MISMATCH(diff={actual_chips - detail['total']:+d})"
-        elif not actual_reliable:
+            diff = actual_chips - detail["total"]
+            if abs(diff) <= 1:
+                mismatch = f" MISMATCH_NOISE(diff={diff:+d}, rounding)"
+                is_mismatch = False
+            else:
+                mismatch = f" MISMATCH(diff={diff:+d})"
+        if not mismatch and not actual_reliable:
             mismatch = " (actual unreliable)"
 
         scoring_str = ", ".join(fmt_card(c) for c in scoring)
@@ -741,6 +760,37 @@ def run_bot(
                 total_hands_played += 1
                 post_chips = state.get("round", {}).get("chips", 0)
                 _scoring_log.info("  POST_PLAY chips_in_round=%d, delta=%d", post_chips, post_chips - pre_play_chips)
+                # The Hook discards 2 held cards and triggers scaling joker
+                # updates BEFORE scoring.  Use post-play state for jokers
+                # (already incremented/decremented) and reconstruct held cards
+                # by removing cards that The Hook discarded.
+                if play_snapshot and play_snapshot.get("blind_name") == "The Hook":
+                    play_snapshot["jokers"] = state.get("jokers", {}).get("cards", [])
+                    post_hand = state.get("hand", {}).get("cards", [])
+                    # When the play beats the blind, the game transitions
+                    # away from SELECTING_HAND and clears the hand.  In that
+                    # case we can't diff, so keep original held cards (will
+                    # include the 2 Hook-discarded cards — accepted noise).
+                    if post_hand:
+                        # Build multiset of post-play hand cards for diffing
+                        def _card_key(c):
+                            v = c.get("value", {})
+                            m = c.get("modifier", {})
+                            if not isinstance(m, dict):
+                                m = {}
+                            return (v.get("rank"), v.get("suit"), m.get("enhancement", ""), m.get("edition", ""))
+                        post_keys: dict[tuple, int] = {}
+                        for c in post_hand:
+                            k = _card_key(c)
+                            post_keys[k] = post_keys.get(k, 0) + 1
+                        # Keep only held cards that survived (present in post-play hand)
+                        surviving = []
+                        for c in play_snapshot["held"]:
+                            k = _card_key(c)
+                            if post_keys.get(k, 0) > 0:
+                                surviving.append(c)
+                                post_keys[k] -= 1
+                        play_snapshot["held"] = surviving
                 _log_played_hand(play_snapshot, pre_play_chips, state, fmt_card)
             elif method == "discard":
                 total_discards_used += 1

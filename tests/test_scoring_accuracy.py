@@ -4,6 +4,7 @@ Pareidolia, Steel Joker, Bull Joker, and Glass card scoring."""
 import math
 
 from balatro_bot.hand_evaluator import score_hand, score_hand_detailed
+from balatro_bot.cards import card_chip_value
 from balatro_bot.context import arm_reduce_hand_levels, flint_halve_hand_levels
 from tests.conftest import card, wild_card, stone_card, joker
 
@@ -326,3 +327,67 @@ class TestGlassCardScoring:
         # Both glass: mult = 2 * 2.0 * 2.0 = 8.0
         assert mult == 8.0
         assert total == 240  # 30 * 8
+
+
+# ---------------------------------------------------------------------------
+# Stone card perma_bonus (Hiker interaction)
+# ---------------------------------------------------------------------------
+
+class TestStoneCardPermaBonus:
+    def test_stone_base_chips(self):
+        """Stone card without perma_bonus gives 50 chips."""
+        assert card_chip_value(stone_card()) == 50
+
+    def test_stone_with_perma_bonus(self):
+        """Stone card with perma_bonus (e.g. from Hiker) adds to 50 base."""
+        sc = stone_card()
+        sc["value"]["perma_bonus"] = 25
+        assert card_chip_value(sc) == 75
+
+    def test_stone_perma_bonus_zero(self):
+        """Stone card with perma_bonus=0 still gives 50."""
+        sc = stone_card()
+        sc["value"]["perma_bonus"] = 0
+        assert card_chip_value(sc) == 50
+
+
+# ---------------------------------------------------------------------------
+# Flower Pot with debuffed cards
+# ---------------------------------------------------------------------------
+
+class TestFlowerPotDebuffed:
+    def _flower_pot_joker(self):
+        return _joker_with_ability("j_flower_pot", {"extra": 3.0})
+
+    def test_debuffed_card_provides_suit_for_flower_pot(self):
+        """A debuffed card's suit still counts for Flower Pot's 4-suit check."""
+        cards = [
+            card("A", "H"),
+            card("K", "D"),
+            card("Q", "C"),
+            card("J", "S"),
+            card("T", "H"),
+        ]
+        # Debuff the Spade card — it should still provide its suit
+        cards[3]["state"] = {"debuff": True}
+        _, _, total_with = score_hand("Straight", cards, jokers=[self._flower_pot_joker()])
+        _, _, total_without = score_hand("Straight", cards)
+        # All 4 suits present (debuffed J♠ still contributes Spade)
+        # Flower Pot should trigger (x3)
+        assert total_with > total_without
+        if total_without > 0:
+            ratio = total_with / total_without
+            assert ratio > 2.5, f"Flower Pot should trigger with debuffed 4th suit (ratio={ratio})"
+
+    def test_debuffed_cards_not_enough_suits_without(self):
+        """Without the debuffed card's suit, only 3 suits — Flower Pot shouldn't trigger."""
+        cards = [
+            card("A", "H"),
+            card("K", "D"),
+            card("Q", "C"),
+            card("J", "C"),  # duplicate suit — only 3 natural suits
+            card("T", "H"),
+        ]
+        _, _, total_with = score_hand("Straight", cards, jokers=[self._flower_pot_joker()])
+        _, _, total_without = score_hand("Straight", cards)
+        assert total_with == total_without, "Flower Pot should NOT trigger with only 3 suits"

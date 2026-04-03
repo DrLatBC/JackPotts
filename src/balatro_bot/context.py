@@ -37,7 +37,7 @@ def flint_halve_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
 
 # Per-level chip/mult increments for each hand type (fixed in Balatro).
 _HAND_LEVEL_INCREMENTS: dict[str, tuple[int, int]] = {
-    "High Card":       (5, 1),
+    "High Card":       (10, 1),
     "Pair":            (15, 1),
     "Two Pair":        (20, 1),
     "Three of a Kind": (20, 2),

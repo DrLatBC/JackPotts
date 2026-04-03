@@ -30,6 +30,18 @@ def is_debuffed(card: dict[str, Any]) -> bool:
     return _state(card).get("debuff", False) is True
 
 
+def is_joker_debuffed(joker: dict[str, Any]) -> bool:
+    """True if a joker is debuffed (e.g. by Crimson Heart).
+
+    The API signals this via the effect text becoming
+    ``"All abilities are disabled"`` and/or a state.debuff flag.
+    """
+    if _state(joker).get("debuff", False) is True:
+        return True
+    effect = joker.get("value", {}).get("effect", "")
+    return isinstance(effect, str) and effect == "All abilities are disabled"
+
+
 def card_rank(card: dict[str, Any]) -> str | None:
     """Return the rank character, or None for Stone/non-playing cards."""
     if _modifier(card).get("enhancement") == "STONE":
@@ -69,7 +81,8 @@ def card_chip_value(card: dict[str, Any]) -> int:
     if is_debuffed(card):
         return 0
     if is_stone(card):
-        return 50
+        perma = card.get("value", {}).get("perma_bonus", 0) or 0
+        return 50 + perma
     mod = _modifier(card)
     enhancement = mod.get("enhancement", "")
     bonus = 30 if enhancement == "BONUS" else 0

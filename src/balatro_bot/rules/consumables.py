@@ -636,8 +636,3 @@ class UseConsumables:
             worst_idx,
             reason=f"Hex setup: sell {fodder_label} to isolate {target_label} ({remaining} more to go)",
         )
-
-
-# Keep old names as aliases for backwards compatibility during transition
-UseImmediateConsumables = UseConsumables
-UseTacticalConsumables = UseConsumables

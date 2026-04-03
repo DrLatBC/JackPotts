@@ -11,11 +11,14 @@ import logging
 import os
 import random
 import re
+import shutil
 import signal
 import socket
 import subprocess
 import sys
 import time
+import zipfile
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -97,6 +100,12 @@ class Slot:
     restart_times: list[float] = field(default_factory=list)
     last_health: float = 0.0
     progress: str = ""
+    wins: int = 0
+    last_reason: str = ""
+    log_file: Path | None = None
+    log_offset: int = 0
+    recent_lines: deque = field(default_factory=lambda: deque(maxlen=40))
+    loop_start: float = 0.0
 
     def is_alive(self, proc: subprocess.Popen | None) -> bool:
         return proc is not None and proc.poll() is None
@@ -142,6 +151,45 @@ class Slot:
         except OSError:
             pass
         return self.progress
+
+    def read_wins(self, session_num: int) -> None:
+        try:
+            p = WINS_DIR / f"wins_{self.port}_{session_num:03d}.log"
+            if p.exists():
+                self.wins = sum(1 for line in p.read_text(encoding="utf-8", errors="replace").splitlines()
+                                if line.startswith("VICTORY"))
+        except OSError:
+            pass
+
+    _LOG_PREFIX = re.compile(r"^\d{2}:\d{2}:\d{2} \S+ ")
+
+    def poll_log_for_softlock(self) -> bool:
+        if not self.log_file:
+            return False
+        try:
+            with self.log_file.open("rb") as fh:
+                fh.seek(self.log_offset)
+                raw = fh.read()
+                self.log_offset = fh.tell()
+        except OSError:
+            return False
+
+        for line in raw.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line:
+                self.recent_lines.append(self._LOG_PREFIX.sub("", line))
+
+        if len(self.recent_lines) < 20:
+            return False
+
+        unique_ratio = len(set(self.recent_lines)) / len(self.recent_lines)
+        if unique_ratio <= 0.25:
+            if self.loop_start == 0.0:
+                self.loop_start = time.time()
+            return time.time() - self.loop_start >= 60
+        else:
+            self.loop_start = 0.0
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +248,8 @@ class Supervisor:
         self.verbose = verbose
         self.running = True
         self.session_num = 0
+        self.session_start: float = 0.0
+        self._shutdown_done = False
 
     def setup(self) -> None:
         WINS_DIR.mkdir(parents=True, exist_ok=True)
@@ -274,6 +324,10 @@ class Supervisor:
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         slot.state = "running"
+        slot.log_file = LOG_DIR / str(slot.port) / f"game_{self.session_num:03d}.log"
+        slot.log_offset = 0
+        slot.recent_lines.clear()
+        slot.loop_start = 0.0
         log.info("%s (port %d): launching with %d games remaining [%s deck]", slot.name, slot.port, games, deck)
 
     def wait_for_health(self, slot: Slot, timeout: float = 30.0) -> bool:
@@ -298,8 +352,10 @@ class Supervisor:
             log.warning("%s (port %d): server slow to start, launching bot anyway", slot.name, slot.port)
             self.launch_bot(slot)
             slot.last_health = time.time()
+        time.sleep(BOT_STAGGER)
 
     def restart_slot(self, slot: Slot, reason: str = "unknown") -> None:
+        slot.last_reason = reason
         now = time.time()
         slot.restart_times = [t for t in slot.restart_times
                               if now - t < RAPID_RESTART_WINDOW]
@@ -335,6 +391,11 @@ class Supervisor:
                 self.restart_slot(slot)
             return
 
+        if slot.state == "running" and slot.log_file and slot.poll_log_for_softlock():
+            log.warning("%s (port %d): soft-lock detected — restarting", slot.name, slot.port)
+            self.restart_slot(slot, reason="soft-lock detected")
+            return
+
         if slot.bot_proc and slot.bot_proc.poll() is not None:
             rc = slot.bot_proc.returncode
             if rc == 0:
@@ -361,6 +422,7 @@ class Supervisor:
         print()
         for slot in self.slots:
             slot.read_progress()
+            slot.read_wins(self.session_num)
             restarts = f" (restarts: {slot.restarts})" if slot.restarts else ""
             prog = slot.progress or "..."
             state_icon = {
@@ -374,16 +436,40 @@ class Supervisor:
             }.get(slot.state, "?")
             deck = self._deck_for_slot(slot)
             name_pad = f"{slot.name:<12}"
-            print(f"  [{state_icon}] {name_pad} {deck:<8} {prog:>12}  {slot.state}{restarts}")
+            wins_col = f"W:{slot.wins}"
+            state_str = slot.state
+            if slot.last_reason and slot.state in ("cooldown", "restarting"):
+                state_str = f"{slot.state} ({slot.last_reason})"
+            print(f"  [{state_icon}] {name_pad} {deck:<8} {prog:>12}  {wins_col:<6} {state_str}{restarts}")
         print()
         active = sum(1 for s in self.slots if s.state in ("running", "starting"))
         done = sum(1 for s in self.slots if s.state == "done")
-        print(f"  Active: {active}  Done: {done}  Session: {self.session_num}")
+        total_wins = sum(s.wins for s in self.slots)
+
+        completed = sum(
+            int(s.progress.split("/")[0])
+            for s in self.slots if "/" in s.progress
+        )
+        total_expected = len(self.slots) * self.games
+        win_pct = f" ({100 * total_wins / completed:.1f}%)" if completed > 0 else ""
+
+        elapsed = time.time() - self.session_start if self.session_start else 0
+        if elapsed > 30 and completed > 0:
+            rate = completed / (elapsed / 3600)
+            remaining = total_expected - completed
+            eta_secs = int(remaining / (rate / 3600))
+            h, m = divmod(eta_secs // 60, 60)
+            rate_str = f"  Rate: {rate:.0f} g/hr  ETA: ~{h}h{m:02d}m"
+        else:
+            rate_str = ""
+
+        print(f"  Active: {active}  Done: {done}  Wins: {total_wins}{win_pct}  Session: {self.session_num}{rate_str}")
         print(f"  Ctrl+C to stop all")
 
     def run(self) -> None:
         setup_supervisor_logging()
         self.setup()
+        self.session_start = time.time()
         log.info("=== Mother Gothel started: %d princesses, %d games each ===",
                  len(self.slots), self.games)
         names = ", ".join(s.name for s in self.slots)
@@ -417,6 +503,9 @@ class Supervisor:
             time.sleep(1.0)
 
     def shutdown(self) -> None:
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
         self.running = False
         log.info("Shutdown requested")
         print("\n  Shutting down...")
@@ -427,7 +516,95 @@ class Supervisor:
         kill_port_processes(ports)
         total_restarts = sum(s.restarts for s in self.slots)
         log.info("Shutdown complete. Total restarts: %d", total_restarts)
+        if self.session_num > 0:
+            self.post_run()
         print("  All princesses recalled.")
+
+    def post_run(self) -> None:
+        batch = f"{self.session_num:03d}"
+        print(f"\n  Running stats for batch {batch}...")
+        try:
+            result = subprocess.run(
+                [PYTHON, str(BASE_DIR / "stats.py"), batch],
+                cwd=str(BASE_DIR),
+                capture_output=False,
+            )
+            if result.returncode != 0:
+                log.warning("stats.py exited with rc=%d", result.returncode)
+        except Exception as e:
+            log.warning("Failed to run stats.py: %s", e)
+        self._rotate_logs()
+
+    def _rotate_logs(self, keep: int = 10) -> None:
+        archive_dir = LOG_DIR / "archive"
+        archive_dir.mkdir(exist_ok=True)
+
+        # Find all live batch numbers across port dirs
+        batch_nums: set[int] = set()
+        for port_dir in LOG_DIR.iterdir():
+            if not port_dir.name.isdigit():
+                continue
+            for f in port_dir.glob("game_*.log"):
+                m = re.match(r"game_(\d+)\.log", f.name)
+                if m:
+                    batch_nums.add(int(m.group(1)))
+
+        to_archive = sorted(batch_nums, reverse=True)[keep:]
+        if not to_archive:
+            return
+
+        stats_out = LOG_DIR / "stats_output"
+        moved = 0
+        for n in to_archive:
+            dest = archive_dir / f"batch_{n:03d}"
+            dest.mkdir(exist_ok=True)
+            for port_dir in LOG_DIR.iterdir():
+                if not port_dir.name.isdigit():
+                    continue
+                port = port_dir.name
+                for stem, prefix in (("game", "game"), ("scoring", "scoring")):
+                    src = port_dir / f"{stem}_{n:03d}.log"
+                    if src.exists():
+                        shutil.move(str(src), str(dest / f"{prefix}_{port}_{n:03d}.log"))
+                        moved += 1
+                wins_src = WINS_DIR / f"wins_{port}_{n:03d}.log"
+                if wins_src.exists():
+                    shutil.move(str(wins_src), str(dest / wins_src.name))
+                    moved += 1
+            for md in (f"batch_{n:03d}.md", f"batch_{n:03d}_wins.md"):
+                src = stats_out / md
+                if src.exists():
+                    shutil.move(str(src), str(dest / md))
+                    moved += 1
+
+        log.info("Archived %d files for %d batches", moved, len(to_archive))
+
+        # Zip if archive has 50+ subdirs
+        loose = sorted(
+            [d for d in archive_dir.iterdir() if d.is_dir() and d.name.startswith("batch_")],
+            key=lambda d: d.name,
+        )
+        if len(loose) < 50:
+            return
+
+        first = loose[0].name.replace("batch_", "")
+        last = loose[-1].name.replace("batch_", "")
+        zip_path = archive_dir / f"archive_batch_{first}_to_{last}.zip"
+        file_count = 0
+        print(f"  Zipping {len(loose)} archive batches → {zip_path.name}...")
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for batch_dir in loose:
+                    for f in batch_dir.rglob("*"):
+                        if f.is_file():
+                            zf.write(f, f.relative_to(archive_dir))
+                            file_count += 1
+            for batch_dir in loose:
+                shutil.rmtree(batch_dir)
+            log.info("Zipped %d files into %s", file_count, zip_path.name)
+            print(f"  Zipped {file_count} files.")
+        except Exception as e:
+            log.error("Failed to create archive zip: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +648,7 @@ def main() -> None:
         sys.exit(0)
 
     signal.signal(signal.SIGINT, on_sigint)
+    signal.signal(signal.SIGTERM, on_sigint)
 
     try:
         sup.run()
