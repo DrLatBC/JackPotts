@@ -194,54 +194,56 @@ class TestRideTheBusPareidolia:
 # ---------------------------------------------------------------------------
 
 class TestSteelJokerScoring:
-    def _steel_joker(self):
-        return _joker_with_ability("j_steel_joker", {"extra": 0.2})
+    def _steel_joker(self, xmult: float = 1.0):
+        """Build Steel Joker with effect text showing the game's current xmult.
+
+        The real API sends "Currently X1.6 Mult" etc. in the effect text.
+        The bot now parses this directly instead of counting Steel cards.
+        """
+        effect = f"X{xmult} Mult" if xmult > 1.0 else ""
+        j = _joker_with_ability("j_steel_joker", {"extra": 0.2})
+        j["value"]["effect"] = effect
+        return j
 
     def test_steel_joker_no_steel_cards(self):
         """Steel Joker with 0 Steel cards → xmult = 1.0 (no effect)."""
         cards = [card("K", "H"), card("K", "D")]
-        _, _, total_with = score_hand("Pair", cards, jokers=[self._steel_joker()])
+        _, _, total_with = score_hand("Pair", cards, jokers=[self._steel_joker(1.0)])
         _, _, total_without = score_hand("Pair", cards)
         assert total_with == total_without
 
     def test_steel_joker_with_steel_in_hand(self):
-        """Steel Joker counts Steel cards in held cards."""
+        """Steel Joker with 2 Steel cards → xmult = 1.4 (from parsed text)."""
         scoring = [card("K", "H"), card("K", "D")]
         held = [card("5", "S", enhancement="STEEL"), card("3", "H", enhancement="STEEL")]
         _, mult, _ = score_hand(
-            "Pair", scoring, jokers=[self._steel_joker()],
+            "Pair", scoring, jokers=[self._steel_joker(xmult=1.4)],
             held_cards=held,
         )
-        # 2 Steel cards → xmult = 1 + 0.2*2 = 1.4
+        # Parsed xmult = 1.4 (game says "Currently X1.4 Mult")
         # Base mult: 2 (pair). Held Steel cards each add x1.5 mult.
         # Per-card Steel: mult = 2 * 1.5 * 1.5 = 4.5
         # Steel Joker: 4.5 * 1.4 = 6.3
         assert abs(mult - 6.3) < 0.01
 
     def test_steel_joker_with_steel_in_deck(self):
-        """Steel Joker counts Steel cards in deck_cards too."""
+        """Steel Joker with 3 Steel cards in deck → xmult = 1.6."""
         scoring = [card("K", "H"), card("K", "D")]
-        deck = [card("7", "C", enhancement="STEEL"), card("8", "D", enhancement="STEEL"),
-                card("9", "S", enhancement="STEEL")]
         _, mult, _ = score_hand(
-            "Pair", scoring, jokers=[self._steel_joker()],
-            deck_cards=deck,
+            "Pair", scoring, jokers=[self._steel_joker(xmult=1.6)],
         )
-        # 3 Steel cards in deck → xmult = 1 + 0.2*3 = 1.6
-        # Base mult: 2, no held Steel → mult = 2 * 1.6 = 3.2
+        # Parsed xmult = 1.6. Base mult: 2, no held Steel → mult = 2 * 1.6 = 3.2
         assert abs(mult - 3.2) < 0.01
 
     def test_steel_joker_counts_all_sources(self):
-        """Steel cards across held, played, and deck all count."""
+        """Steel Joker xmult comes from parsed text covering the full deck."""
         scoring = [card("K", "H", enhancement="STEEL"), card("K", "D")]
         held = [card("5", "S", enhancement="STEEL")]
-        deck = [card("7", "C", enhancement="STEEL")]
         _, mult, _ = score_hand(
-            "Pair", scoring, jokers=[self._steel_joker()],
-            held_cards=held, deck_cards=deck,
+            "Pair", scoring, jokers=[self._steel_joker(xmult=1.6)],
+            held_cards=held,
         )
-        # 3 Steel cards total (1 played + 1 held + 1 deck) → xmult = 1 + 0.2*3 = 1.6
-        # Steel enhancement only gives x1.5 when HELD, not when scored.
+        # Parsed xmult = 1.6 (game counted 3 Steel across full deck)
         # Held 5♠ Steel: x1.5 → mult = 2 * 1.5 = 3.0
         # Steel Joker: 3.0 * 1.6 = 4.8
         assert abs(mult - 4.8) < 0.01

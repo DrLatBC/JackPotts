@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from balatro_bot.cards import card_rank, card_suits, is_debuffed, _modifier, rank_value
 from balatro_bot.constants import FACE_RANKS, FIBONACCI_RANKS, EVEN_RANKS, ODD_RANKS, RANK_CHIPS
-from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult
+from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult, _get_parsed_value
 from balatro_bot.joker_effects.context import ScoreContext, retrigger_count, _count_suit_in_scoring, _count_face_in_scoring, _hand_contains
 
 if TYPE_CHECKING:
@@ -140,8 +140,11 @@ def _trousers(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += base
 
 def _blackboard(ctx: ScoreContext, j: dict) -> None:
+    # All held cards must be Spades or Clubs.  Stone cards return an empty
+    # suit set which must FAIL the check (the game treats them as no-suit,
+    # not as "skip").  So no `if card_suits(...)` filter — every card votes.
     if ctx.held_cards and all(
-        card_suits(c, smeared=ctx.smeared) & {"S", "C"} for c in ctx.held_cards if card_suits(c, smeared=ctx.smeared)
+        card_suits(c, smeared=ctx.smeared) & {"S", "C"} for c in ctx.held_cards
     ):
         ctx.mult *= _ability(j).get("extra", 3.0)
 
@@ -349,21 +352,13 @@ def _steel_joker(ctx: ScoreContext, j: dict) -> None:
     """Steel Joker: X Mult = 1 + extra * (Steel cards in full deck).
 
     The game dynamically counts Steel-enhanced cards across G.playing_cards
-    (all cards in the deck: draw pile + hand + played) at scoring time.
-    The API's ability.x_mult is NOT updated — it stays at the default 1.0.
-    We must count Steel cards ourselves from the available card data.
+    (all cards in the deck: draw pile + hand + played + discard pile) at
+    scoring time.  The API's ability.x_mult stays at the default 1.0, but
+    the effect text shows the real value via "Currently X1.6 Mult" etc.
+    Use the parsed text value directly — manual counting from the bot's
+    partial card data (draw pile + hand + played) misses the discard pile.
     """
-    ab = _ability(j)
-    extra = ab.get("extra", 0.2)
-
-    steel_count = 0
-    # Full deck = draw pile (deck_cards) + held cards + played cards
-    for source in (ctx.deck_cards or [], ctx.held_cards, ctx.played_cards):
-        for c in source:
-            if not is_debuffed(c) and _modifier(c).get("enhancement") == "STEEL":
-                steel_count += 1
-
-    xmult = 1 + extra * steel_count
+    xmult = _get_parsed_value(j, "xmult", 1.0)
     if xmult > 1:
         ctx.mult *= xmult
 

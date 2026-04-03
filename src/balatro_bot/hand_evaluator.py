@@ -56,11 +56,16 @@ def _rank_counts(cards: list[dict]) -> dict[str, int]:
 
 
 def _is_flush(cards: list[dict], smeared: bool = False) -> bool:
-    """True if all cards share at least one common suit."""
-    if not cards:
+    """True if all non-Stone cards share at least one common suit.
+
+    Stone cards have no suit and cannot form poker hands, so they are
+    excluded from the flush check (same as _is_straight skips them).
+    """
+    suited = [c for c in cards if not is_stone(c)]
+    if not suited:
         return False
-    common = card_suits(cards[0], smeared=smeared)
-    for c in cards[1:]:
+    common = card_suits(suited[0], smeared=smeared)
+    for c in suited[1:]:
         common &= card_suits(c, smeared=smeared)
         if not common:
             return False
@@ -104,8 +109,11 @@ def classify_hand(
     rc = _rank_counts(cards)
     counts_sorted = sorted(rc.values(), reverse=True)
     min_sf = 4 if four_fingers else 5
-    flush    = _is_flush(cards, smeared=smeared) and n >= min_sf
-    straight = _is_straight(cards, four_fingers, shortcut=shortcut) and n >= min_sf
+    # Stone cards can't form poker hands — use non-Stone count for
+    # flush/straight minimum card requirements.
+    n_rankable = sum(1 for c in cards if not is_stone(c))
+    flush    = _is_flush(cards, smeared=smeared) and n_rankable >= min_sf
+    straight = _is_straight(cards, four_fingers, shortcut=shortcut) and n_rankable >= min_sf
 
     max_kind = counts_sorted[0] if counts_sorted else 0
 
@@ -540,6 +548,22 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
             odds = ab.get("odds", 2)
             _per_card.append(("suit_expected_xmult", "H", xm, odds))
 
+    # Midas Mask: face cards become Gold when scored — this strips any existing
+    # enhancement (MULT, BONUS, GLASS, etc.) before per-card scoring fires.
+    _has_midas = any(j.get("key") == "j_midas_mask" for j in (jokers or []))
+    if _has_midas:
+        for i, card in enumerate(scored_in_play_order):
+            rank = card_rank(card)
+            if rank and (ctx.pareidolia or rank in FACE_RANKS):
+                mod = _modifier(card)
+                if isinstance(mod, dict) and mod.get("enhancement") not in (None, "", "GOLD"):
+                    # Replace enhancement with Gold (shallow copy to avoid mutating original)
+                    card_copy = dict(card)
+                    mod_copy = dict(mod)
+                    mod_copy["enhancement"] = "GOLD"
+                    card_copy["modifier"] = mod_copy
+                    scored_in_play_order[i] = card_copy
+
     for card in scored_in_play_order:
         triggers = retrigger_count(card, ctx)
         _is_first_face_card = False
@@ -676,7 +700,7 @@ def score_hand(
         for c in (held_cards or []):
             if not is_debuffed(c) and _modifier(c).get("enhancement") == "STEEL":
                 total_mult *= 1.5
-        total = math.floor(total_chips * total_mult + 1e-9)
+        total = math.floor(total_chips * total_mult)
         return total_chips, total_mult, total
 
     from balatro_bot.joker_effects import ScoreContext, apply_joker_effects, retrigger_count
@@ -715,7 +739,7 @@ def score_hand(
 
     apply_joker_effects(ctx)
 
-    total = math.floor(ctx.chips * ctx.mult + 1e-9)
+    total = math.floor(ctx.chips * ctx.mult)
 
     return ctx.chips, ctx.mult, total
 
@@ -778,7 +802,7 @@ def score_hand_detailed(
             "pre_joker_chips": total_chips, "pre_joker_mult": total_mult,
             "joker_contributions": [],
             "post_joker_chips": total_chips, "post_joker_mult": total_mult,
-            "total": math.floor(total_chips * total_mult + 1e-9),
+            "total": math.floor(total_chips * total_mult),
         }
 
     joker_keys_set = {j.get("key") for j in jokers}
@@ -815,7 +839,7 @@ def score_hand_detailed(
 
     joker_contributions = apply_joker_effects_detailed(ctx)
 
-    total = math.floor(ctx.chips * ctx.mult + 1e-9)
+    total = math.floor(ctx.chips * ctx.mult)
     return {
         "hand_name": hand_name,
         "base_chips": base_chips, "base_mult": base_mult,
