@@ -16,7 +16,8 @@ The bot fully simulates Balatro's scoring pipeline — joker effects, card enhan
 ## Prerequisites
 
 - **Balatro** (Steam)
-- **balatrobot mod** installed into Balatro (provides the JSON-RPC server the bot talks to)
+- **[Lovely](https://github.com/ethangreen-dev/lovely-injector)** mod loader for Balatro
+- **[balatrobot](https://github.com/coder/balatrobot) mod** installed into Balatro (provides the JSON-RPC server the bot talks to)
 - **Python 3.11+**
 
 ## Installation
