@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from tests.conftest import card, joker
-from balatro_bot.joker_valuation import (
+from balatro_bot.domain.policy.shop_valuation import (
     _make_card,
     _synthetic_hand,
     _scoring_delta,
@@ -12,7 +12,7 @@ from balatro_bot.joker_valuation import (
     evaluate_joker_value,
     UTILITY_VALUE,
 )
-from balatro_bot.hand_evaluator import classify_hand
+from balatro_bot.domain.scoring.classify import classify_hand
 from balatro_bot.strategy import compute_strategy, Strategy
 
 

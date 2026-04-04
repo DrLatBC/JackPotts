@@ -19,4 +19,7 @@ class SkipForTag:
     name = "skip_for_tag"
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        from balatro_bot.domain.policy.blind_policy import choose_skip_for_tag
+        if choose_skip_for_tag(state):
+            return SkipBlind(reason="skip for tag reward")
         return None

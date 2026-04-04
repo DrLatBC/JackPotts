@@ -102,7 +102,8 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
     if not snapshot or not _scoring_log.handlers:
         return
     try:
-        from balatro_bot.hand_evaluator import score_hand_detailed, classify_hand, _scoring_cards_for
+        from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
+        from balatro_bot.domain.scoring.estimate import score_hand_detailed
 
         played = snapshot["played"]
         hand_name = snapshot["hand_name"]
@@ -121,7 +122,7 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
         hand_levels = snapshot["hand_levels"]
         blind_name = snapshot.get("blind_name", "")
         if blind_name == "The Arm":
-            from balatro_bot.context import arm_reduce_hand_levels
+            from balatro_bot.domain.scoring.base import arm_reduce_hand_levels
             hand_levels = arm_reduce_hand_levels(hand_levels)
 
         # Boss blind hand-type restrictions — zero estimate when hand is invalid
@@ -656,7 +657,7 @@ def run_bot(
                     jokers_now = state.get("jokers", {}).get("cards", [])
                     hand_levels_now = state.get("hands", {})
                     rnd = state.get("round", {})
-                    from balatro_bot.hand_evaluator import best_hand as _bh
+                    from balatro_bot.domain.scoring.search import best_hand as _bh
                     jlimit = state.get("jokers", {}).get("limit", 5)
                     bh = _bh(hand_cards, hand_levels_now, jokers=jokers_now, joker_limit=jlimit)
                     best_score = bh.total if bh else 0
@@ -709,7 +710,7 @@ def run_bot(
             snap_hand_levels = state.get("hands", {})
             for b in state.get("blinds", {}).values():
                 if isinstance(b, dict) and b.get("status") == "CURRENT" and b.get("name") == "The Flint":
-                    from balatro_bot.context import flint_halve_hand_levels
+                    from balatro_bot.domain.scoring.base import flint_halve_hand_levels
                     snap_hand_levels = flint_halve_hand_levels(snap_hand_levels)
                     break
 

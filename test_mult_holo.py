@@ -19,7 +19,8 @@ import time
 sys.path.insert(0, "src")
 
 from balatrobot.cli.client import BalatroClient, APIError
-from balatro_bot.hand_evaluator import score_hand_detailed, classify_hand, _scoring_cards_for
+from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
+from balatro_bot.domain.scoring.estimate import score_hand_detailed
 from balatro_bot.cards import card_chip_value, card_mult_value, card_edition_mult_value, card_xmult_value, card_edition_xmult_value, _modifier
 
 

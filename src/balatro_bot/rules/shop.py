@@ -14,39 +14,13 @@ from balatro_bot.constants import (
 )
 from balatro_bot.strategy import Strategy, compute_strategy, JOKER_HAND_AFFINITY
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
-from balatro_bot.joker_valuation import evaluate_joker_value, UTILITY_VALUE
+from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value, UTILITY_VALUE
 from balatro_bot.rules._helpers import evaluate_hex
 
 if TYPE_CHECKING:
     from typing import Any
 
 log = logging.getLogger("balatro_bot")
-
-# --- Module-level priority sets (used by both SellWeakJoker and BuyJokersInShop) ---
-
-# Jokers worth force-buying at any ante — instant xMult or strong unconditional value
-_ALWAYS_BUY = {
-    "j_cavendish", "j_stencil",
-    "j_duo", "j_trio", "j_family", "j_order", "j_tribe",
-    "j_gros_michel", "j_popcorn",
-    "j_acrobat", "j_blackboard", "j_flower_pot",
-    "j_madness",
-}
-
-# Scaling xMult jokers — force-buy with relaxed ante gate (ante <= 5)
-_HIGH_PRIORITY = {
-    "j_constellation",  # +X0.1 per planet used
-    "j_campfire",       # +X0.25 per sell, resets at boss
-}
-
-# xMult jokers worth aggressively selling flat jokers to acquire
-_HIGH_VALUE_XMULT = {
-    "j_cavendish", "j_stencil",
-    "j_duo", "j_trio", "j_family", "j_order", "j_tribe",
-    "j_acrobat", "j_blackboard", "j_flower_pot",
-    "j_madness",
-    "j_constellation", "j_campfire",
-}
 
 # --- Utility joker values (non-scoring jokers with gameplay impact) ---
 
@@ -67,12 +41,17 @@ class SellInvisible:
     """
     name = "sell_invisible"
 
-    DUPE_WORTHY = _ALWAYS_BUY | _HIGH_PRIORITY | {
+    _DUPE_EXTRA = {
         "j_vampire", "j_hologram", "j_lucky_cat", "j_canio", "j_obelisk",
         "j_yorick", "j_hit_the_road",
         "j_card_sharp", "j_seeing_double",
         "j_blueprint", "j_brainstorm",
     }
+
+    @staticmethod
+    def _dupe_worthy() -> set[str]:
+        from balatro_bot.domain.policy.shop import ALWAYS_BUY, HIGH_PRIORITY
+        return ALWAYS_BUY | HIGH_PRIORITY | SellInvisible._DUPE_EXTRA
 
     # Copy jokers get a fixed high score — always worth duping
     COPY_JOKERS = {"j_blueprint", "j_brainstorm"}
@@ -105,7 +84,7 @@ class SellInvisible:
         for i, j in enumerate(owned):
             if i == invisible_idx:
                 continue
-            if j.get("key", "") not in self.DUPE_WORTHY:
+            if j.get("key", "") not in self._dupe_worthy():
                 continue
             score = self._score_target(j)
             if score > best_score:
@@ -210,31 +189,12 @@ class SellInvisible:
 
 
 class SellDietCola:
-    """Sell Diet Cola for a free shop reroll when nothing good is available.
-
-    Diet Cola gives a free reroll when sold. Worth using when the current
-    shop has no high-priority jokers and we have open joker slots.
-    """
+    """Sell Diet Cola for a free shop reroll when nothing good is available."""
     name = "sell_diet_cola"
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        owned = state.get("jokers", {}).get("cards", [])
-
-        diet_idx = next(
-            (i for i, j in enumerate(owned) if j.get("key") == "j_diet_cola"), None
-        )
-        if diet_idx is None:
-            return None
-
-        # Don't sell if shop already has a good joker
-        shop = state.get("shop", {})
-        for card in shop.get("cards", []):
-            if card.get("set") == "JOKER":
-                key = card.get("key", "")
-                if key in _ALWAYS_BUY or key in _HIGH_PRIORITY:
-                    return None  # good joker available, buy it instead
-
-        return SellJoker(diet_idx, reason="Diet Cola: sell for free shop reroll")
+        from balatro_bot.domain.policy.shop import choose_sell_diet_cola
+        return choose_sell_diet_cola(state)
 
 
 class SellWeakJoker:
@@ -242,232 +202,17 @@ class SellWeakJoker:
     name = "sell_weak_joker"
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        joker_info = state.get("jokers", {})
-        owned = joker_info.get("cards", [])
-
-        # Proactive sell: Popcorn decayed to ≤4 mult — cash out before it disappears
-        for i, j in enumerate(owned):
-            if j.get("key") == "j_popcorn":
-                effect_text = j.get("value", {}).get("effect", "")
-                parsed = parse_effect_value(effect_text) if effect_text else {}
-                current_mult = parsed.get("mult", 99)
-                if current_mult <= 4:
-                    return SellJoker(
-                        i, reason=f"sell decayed Popcorn (+{current_mult} Mult, about to disappear)"
-                    )
-
-        # Proactive sell: Ramen decayed below X1.0 — it's now REDUCING scores
-        for i, j in enumerate(owned):
-            if j.get("key") == "j_ramen":
-                effect_text = j.get("value", {}).get("effect", "")
-                parsed = parse_effect_value(effect_text) if effect_text else {}
-                current_xmult = parsed.get("xmult")
-                if current_xmult is not None and current_xmult < 1.0:
-                    return SellJoker(
-                        i, reason=f"sell decayed Ramen (X{current_xmult:.2f}, reducing scores)"
-                    )
-
-        # Only consider selling when slots are full
-        if joker_info.get("count", 0) < joker_info.get("limit", 5):
-            return None
-
-        if not owned:
-            return None
-
-        hand_levels = state.get("hands", {})
-        strat = compute_strategy(owned, hand_levels)
-
-        # Don't sell if we have no strategic direction yet
-        if not strat.preferred_hands:
-            return None
-
-        # Check if the shop has a high-tier xMult joker — if so, we're more
-        # willing to sell flat jokers (including normally-protected flat scalers)
-        shop = state.get("shop", {})
-        ante = state.get("ante_num", 1)
-        shop_has_xmult_buy = any(
-            card.get("key") in _HIGH_VALUE_XMULT
-            for card in shop.get("cards", [])
-            if card.get("set") == "JOKER"
-        )
-
-        # Score each owned joker — never sell Madness or Ceremonial.
-        # When a high-tier xMult is in the shop, allow selling flat scaling
-        # jokers (chips/mult scalers) that are normally protected.
-        # Stale scalers (barely accumulated value by mid-game) lose protection.
-        always_protected = {"j_madness", "j_ceremonial"} | SCALING_XMULT
-        if shop_has_xmult_buy:
-            protected = always_protected  # flat scalers become sellable
-        else:
-            protected = always_protected | SCALING_JOKERS
-
-        def _is_stale_scaler(j: dict, cur_ante: int) -> bool:
-            """Check if a scaling joker has barely accumulated value for its ante."""
-            key = j.get("key", "")
-            if key not in SCALING_JOKERS or key in always_protected:
-                return False
-            effect_text = j.get("value", {}).get("effect", "")
-            parsed = parse_effect_value(effect_text) if effect_text else {}
-            chips = parsed.get("chips") or 0
-            mult = parsed.get("mult") or 0
-            if cur_ante >= 4 and chips <= 20 and mult <= 5:
-                return True
-            if cur_ante >= 6 and chips <= 50 and mult <= 10:
-                return True
-            return False
-
-        owned_values = [
-            (i, evaluate_joker_value(j, owned_jokers=owned,
-                                     hand_levels=hand_levels, ante=ante, strategy=strat), j)
-            for i, j in enumerate(owned)
-            if j.get("key") not in protected or _is_stale_scaler(j, ante)
-        ]
-        if not owned_values:
-            return None
-
-        # Find the weakest joker
-        weakest_idx, weakest_value, weakest_joker = min(owned_values, key=lambda x: x[1])
-
-        # Check if the shop has a better joker available
-        money = state.get("money", 0)
-        sell_value = weakest_joker.get("cost", {}).get("sell", 0)
-
-        INTEREST_CAP = 25
-        current_interest = min(money // 5, 5)
-
-        # Score ALL shop jokers and pick the best upgrade
-        best_sell_target = None
-        best_shop_value = -1.0
-        best_shop_label = ""
-        best_threshold = 0.0
-
-        weakest_key = weakest_joker.get("key", "")
-        weakest_on_strategy = any(
-            strat.hand_affinity(ht) > 0
-            for ht in JOKER_HAND_AFFINITY.get(weakest_key, ([], 0))[0]
-        )
-
-        for card in shop.get("cards", []):
-            if card.get("set") != "JOKER":
-                continue
-            cost = card.get("cost", {}).get("buy", 999)
-            money_after_sell = money + sell_value
-            if cost > money_after_sell:
-                continue
-
-            if ante < 5 and money_after_sell < INTEREST_CAP:
-                interest_after_buy = min((money_after_sell - cost) // 5, 5)
-                if interest_after_buy < current_interest:
-                    continue
-
-            shop_value = evaluate_joker_value(card, owned_jokers=owned,
-                                              hand_levels=hand_levels, ante=ante, strategy=strat)
-            shop_key = card.get("key", "")
-            is_high_tier_xmult = shop_key in _HIGH_VALUE_XMULT
-
-            shop_on_strategy = any(
-                strat.hand_affinity(ht) > 0
-                for ht in JOKER_HAND_AFFINITY.get(shop_key, ([], 0))[0]
-            )
-
-            if is_high_tier_xmult:
-                threshold = 0.5
-            elif weakest_on_strategy and not shop_on_strategy:
-                threshold = 3.0
-            elif weakest_on_strategy and shop_on_strategy:
-                threshold = 1.5
-            else:
-                threshold = 1.0
-
-            if shop_value > weakest_value + threshold and shop_value > best_shop_value:
-                best_sell_target = card
-                best_shop_value = shop_value
-                best_shop_label = card.get("label", "?")
-                best_threshold = threshold
-
-        if best_sell_target is not None:
-            return SellJoker(
-                weakest_idx,
-                reason=f"sell {weakest_joker.get('label', '?')} (value={weakest_value:.1f}) "
-                       f"for {best_shop_label} (value={best_shop_value:.1f}, threshold={best_threshold:.1f}) "
-                       f"[strategy: {', '.join(n for n, _ in strat.preferred_hands[:2])}]",
-            )
-
-        return None
+        from balatro_bot.domain.policy.shop import choose_sell_weak_joker
+        return choose_sell_weak_joker(state)
 
 
 class FeedCampfire:
-    """When Campfire is owned, sell consumables that feed its X0.25 Mult per sell.
-
-    Campfire gains X0.25 Mult each time a joker, tarot, or planet is sold
-    (deliberate sell only — destruction doesn't count). Resets at each boss blind.
-
-    Sells:
-    - Planets that level hands with no strategy affinity (we'd never play them)
-    - Unrecognized/unusable consumables sitting in our slots
-
-    Does NOT sell:
-    - Black Hole (levels everything — always use)
-    - Planets for our strategy hands (use them to level up)
-    - Tarots/Spectrals we know how to use
-    """
+    """When Campfire is owned, sell consumables to feed its X0.25 Mult per sell."""
     name = "feed_campfire"
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        owned_jokers = state.get("jokers", {}).get("cards", [])
-        if not any(j.get("key") == "j_campfire" for j in owned_jokers):
-            return None
-
-        consumables = state.get("consumables", {}).get("cards", [])
-        if not consumables:
-            return None
-
-        hand_levels = state.get("hands", {})
-        strat = compute_strategy(owned_jokers, hand_levels)
-
-        all_useful = (
-            SAFE_CONSUMABLE_TAROTS
-            | set(TARGETING_TAROTS)
-            | SAFE_SPECTRAL_CONSUMABLES
-            | set(SPECTRAL_TARGETING)
-        )
-
-        for i, card in enumerate(consumables):
-            key = card.get("key", "")
-
-            # Planets: keep Black Hole and any that level a strategy hand
-            if key in PLANET_KEYS:
-                hand_type = PLANET_KEYS[key]
-                if hand_type == "ALL":
-                    continue  # Black Hole — always use, never sell
-                if strat.hand_affinity(hand_type) > 0:
-                    continue  # Levels a hand we care about — use it
-                return SellConsumable(
-                    i,
-                    reason=f"Campfire: sell {card.get('label', '?')} (+X0.25 Mult, {hand_type} has no affinity)",
-                )
-
-            # Hex: sell if not worth using (nuanced evaluation)
-            if key == "c_hex":
-                ante = state.get("ante_num", 1)
-                hand_levels = state.get("hands", {})
-                hex_score = evaluate_hex(owned_jokers, ante, hand_levels)
-                if hex_score <= 0.0:
-                    return SellConsumable(
-                        i, reason="Campfire: sell Hex (+X0.25 Mult, not worth using)",
-                    )
-
-            # Tarots/Spectrals we know how to use — keep them
-            if key in all_useful:
-                continue
-
-            # Unknown or unusable consumable — sell for Campfire
-            return SellConsumable(
-                i,
-                reason=f"Campfire: sell {card.get('label', '?')} (+X0.25 Mult)",
-            )
-
-        return None
+        from balatro_bot.domain.policy.shop import choose_feed_campfire
+        return choose_feed_campfire(state)
 
 
 class ReorderJokersForScoring:
@@ -630,341 +375,32 @@ class BuyJokersInShop:
     """Buy jokers that improve scoring, respecting interest thresholds."""
     name = "buy_jokers_in_shop"
 
-    INTEREST_CAP = 25
-    # Minimum valuation score to justify a purchase that loses interest
-    MIN_VALUE = 1.5
-
-    ALWAYS_BUY = _ALWAYS_BUY
-    HIGH_PRIORITY = _HIGH_PRIORITY
-
-    def _interest_after(self, money: int, cost: int) -> int:
-        return min((money - cost) // 5, 5)
-
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        money = state.get("money", 0)
-        shop = state.get("shop", {})
-        joker_slots = state.get("jokers", {})
-        ante = state.get("ante_num", 1)
-
-        if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
-            # Log interesting jokers we can't buy because slots are full
-            for card in shop.get("cards", []):
-                if card.get("set") != "JOKER":
-                    continue
-                key = card.get("key", "")
-                if key in self.ALWAYS_BUY or key in self.HIGH_PRIORITY:
-                    label = card.get("label", "?")
-                    cost = card.get("cost", {}).get("buy", 999)
-                    log.info("[SHOP] %s($%d): slots full (%d/%d) — can't buy",
-                             label, cost, joker_slots.get("count", 0), joker_slots.get("limit", 5))
-            return None
-
-        current_interest = min(money // 5, 5)
-
-        strat = compute_strategy(joker_slots.get("cards", []), state.get("hands", {}))
-        jlimit = joker_slots.get("limit", 5)
-
-        # Score each candidate and pick the best improvement
-        best_idx = None
-        best_improvement = 0.0
-        best_cost = 0
-        best_label = ""
-        passed_on: list[str] = []
-
-        for i, card in enumerate(shop.get("cards", [])):
-            if card.get("set") != "JOKER":
-                continue
-            label = card.get("label", "?")
-            cost = card.get("cost", {}).get("buy", 999)
-            if cost > money:
-                passed_on.append(f"{label}(${cost}, can't afford)")
-                continue
-
-            key = card.get("key", "")
-            joker_count = joker_slots.get("count", 0)
-            owned_keys = {j.get("key") for j in joker_slots.get("cards", [])}
-
-            # Anti-synergy: don't buy jokers that conflict with owned jokers
-            from balatro_bot.scaling import check_anti_synergy
-            blocker = check_anti_synergy(key, owned_keys)
-            if blocker:
-                passed_on.append(f"{label}(${cost}, conflicts with {blocker})")
-                continue
-
-            # S-tier jokers: buy immediately, ignore interest thresholds
-            # Exception: don't buy Madness if we own a scaling joker it could eat
-            if key == "j_madness":
-                owned_keys = {j.get("key") for j in joker_slots.get("cards", [])}
-                if owned_keys & SCALING_JOKERS:
-                    passed_on.append(f"{label}(${cost}, would eat scaling joker)")
-                    continue
-            # Don't buy scaling jokers if Madness is owned — it'll eat them
-            if key in SCALING_JOKERS:
-                owned_keys = {j.get("key") for j in joker_slots.get("cards", [])}
-                if "j_madness" in owned_keys:
-                    passed_on.append(f"{label}(${cost}, Madness would eat it)")
-                    continue
-            # Slow flat scalers (chips/mult) are worthless late game.
-            # xMult scalers still compound meaningfully — let them through
-            # to be evaluated by the ante-aware composition multiplier.
-            SLOW_SCALERS = (SCALING_JOKERS | {"j_madness", "j_ceremonial"}) - SCALING_XMULT
-            if key in SLOW_SCALERS and ante >= 6:
-                passed_on.append(f"{label}(${cost}, too late for slow scaler at ante {ante})")
-                continue
-            # Compute unified value for this candidate
-            value = evaluate_joker_value(
-                card, owned_jokers=joker_slots.get("cards", []),
-                hand_levels=state.get("hands", {}), ante=ante,
-                strategy=strat, joker_limit=jlimit,
-            )
-
-            # Override gates: force-buy known-good jokers (skip interest gating)
-            force_buy = False
-            if key in self.ALWAYS_BUY:
-                value = max(value, 10.0)
-                force_buy = True
-            elif key in self.HIGH_PRIORITY and ante <= 5:
-                value = max(value, 8.0)
-                force_buy = True
-
-            # Stencil restriction: filling slots reduces its ×mult
-            # Stencil counts empty slots + all Stencils (including itself)
-            if any(j.get("key") == "j_stencil" for j in joker_slots.get("cards", [])):
-                stencil_count = sum(1 for j in joker_slots.get("cards", []) if j.get("key") == "j_stencil")
-                stencil_mult_after = (jlimit - joker_count - 1) + stencil_count
-                if stencil_mult_after <= 2 and value < 5.0:
-                    passed_on.append(f"{label}(${cost}, Stencil restriction: only ×{stencil_mult_after} left)")
-                    continue
-
-            # First joker: buy anything — 0 jokers is a death sentence
-            if joker_count == 0:
-                value = max(value, 5.0)
-                force_buy = True
-
-            # Interest gating for mid-game (ante 3-4) — skip for force-buy jokers
-            if not force_buy and 3 <= ante <= 4 and joker_count > 2:
-                interest_after = self._interest_after(money, cost)
-                loses_interest = interest_after < current_interest
-
-                if loses_interest:
-                    if money >= self.INTEREST_CAP:
-                        if value < self.MIN_VALUE:
-                            passed_on.append(f"{label}(${cost}, value={value:.1f} below threshold)")
-                            continue
-                    else:
-                        if cost > 2:
-                            passed_on.append(f"{label}(${cost}, saving for interest)")
-                            continue
-
-            # Slot pressure: last slot needs higher value
-            if joker_count >= jlimit - 1:
-                value *= 0.5
-
-            if value > best_improvement:
-                best_improvement = value
-                best_idx = i
-                best_cost = cost
-                best_label = card.get("label", "?")
-
-        if best_idx is not None:
-            key = shop.get("cards", [])[best_idx].get("key", "")
-            tier = "ALWAYS_BUY" if key in self.ALWAYS_BUY else (
-                "HIGH_PRIORITY" if key in self.HIGH_PRIORITY else "scored")
-            log.info("[SHOP] %s($%d): %s, value=%.1f — BUYING",
-                     best_label, best_cost, tier, best_improvement)
-            return BuyCard(
-                best_idx,
-                reason=f"buy joker: {best_label} for ${best_cost} "
-                       f"(value={best_improvement:.1f}, ${money}->${money - best_cost})",
-            )
-        if passed_on:
-            log.info("Passed on jokers: %s", ", ".join(passed_on))
-        return None
+        from balatro_bot.domain.policy.shop import choose_buy_joker_in_shop
+        return choose_buy_joker_in_shop(state)
 
 
 class BuyConsumablesInShop:
     """Buy consumables from the shop using dynamic value scoring."""
     name = "buy_consumables_in_shop"
 
-    INTEREST_CAP = 25
-
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        from balatro_bot.rules._helpers import score_consumable
-
-        money = state.get("money", 0)
-        shop = state.get("shop", {})
-        consumables = state.get("consumables", {})
-
-        # Need room in consumable slots
-        if consumables.get("count", 0) >= consumables.get("limit", 2):
-            return None
-
-        jokers = state.get("jokers", {}).get("cards", [])
-        hand_levels = state.get("hands", {})
-        strat = compute_strategy(jokers, hand_levels)
-
-        best_idx = None
-        best_value = 0.0
-        best_cost = 0
-        best_label = ""
-        passed_on: list[str] = []
-
-        for i, card in enumerate(shop.get("cards", [])):
-            key = card.get("key", "")
-            label = card.get("label", "?")
-            card_set = card.get("set", "")
-            cost = card.get("cost", {}).get("buy", 999)
-
-            # Only score consumable-type cards
-            if card_set not in ("TAROT", "PLANET", "SPECTRAL") and key not in PLANET_KEYS:
-                continue
-
-            value = score_consumable(key, state, strat)
-            if value <= 0:
-                passed_on.append(f"{label}(value={value:.1f})")
-                continue
-
-            if cost > money:
-                passed_on.append(f"{label}(${cost}, can't afford)")
-                continue
-
-            # Respect interest below cap
-            current_interest = min(money // 5, 5)
-            if money < self.INTEREST_CAP:
-                interest_after = min((money - cost) // 5, 5)
-                if interest_after < current_interest and cost > 3:
-                    passed_on.append(f"{label}(${cost}, saving for interest)")
-                    continue
-
-            if value > best_value or (value == best_value and cost < best_cost):
-                best_value = value
-                best_idx = i
-                best_cost = cost
-                best_label = label
-
-        if best_idx is not None:
-            log.info("[SHOP] buy consumable: %s ($%d, value=%.1f)", best_label, best_cost, best_value)
-            return BuyCard(
-                best_idx,
-                reason=f"buy consumable: {best_label} for ${best_cost} (value={best_value:.1f}, ${money}->${money - best_cost})",
-            )
-        if passed_on:
-            log.info("Passed on consumables: %s", ", ".join(passed_on))
-        return None
+        from balatro_bot.domain.policy.shop import choose_buy_consumable_in_shop
+        return choose_buy_consumable_in_shop(state)
 
 
 class BuyPacksInShop:
     """Buy packs from the shop, prioritizing Planet > Buffoon > Tarot."""
     name = "buy_packs_in_shop"
 
-    INTEREST_CAP = 25
-
-    # Pack type priority by label keyword. Lower = buy first.
-    # Detected by checking if the keyword appears in the card label.
-    PACK_PRIORITY = {
-        "Celestial": 1,   # Planet packs
-        "Buffoon": 2,     # Joker packs
-        # Standard packs intentionally excluded — they dilute the deck
-        "Arcana": 3,      # Tarot packs
-    }
-    # Standard and Spectral packs intentionally omitted
-
-    def _pack_priority(self, label: str) -> int | None:
-        for keyword, priority in self.PACK_PRIORITY.items():
-            if keyword in label:
-                return priority
-        return None
-
-    def _interest_after(self, money: int, cost: int) -> int:
-        return min((money - cost) // 5, 5)
-
-    # All pack keywords for Red Card buying (buy any pack just to skip it)
-    ALL_PACK_KEYWORDS = {"Celestial", "Buffoon", "Arcana", "Standard", "Spectral"}
-
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        money = state.get("money", 0)
-        packs = state.get("packs", {})
-        joker_slots = state.get("jokers", {})
-        owned_jokers = joker_slots.get("cards", [])
-        has_red_card = any(j.get("key") == "j_red_card" for j in owned_jokers)
-        has_constellation = any(j.get("key") == "j_constellation" for j in owned_jokers)
-
-        best_idx = None
-        best_priority = 999
-        best_cost = 0
-        best_label = ""
-
-        passed_on: list[str] = []
-
-        for i, card in enumerate(packs.get("cards", [])):
-            label = card.get("label", "")
-            cost = card.get("cost", {}).get("buy", 999)
-            if cost > money:
-                passed_on.append(f"{label}(${cost}, can't afford)")
-                continue
-
-            # Red Card: buy ANY pack to skip it for +3 mult
-            if has_red_card and any(kw in label for kw in self.ALL_PACK_KEYWORDS):
-                if cost <= 4 or money >= self.INTEREST_CAP:
-                    priority = 0
-                else:
-                    passed_on.append(f"{label}(${cost}, Red Card but too expensive)")
-                    continue
-            # Constellation: Celestial packs are top priority (every planet = +0.1 xMult)
-            elif has_constellation and "Celestial" in label:
-                priority = 0
-            else:
-                priority = self._pack_priority(label)
-                if priority is None:
-                    if "Spectral" in label and state.get("ante_num", 1) >= 3:
-                        priority = 4
-                    else:
-                        passed_on.append(f"{label}(${cost}, not in buy list)")
-                        continue
-
-            # Skip Buffoon packs if joker slots are full
-            if "Buffoon" in label and not has_red_card:
-                if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
-                    passed_on.append(f"{label}(${cost}, joker slots full)")
-                    continue
-
-            # Interest check — never drop below the next $5 threshold
-            # Bypass for Red Card (buying to skip) and Constellation + Celestial
-            skip_interest = has_red_card or (has_constellation and "Celestial" in label)
-            if not skip_interest:
-                current_interest = min(money // 5, 5)
-                interest_after = self._interest_after(money, cost)
-                loses_interest = interest_after < current_interest
-                if loses_interest:
-                    if money >= self.INTEREST_CAP:
-                        if "Celestial" not in label:
-                            passed_on.append(f"{label}(${cost}, would lose interest)")
-                            continue
-                    else:
-                        passed_on.append(f"{label}(${cost}, saving for interest)")
-                        continue
-
-            if priority < best_priority:
-                best_priority = priority
-                best_idx = i
-                best_cost = cost
-                best_label = label
-
-        if best_idx is not None:
-            reason = f"buy pack: {best_label} for ${best_cost} (${money}->${money - best_cost})"
-            if has_red_card:
-                reason += " [Red Card: +3 mult on skip]"
-            return BuyPack(best_idx, reason=reason)
-        if passed_on:
-            log.info("Passed on packs: %s", ", ".join(passed_on))
-        return None
+        from balatro_bot.domain.policy.shop import choose_buy_pack_in_shop
+        return choose_buy_pack_in_shop(state)
 
 
 class BuyVouchersInShop:
     """Buy high-impact vouchers when we can afford them."""
     name = "buy_vouchers_in_shop"
-
-    INTEREST_CAP = 25
 
     # Voucher keys ranked by priority. Lower = buy first.
     # Only include vouchers with direct gameplay impact.
@@ -992,42 +428,8 @@ class BuyVouchersInShop:
     }
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        money = state.get("money", 0)
-        vouchers = state.get("vouchers", {})
-
-        # Only buy vouchers when we're at the interest cap with surplus
-        # Vouchers cost $10 — don't dip below $25
-        if money < self.INTEREST_CAP + 10:
-            return None
-
-        best_idx = None
-        best_priority = 999
-        best_cost = 0
-        best_label = ""
-
-        for i, card in enumerate(vouchers.get("cards", [])):
-            key = card.get("key", "")
-            priority = self.VOUCHER_PRIORITY.get(key)
-            if priority is None:
-                continue
-
-            cost = card.get("cost", {}).get("buy", 999)
-            if cost > money - self.INTEREST_CAP:
-                # Don't spend below interest cap
-                continue
-
-            if priority < best_priority:
-                best_priority = priority
-                best_idx = i
-                best_cost = cost
-                best_label = card.get("label", "?")
-
-        if best_idx is not None:
-            return BuyVoucher(
-                best_idx,
-                reason=f"buy voucher: {best_label} for ${best_cost} (${money}->${money - best_cost})",
-            )
-        return None
+        from balatro_bot.domain.policy.shop import choose_buy_voucher_in_shop
+        return choose_buy_voucher_in_shop(state)
 
 
 class RerollShop:
@@ -1046,7 +448,8 @@ class RerollShop:
         self._last_round = -1
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        money = state.get("money", 0)
+        from balatro_bot.domain.policy.shop import choose_reroll_shop
+
         round_num = state.get("round_num", 0)
 
         # Reset counter on new shop visit
@@ -1054,35 +457,15 @@ class RerollShop:
             self._rerolls_this_shop = 0
             self._last_round = round_num
 
-        if self._rerolls_this_shop >= self.MAX_REROLLS:
-            return None
-
-        # Need enough money that rerolling doesn't hurt our interest
-        if money < self.MIN_MONEY_TO_REROLL:
-            return None
-
-        # Don't reroll if there's a good joker we should buy
-        shop = state.get("shop", {})
-        joker_slots = state.get("jokers", {})
-        has_open_slots = joker_slots.get("count", 0) < joker_slots.get("limit", 5)
-
-        if has_open_slots:
-            # Check if any joker in shop has a scoring effect
-            for card in shop.get("cards", []):
-                if card.get("set") == "JOKER":
-                    key = card.get("key", "")
-                    effect = JOKER_EFFECTS.get(key)
-                    if effect is not None and effect is not _noop:
-                        cost = card.get("cost", {}).get("buy", 999)
-                        if cost <= money:
-                            return None  # good joker available, buy instead
-
-        strat = compute_strategy(
-            state.get("jokers", {}).get("cards", []), state.get("hands", {})
+        result = choose_reroll_shop(
+            state,
+            reroll_counter=self._rerolls_this_shop,
+            min_money_to_reroll=self.MIN_MONEY_TO_REROLL,
+            max_rerolls=self.MAX_REROLLS,
         )
-        strat_str = ", ".join(n for n, _ in strat.preferred_hands[:2]) if strat.preferred_hands else "no strategy yet"
-        self._rerolls_this_shop += 1
-        return Reroll(reason=f"reroll shop (${money}, looking for {strat_str} jokers)")
+        if result is not None:
+            self._rerolls_this_shop += 1
+        return result
 
 
 class LeaveShop:
@@ -1090,4 +473,5 @@ class LeaveShop:
     name = "leave_shop"
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        return NextRound(reason="done shopping")
+        from balatro_bot.domain.policy.shop import choose_leave_shop
+        return choose_leave_shop()

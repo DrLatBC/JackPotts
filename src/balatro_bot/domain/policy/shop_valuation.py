@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from balatro_bot.hand_evaluator import score_hand
+from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
 from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,

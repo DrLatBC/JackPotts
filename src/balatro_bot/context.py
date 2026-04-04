@@ -5,81 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from balatro_bot.hand_evaluator import HandCandidate, best_hand
+from balatro_bot.domain.scoring.base import arm_reduce_hand_levels, flint_halve_hand_levels
+from balatro_bot.domain.scoring.search import HandCandidate, best_hand
+from balatro_bot.infrastructure.state_adapter import adapt_state
 from balatro_bot.strategy import Strategy, compute_strategy
 
 if TYPE_CHECKING:
     from typing import Any
 
-import math
+    from balatro_bot.domain.models.snapshot import Snapshot
 
-
-def flint_halve_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
-    """Return a copy of hand_levels with chips and mult halved (The Flint).
-
-    The Flint halves base chips and mult at scoring time AFTER planet level-ups:
-      chips → max(floor(chips * 0.5 + 0.5), 0)
-      mult  → max(floor(mult  * 0.5 + 0.5), 1)
-    """
-    halved = {}
-    for hand_name, data in hand_levels.items():
-        if not isinstance(data, dict):
-            halved[hand_name] = data
-            continue
-        d = dict(data)
-        if "chips" in d:
-            d["chips"] = max(math.floor(d["chips"] * 0.5 + 0.5), 0)
-        if "mult" in d:
-            d["mult"] = max(math.floor(d["mult"] * 0.5 + 0.5), 1)
-        halved[hand_name] = d
-    return halved
-
-
-# Per-level chip/mult increments for each hand type (fixed in Balatro).
-_HAND_LEVEL_INCREMENTS: dict[str, tuple[int, int]] = {
-    "High Card":       (10, 1),
-    "Pair":            (15, 1),
-    "Two Pair":        (20, 1),
-    "Three of a Kind": (20, 2),
-    "Straight":        (30, 3),
-    "Flush":           (15, 2),
-    "Full House":      (25, 2),
-    "Four of a Kind":  (30, 3),
-    "Straight Flush":  (40, 4),
-    "Five of a Kind":  (35, 3),
-    "Flush House":     (40, 4),
-    "Flush Five":      (40, 4),
-}
-
-
-def arm_reduce_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
-    """Return a copy of hand_levels with each type reduced by 1 level (The Arm).
-
-    The Arm decreases the level of the played poker hand by 1 BEFORE scoring.
-    Since any hand type could be played, we reduce all of them.  Level cannot
-    go below 1.
-    """
-    from balatro_bot.constants import HAND_INFO
-
-    reduced = {}
-    for hand_name, data in hand_levels.items():
-        if not isinstance(data, dict):
-            reduced[hand_name] = data
-            continue
-        d = dict(data)
-        level = d.get("level", 1)
-        if level <= 1:
-            reduced[hand_name] = d
-            continue
-        chip_inc, mult_inc = _HAND_LEVEL_INCREMENTS.get(hand_name, (0, 0))
-        base_chips, base_mult, _ = HAND_INFO.get(hand_name, (0, 0, 0))
-        if "chips" in d:
-            d["chips"] = max(d["chips"] - chip_inc, base_chips)
-        if "mult" in d:
-            d["mult"] = max(d["mult"] - mult_inc, base_mult)
-        d["level"] = level - 1
-        reduced[hand_name] = d
-    return reduced
+__all__ = ["RoundContext"]
 
 
 @dataclass
@@ -133,30 +69,37 @@ class RoundContext:
 
     @staticmethod
     def from_state(state: dict[str, Any]) -> RoundContext:
+        """Build RoundContext from a raw API state dict.
+
+        Calls adapt_state() + from_snapshot() internally.
+        Caches the result on the state dict for per-tick reuse.
+        """
         cached = state.get("_round_ctx")
         if cached is not None:
             return cached
 
-        hand_cards = state.get("hand", {}).get("cards", [])
-        hand_levels = state.get("hands", {})
-        rnd = state.get("round", {})
-        jokers = state.get("jokers", {}).get("cards", [])
-        money = state.get("money", 0)
-        deck_cards = state.get("cards", {}).get("cards", [])
+        snapshot = adapt_state(state)
+        ctx = RoundContext.from_snapshot(snapshot)
+        state["_round_ctx"] = ctx
+        return ctx
 
-        blind_score = 0
-        blind_name = ""
-        for b in state.get("blinds", {}).values():
-            if isinstance(b, dict) and b.get("status") == "CURRENT":
-                blind_score = b.get("score", 0)
-                blind_name = b.get("name", "")
-                break
+    @staticmethod
+    def from_snapshot(snapshot: Snapshot) -> RoundContext:
+        """Build RoundContext from a typed Snapshot.
 
-        # The Flint: halve base chips and mult (after planet level-ups)
+        All domain logic lives here. No raw dict access.
+        """
+        hand_cards = snapshot.hand_cards
+        hand_levels = snapshot.hand_levels
+        jokers = snapshot.jokers
+        money = snapshot.money
+        deck_cards = snapshot.deck_cards
+        blind_name = snapshot.current_blind.name
+        blind_score = snapshot.current_blind.score
+
+        # Boss blind mutations
         if blind_name == "The Flint":
             hand_levels = flint_halve_hand_levels(hand_levels)
-
-        # The Arm: decrease hand level by 1 before scoring
         if blind_name == "The Arm":
             hand_levels = arm_reduce_hand_levels(hand_levels)
 
@@ -169,7 +112,6 @@ class RoundContext:
                     mouth_locked_hand = hand_name
                     break
 
-        # The Eye: track which hand types have been played this round
         eye_used_hands = None
         if blind_name == "The Eye":
             eye_used_hands = {
@@ -177,7 +119,6 @@ class RoundContext:
                 if isinstance(data, dict) and data.get("played_this_round", 0) > 0
             }
 
-        # Suit restriction bosses: preference signal for scoring suit
         scoring_suit = None
         if blind_name == "The Head":
             scoring_suit = "H"
@@ -186,9 +127,9 @@ class RoundContext:
         elif blind_name == "The Window":
             scoring_suit = "D"
 
-        chips_scored = rnd.get("chips", 0)
-        hands_left = rnd.get("hands_left", 0)
-        discards_left = rnd.get("discards_left", 0)
+        chips_scored = snapshot.round.chips
+        hands_left = snapshot.round.hands_left
+        discards_left = snapshot.round.discards_left
 
         joker_count = len(jokers)
         score_discount = (
@@ -205,11 +146,10 @@ class RoundContext:
                     forced_card_idx = i
                     break
 
-        ancient_suit = rnd.get("ancient_suit")
-
+        ancient_suit = snapshot.round.ancient_suit
         strat = compute_strategy(jokers, hand_levels)
 
-        ctx = RoundContext(
+        return RoundContext(
             blind_score=blind_score,
             blind_name=blind_name,
             chips_scored=chips_scored,
@@ -224,7 +164,7 @@ class RoundContext:
                 min_select=min_cards, jokers=jokers,
                 money=money, discards_left=discards_left,
                 hands_left=hands_left,
-                joker_limit=state.get("jokers", {}).get("limit", 5),
+                joker_limit=snapshot.joker_limit,
                 required_hand=mouth_locked_hand,
                 required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
                 ancient_suit=ancient_suit,
@@ -239,11 +179,9 @@ class RoundContext:
             eye_used_hands=eye_used_hands,
             scoring_suit=scoring_suit,
             money=money,
-            ante=state.get("ante_num", 1),
-            round_num=state.get("round_num", 1),
+            ante=snapshot.ante,
+            round_num=snapshot.round_num,
             min_cards=min_cards,
             strategy=strat,
             deck_cards=deck_cards,
         )
-        state["_round_ctx"] = ctx
-        return ctx

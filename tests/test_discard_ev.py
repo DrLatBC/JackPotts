@@ -6,10 +6,10 @@ Monte Carlo sampling, and end-to-end integration through DiscardToImprove.evalua
 
 import random
 
-from balatro_bot.hand_evaluator import (
+from balatro_bot.domain.scoring.estimate import score_hand
+from balatro_bot.domain.scoring.search import (
     ChaseCandidate,
     discard_candidates,
-    score_hand,
     best_hand,
 )
 from balatro_bot.rules.playing import DiscardToImprove
