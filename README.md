@@ -11,7 +11,7 @@ Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/B
 
 The bot fully simulates Balatro's scoring pipeline — joker effects, card enhancements, editions, seals, retriggers, and boss blind modifiers — to predict exact chip totals for every candidate hand before choosing what to play.
 
-**Current peak: Ante 7 | Scoring accuracy: 99.9% | 233 unit tests**
+**Current peak: Ante 11 | Scoring accuracy: 99.9% | 2.5% win rate**
 
 ## Prerequisites
 
