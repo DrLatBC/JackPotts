@@ -1,18 +1,19 @@
-"""Test Acrobat + Gros Michel interaction on the last hand.
+"""Integration tests for Blackboard joker — held-card suit condition edge cases.
 
-Sets hands=1 directly via the set API so we're guaranteed to be on the final
-hand without needing to burn hands (which can accidentally clear the blind).
+Blackboard: "X3 Mult if all cards held in hand are Spades or Clubs."
+Tests Wild cards, Stone cards, debuffed cards, and baseline S/C vs H/D held hands.
 
 Usage:
-    python test_acrobat.py [--port PORT]
+    python test_blackboard.py [--port PORT]
 """
 
 import argparse
 import logging
+import os
 import sys
 import time
 
-sys.path.insert(0, "src")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from balatrobot.cli.client import BalatroClient, APIError
 from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
@@ -34,7 +35,7 @@ def wait_for_state(client, target_states, max_tries=30):
     raise TimeoutError(f"Never reached {target_states}, stuck in {state.get('state')}")
 
 
-def setup_game(client, seed, joker_keys=None, card_configs=None, hands_left=None):
+def setup_game(client, seed, joker_keys=None, card_configs=None):
     try:
         client.call("menu")
     except APIError:
@@ -78,40 +79,57 @@ def setup_game(client, seed, joker_keys=None, card_configs=None, hands_left=None
             except APIError as e:
                 print(f"  FAILED card {cfg['key']}: {e.message}")
 
-    # Set hands_left to force last-hand condition
-    if hands_left is not None:
-        try:
-            client.call("set", {"hands": hands_left})
-        except APIError as e:
-            print(f"  FAILED to set hands={hands_left}: {e.message}")
-
     time.sleep(0.3)
     return client.call("gamestate")
 
 
-def run_test(client, label, seed, joker_keys, hands_left=None, hand=None):
-    if hand is None:
-        hand = [{"key": "S_K"}, {"key": "H_K"}, {"key": "D_3"}, {"key": "C_4"}, {"key": "S_5"}]
+def run_test(client, label, seed, joker_keys, hand, play_count=None):
+    """Run a test playing `play_count` of the added cards (default: all).
+
+    Cards are added at end of hand. We play the last `play_count` cards,
+    leaving the rest as held cards for Blackboard to evaluate.
+    """
+    if play_count is None:
+        play_count = len(hand)
 
     print(f"\n{'='*60}")
     print(f"TEST: {label}")
     print(f"{'='*60}")
 
-    state = setup_game(client, seed, joker_keys=joker_keys, card_configs=hand, hands_left=hands_left)
+    state = setup_game(client, seed, joker_keys=joker_keys, card_configs=hand)
     jokers = state.get("jokers", {}).get("cards", [])
     hand_cards = state.get("hand", {}).get("cards", [])
     hl = state.get("round", {}).get("hands_left", "?")
 
     print(f"  hands_left={hl}")
+    print(f"  Total cards in hand: {len(hand_cards)}")
     print(f"  Jokers:")
     for j in jokers:
         ab = j.get("value", {}).get("ability", {})
-        effect = j.get("value", {}).get("effect", "")[:80]
+        effect = j.get("value", {}).get("effect", "")[:100]
         print(f"    {j.get('key'):20s} ability={ab} effect={effect}")
 
-    play_indices = list(range(len(hand_cards) - len(hand), len(hand_cards)))
+    # Play the LAST play_count added cards, hold everything else
+    added_start = len(hand_cards) - len(hand)
+    play_indices = list(range(len(hand_cards) - play_count, len(hand_cards)))
     played = [hand_cards[i] for i in play_indices]
     held = [c for j, c in enumerate(hand_cards) if j not in set(play_indices)]
+
+    print(f"  Playing {len(played)} cards: {[c.get('label','?') for c in played]}")
+    print(f"  Holding {len(held)} cards: {[c.get('label','?') for c in held]}")
+    # Show suit/enhancement details for held cards
+    for c in held:
+        mod = _modifier(c)
+        enh = mod.get("enhancement", "")
+        ed = mod.get("edition", "")
+        suit = c.get("value", {}).get("suit", "?")
+        rank = c.get("value", {}).get("rank", "?")
+        debuffed = (c.get("state") or {}).get("debuff", False)
+        extras = []
+        if enh: extras.append(f"enh={enh}")
+        if ed: extras.append(f"ed={ed}")
+        if debuffed: extras.append("DEBUFFED")
+        print(f"    held: {rank}{suit} {' '.join(extras)}")
 
     hand_name = classify_hand(played)
     joker_key_set = {j.get("key") for j in jokers}
@@ -177,47 +195,106 @@ def main():
 
     results = []
 
-    # ---------------------------------------------------------------
-    # 1. Acrobat on last hand (hands_left=1) — should apply x3
-    # ---------------------------------------------------------------
-    results.append(run_test(client, "Acrobat: last hand (hands=1)", "ACR1",
-        ["j_acrobat"], hands_left=1))
+    # All tests: play 2 cards (Pair of Kings), hold 3 cards.
+    # Blackboard checks the 3 held cards + any remaining from the original hand.
+
+    # We add 5 cards total: 2 Kings to play + 3 held cards.
+    # play_count=2 means play the last 2 added cards.
 
     # ---------------------------------------------------------------
-    # 2. Acrobat NOT last hand (hands_left=2) — should NOT apply x3
+    # 1. Baseline: all held cards are S/C → Blackboard SHOULD fire x3
     # ---------------------------------------------------------------
-    results.append(run_test(client, "Acrobat: not last hand (hands=2)", "ACR2",
-        ["j_acrobat"], hands_left=2))
+    results.append(run_test(client, "Blackboard: all S/C held (should fire x3)", "BB1",
+        ["j_blackboard"],
+        hand=[
+            {"key": "S_3"},  # held - Spade
+            {"key": "C_4"},  # held - Club
+            {"key": "S_7"},  # held - Spade
+            {"key": "S_K"}, {"key": "C_K"},  # played - Pair
+        ],
+        play_count=2))
 
     # ---------------------------------------------------------------
-    # 3. Acrobat + Gros Michel on last hand — x3 * +15 mult
+    # 2. One Heart held → Blackboard should NOT fire
     # ---------------------------------------------------------------
-    results.append(run_test(client, "Acrobat + Gros Michel: last hand", "ACR3",
-        ["j_gros_michel", "j_acrobat"], hands_left=1))
+    results.append(run_test(client, "Blackboard: one Heart held (should NOT fire)", "BB2",
+        ["j_blackboard"],
+        hand=[
+            {"key": "H_3"},  # held - Heart (breaks condition)
+            {"key": "C_4"},  # held - Club
+            {"key": "S_7"},  # held - Spade
+            {"key": "S_K"}, {"key": "C_K"},  # played
+        ],
+        play_count=2))
 
     # ---------------------------------------------------------------
-    # 4. Gros Michel alone on last hand — baseline (no x3)
+    # 3. Wild card (base suit Heart) held → does Wild pass for Blackboard?
     # ---------------------------------------------------------------
-    results.append(run_test(client, "Gros Michel alone: last hand", "ACR4",
-        ["j_gros_michel"], hands_left=1))
+    results.append(run_test(client, "Blackboard: Wild Heart held (Wild=all suits?)", "BB3",
+        ["j_blackboard"],
+        hand=[
+            {"key": "H_3", "enhancement": "WILD"},  # held - Wild Heart
+            {"key": "C_4"},  # held - Club
+            {"key": "S_7"},  # held - Spade
+            {"key": "S_K"}, {"key": "C_K"},  # played
+        ],
+        play_count=2))
 
     # ---------------------------------------------------------------
-    # 5. Acrobat + Gros Michel NOT last hand — only Gros Michel fires
+    # 4. Stone card held alongside S/C → does Stone pass or fail?
     # ---------------------------------------------------------------
-    results.append(run_test(client, "Acrobat + Gros Michel: not last hand", "ACR5",
-        ["j_gros_michel", "j_acrobat"], hands_left=3))
+    results.append(run_test(client, "Blackboard: Stone card held with S/C", "BB4",
+        ["j_blackboard"],
+        hand=[
+            {"key": "H_3", "enhancement": "STONE"},  # held - Stone (no suit)
+            {"key": "C_4"},  # held - Club
+            {"key": "S_7"},  # held - Spade
+            {"key": "S_K"}, {"key": "C_K"},  # played
+        ],
+        play_count=2))
 
     # ---------------------------------------------------------------
-    # 6. Dusk retrigger on last hand (hands_left=1) — retrigger all scored cards
+    # 5. No held cards (play all 5) → should NOT fire
     # ---------------------------------------------------------------
-    results.append(run_test(client, "Dusk: last hand (hands=1)", "ACR6",
-        ["j_dusk"], hands_left=1))
+    results.append(run_test(client, "Blackboard: no held cards (play all 5)", "BB5",
+        ["j_blackboard"],
+        hand=[
+            {"key": "S_K"}, {"key": "C_K"}, {"key": "S_3"}, {"key": "C_4"}, {"key": "S_7"},
+        ],
+        play_count=5))
 
     # ---------------------------------------------------------------
-    # 7. Dusk NOT last hand (hands_left=2) — no retrigger
+    # 6. Debuffed Heart held with S/C → does debuff matter?
     # ---------------------------------------------------------------
-    results.append(run_test(client, "Dusk: not last hand (hands=2)", "ACR7",
-        ["j_dusk"], hands_left=2))
+    # Note: We can't directly debuff via add API. Skip this test or
+    # test it manually against a boss blind that debuffs.
+
+    # ---------------------------------------------------------------
+    # 7. All Diamonds held → should NOT fire (baseline negative)
+    # ---------------------------------------------------------------
+    results.append(run_test(client, "Blackboard: all Diamonds held (should NOT fire)", "BB6",
+        ["j_blackboard"],
+        hand=[
+            {"key": "D_3"},  # held - Diamond
+            {"key": "D_4"},  # held - Diamond
+            {"key": "D_7"},  # held - Diamond
+            {"key": "S_K"}, {"key": "C_K"},  # played
+        ],
+        play_count=2))
+
+    # ---------------------------------------------------------------
+    # 8. Wild Heart held + Smeared Joker (H/D merge into H+D, S/C merge into S+C)
+    #    Smeared makes Heart count as {H,D} — still no S/C overlap
+    # ---------------------------------------------------------------
+    results.append(run_test(client, "Blackboard + Smeared: Heart held (H→{H,D})", "BB7",
+        ["j_blackboard", "j_smeared"],
+        hand=[
+            {"key": "H_3"},  # held - Heart → {H,D} with Smeared
+            {"key": "C_4"},  # held - Club → {C,S} with Smeared
+            {"key": "S_7"},  # held - Spade → {C,S} with Smeared
+            {"key": "S_K"}, {"key": "C_K"},  # played
+        ],
+        play_count=2))
 
     # ---------------------------------------------------------------
     # Summary
@@ -229,7 +306,7 @@ def main():
         if r is None:
             continue
         status = "MATCH" if r["diff"] == 0 else f"MISMATCH({r['diff']:+d})"
-        print(f"  {r['label']:50s} est={r['est']:>8d} actual={r['actual']:>8d} {status}")
+        print(f"  {r['label']:55s} est={r['est']:>8d} actual={r['actual']:>8d} {status}")
 
 
 if __name__ == "__main__":
