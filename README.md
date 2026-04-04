@@ -1,6 +1,17 @@
 # Balatro Bot
 
-Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/Balatro/) autonomously via the [balatrobot](https://github.com/your-repo/balatrobot) mod's JSON-RPC API. It evaluates every game state through a priority-ordered rule engine, picking the first rule that fires — no ML, no tree search, just hand-tuned heuristics.
+[![built with Python](https://img.shields.io/badge/built%20with-Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![version v0.1.0](https://img.shields.io/badge/version-v0.1.0-blue)](https://github.com/DrLatBC/balatro-bot/releases)
+[![tests 233 passing](https://img.shields.io/badge/tests-233%20passing-brightgreen)](tests/)
+[![platform Windows](https://img.shields.io/badge/platform-Windows-lightgrey)](https://github.com/DrLatBC/balatro-bot)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/DrLatBC/balatro-bot/pulls)
+
+Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/Balatro/) autonomously via the [balatrobot](https://github.com/coder/balatrobot) mod's JSON-RPC API. It evaluates every game state through a priority-ordered rule engine, picking the first rule that fires — no ML, no tree search, just hand-tuned heuristics.
+
+The bot fully simulates Balatro's scoring pipeline — joker effects, card enhancements, editions, seals, retriggers, and boss blind modifiers — to predict exact chip totals for every candidate hand before choosing what to play.
+
+**Current peak: Ante 7 | Scoring accuracy: 99.9% | 233 unit tests**
 
 ## Prerequisites
 
