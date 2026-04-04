@@ -258,6 +258,23 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
                     ctx.mult += _shoot_moon_mult
 
 
+def ox_most_played_hand(hand_levels: dict) -> str | None:
+    """Return the hand type with the highest played count.
+
+    The Ox locks this at blind start — call once and cache the result.
+    Returns None if no hand has been played yet.
+    """
+    best_hand = None
+    best_count = 0
+    for ht, info in hand_levels.items():
+        if isinstance(info, dict):
+            played = info.get("played", 0)
+            if played > best_count:
+                best_count = played
+                best_hand = ht
+    return best_hand
+
+
 def score_hand(
     hand_name: str,
     scoring_cards: list[dict],
@@ -273,6 +290,7 @@ def score_hand(
     deck_count: int = 0,
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
+    ox_most_played: str | None = None,
 ) -> tuple[int, int, int]:
     """Compute (chips, mult, total) for a hand."""
     base_chips, base_mult, _ = HAND_INFO[hand_name]
@@ -302,6 +320,14 @@ def score_hand(
         return total_chips, total_mult, total
 
     from balatro_bot.joker_effects import ScoreContext, apply_joker_effects, retrigger_count
+
+    # The Ox: sets money to $0 when playing the most-played hand type
+    # ox_most_played should be pre-computed at blind start (game locks it).
+    # Fallback: derive from hand_levels if caller didn't pass it.
+    if blind_name == "The Ox":
+        _ox_locked = ox_most_played if ox_most_played else (ox_most_played_hand(hand_levels) if hand_levels else None)
+        if _ox_locked and hand_name == _ox_locked:
+            money = 0
 
     joker_keys_set = {j.get("key") for j in jokers if not is_joker_debuffed(j)}
     ctx = ScoreContext(
@@ -356,9 +382,16 @@ def score_hand_detailed(
     deck_count: int = 0,
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
+    ox_most_played: str | None = None,
 ) -> dict:
     """Like score_hand but returns a full breakdown dict for logging."""
     from balatro_bot.joker_effects import ScoreContext, apply_joker_effects_detailed, retrigger_count
+
+    # The Ox: sets money to $0 when playing the most-played hand type
+    if blind_name == "The Ox":
+        _ox_locked = ox_most_played if ox_most_played else (ox_most_played_hand(hand_levels) if hand_levels else None)
+        if _ox_locked and hand_name == _ox_locked:
+            money = 0
 
     base_chips, base_mult, _ = HAND_INFO[hand_name]
     if hand_levels and hand_name in hand_levels:

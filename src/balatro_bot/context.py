@@ -97,35 +97,39 @@ class RoundContext:
         blind_name = snapshot.current_blind.name
         blind_score = snapshot.current_blind.score
 
-        # Boss blind mutations
-        if blind_name == "The Flint":
-            hand_levels = flint_halve_hand_levels(hand_levels)
-        if blind_name == "The Arm":
-            hand_levels = arm_reduce_hand_levels(hand_levels)
+        boss_disabled = snapshot.current_blind.boss_disabled
 
-        min_cards = 5 if blind_name == "The Psychic" else 1
+        # Boss blind mutations — skip when Luchador has disabled the boss
+        if not boss_disabled:
+            if blind_name == "The Flint":
+                hand_levels = flint_halve_hand_levels(hand_levels)
+            if blind_name == "The Arm":
+                hand_levels = arm_reduce_hand_levels(hand_levels)
+
+        min_cards = 5 if blind_name == "The Psychic" and not boss_disabled else 1
 
         mouth_locked_hand = None
-        if blind_name == "The Mouth":
+        if blind_name == "The Mouth" and not boss_disabled:
             for hand_name, hand_data in hand_levels.items():
                 if isinstance(hand_data, dict) and hand_data.get("played_this_round", 0) > 0:
                     mouth_locked_hand = hand_name
                     break
 
         eye_used_hands = None
-        if blind_name == "The Eye":
+        if blind_name == "The Eye" and not boss_disabled:
             eye_used_hands = {
                 ht for ht, data in hand_levels.items()
                 if isinstance(data, dict) and data.get("played_this_round", 0) > 0
             }
 
         scoring_suit = None
-        if blind_name == "The Head":
-            scoring_suit = "H"
-        elif blind_name == "The Club":
-            scoring_suit = "C"
-        elif blind_name == "The Window":
-            scoring_suit = "D"
+        if not boss_disabled:
+            if blind_name == "The Head":
+                scoring_suit = "H"
+            elif blind_name == "The Club":
+                scoring_suit = "C"
+            elif blind_name == "The Window":
+                scoring_suit = "D"
 
         chips_scored = snapshot.round.chips
         hands_left = snapshot.round.hands_left
@@ -133,13 +137,13 @@ class RoundContext:
 
         joker_count = len(jokers)
         score_discount = (
-            (joker_count - 1) / joker_count if blind_name == "Crimson Heart" and joker_count > 1
-            else 0.5 if blind_name == "Crimson Heart"
+            (joker_count - 1) / joker_count if blind_name == "Crimson Heart" and joker_count > 1 and not boss_disabled
+            else 0.5 if blind_name == "Crimson Heart" and not boss_disabled
             else 1.0
         )
 
         forced_card_idx = None
-        if blind_name == "Cerulean Bell":
+        if blind_name == "Cerulean Bell" and not boss_disabled:
             for i, c in enumerate(hand_cards):
                 s = c.get("state", {})
                 if isinstance(s, dict) and s.get("highlight"):
@@ -147,11 +151,15 @@ class RoundContext:
                     break
 
         ancient_suit = snapshot.round.ancient_suit
+        ox_most_played = snapshot.round.most_played_poker_hand if blind_name == "The Ox" and not boss_disabled else None
         strat = compute_strategy(jokers, hand_levels)
+        # When boss is disabled (Luchador sold), clear blind_name for scoring
+        # so boss-specific scoring effects (The Tooth, The Ox, etc.) don't fire.
+        effective_blind = "" if boss_disabled else blind_name
 
         return RoundContext(
             blind_score=blind_score,
-            blind_name=blind_name,
+            blind_name=effective_blind,
             chips_scored=chips_scored,
             chips_remaining=blind_score - chips_scored,
             hands_left=hands_left,
@@ -170,7 +178,8 @@ class RoundContext:
                 ancient_suit=ancient_suit,
                 excluded_hands=eye_used_hands,
                 deck_cards=deck_cards,
-                blind_name=blind_name,
+                blind_name=effective_blind,
+                ox_most_played=ox_most_played,
             ),
             mouth_locked_hand=mouth_locked_hand,
             score_discount=score_discount,

@@ -113,40 +113,43 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
         has_splash = "j_splash" in joker_keys
         four_fingers = "j_four_fingers" in joker_keys
         smeared = "j_smeared" in joker_keys
-        scoring = played if has_splash else _scoring_cards_for(hand_name, played, four_fingers=four_fingers, smeared=smeared)
+        shortcut = "j_shortcut" in joker_keys
+        scoring = played if has_splash else _scoring_cards_for(hand_name, played, four_fingers=four_fingers, smeared=smeared, shortcut=shortcut)
 
         # Apply boss blind level adjustments for scoring estimate
         # NOTE: The Flint halving is already applied in the snapshot (line ~675),
         # so we must NOT halve again here — that caused double-halving.
         hand_levels = snapshot["hand_levels"]
         blind_name = snapshot.get("blind_name", "")
-        if blind_name == "The Arm":
+        boss_disabled = snapshot.get("_boss_disabled", False)
+        if blind_name == "The Arm" and not boss_disabled:
             from balatro_bot.domain.scoring.base import arm_reduce_hand_levels
             hand_levels = arm_reduce_hand_levels(hand_levels)
 
         # Boss blind hand-type restrictions — zero estimate when hand is invalid
         blind_zeroed = False
-        if blind_name == "The Mouth":
-            # The Mouth locks the first hand type played this round.
-            # Check if a *different* type was already played successfully;
-            # if the current type itself was played, it's the locked type.
-            current_played = False
-            other_played = False
-            for ht, data in hand_levels.items():
-                if isinstance(data, dict) and data.get("played_this_round", 0) > 0:
-                    if ht == hand_name:
-                        current_played = True
-                    else:
-                        other_played = True
-            if other_played and not current_played:
-                blind_zeroed = True
-        elif blind_name == "The Eye":
-            for ht, data in hand_levels.items():
-                if ht == hand_name and isinstance(data, dict) and data.get("played_this_round", 0) > 0:
+        if not boss_disabled:
+            if blind_name == "The Mouth":
+                current_played = False
+                other_played = False
+                for ht, data in hand_levels.items():
+                    if isinstance(data, dict) and data.get("played_this_round", 0) > 0:
+                        if ht == hand_name:
+                            current_played = True
+                        else:
+                            other_played = True
+                if other_played and not current_played:
                     blind_zeroed = True
-                    break
-        elif blind_name == "The Psychic" and len(played) < 5:
-            blind_zeroed = True
+            elif blind_name == "The Eye":
+                for ht, data in hand_levels.items():
+                    if ht == hand_name and isinstance(data, dict) and data.get("played_this_round", 0) > 0:
+                        blind_zeroed = True
+                        break
+            elif blind_name == "The Psychic" and len(played) < 5:
+                blind_zeroed = True
+
+        # The Ox locks most-played hand at blind start
+        _ox_mp = snapshot.get("_ox_most_played")
 
         detail = score_hand_detailed(
             hand_name, scoring,
@@ -161,7 +164,8 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
             ancient_suit=snapshot.get("ancient_suit"),
             deck_count=snapshot.get("deck_count", 0),
             deck_cards=snapshot.get("deck_cards"),
-            blind_name=blind_name,
+            blind_name="" if boss_disabled else blind_name,
+            ox_most_played=_ox_mp,
         )
 
         if blind_zeroed:
@@ -208,11 +212,13 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
                 for c in scoring
             ):
                 noise_sources.append("lucky")
-            # Hook swaps in post-play jokers, causing double-counting of
-            # scaling joker pre-increments and Ramen discard decay.
-            # Not worth modelling — tag as noise.
+            # Hook's boss effect (discard 2 cards) fires BEFORE On Played
+            # jokers.  Modelled: Green Joker, Ramen, Yorick.
+            # Castle/Hit the Road gain from Hook's random discards — inherently
+            # noisy since we can't predict which cards Hook picks.
             if blind_name == "The Hook":
-                hook_noisy = {"j_ramen", "j_green_joker", "j_ride_the_bus",
+                hook_noisy = {"j_castle", "j_hit_the_road",
+                              "j_ride_the_bus",
                               "j_runner", "j_square", "j_trousers", "j_wee",
                               "j_lucky_cat", "j_obelisk"}
                 for jk in joker_keys & hook_noisy:
@@ -618,6 +624,7 @@ def run_bot(
                         current_blind_name = name
                         current_blind_target = score
                         max_chips_this_blind = 0
+                        state.pop("_boss_disabled", None)
                         hands_at_blind_start = total_hands_played
                         discards_at_blind_start = total_discards_used
                         hand_context_logged = False
@@ -737,6 +744,8 @@ def run_bot(
                 "deck_cards": state.get("cards", {}).get("cards", []),
                 "blind_name": snap_blind_name,
                 "ante": state.get("ante_num", 1),
+                "_boss_disabled": state.get("_boss_disabled", False),
+                "_ox_most_played": state.get("round", {}).get("most_played_poker_hand"),
             }
 
         # Capture expected hand score for chip accounting on timeout
@@ -760,9 +769,10 @@ def run_bot(
                 total_hands_played += 1
                 post_chips = state.get("round", {}).get("chips", 0)
                 _scoring_log.info("  POST_PLAY chips_in_round=%d, delta=%d", post_chips, post_chips - pre_play_chips)
-                # The Hook discards 2 held cards AFTER scoring (before
-                # cards are replenished), so it does not affect this hand's
-                # score.  The pre-play snapshot is correct as-is.
+                # The Hook discards 2 held cards BEFORE scoring (before
+                # cards are replenished).  The pre-play snapshot is used
+                # as-is; joker corrections (Ramen, Yorick, Green Joker)
+                # are applied in joker_effects/complex.py.
                 _log_played_hand(play_snapshot, pre_play_chips, state, fmt_card)
             elif method == "discard":
                 total_discards_used += 1
@@ -773,6 +783,12 @@ def run_bot(
                 from balatro_bot.strategy import compute_strategy as _cs
                 new_strat = _cs(state.get("jokers", {}).get("cards", []), state.get("hands", {}))
                 log.info("[STRAT] %s", new_strat.describes())
+                # Luchador sold during a boss blind → boss effect disabled
+                if "j_luchador" in prev_joker_keys and "j_luchador" not in cur_joker_keys:
+                    from balatro_bot.domain.policy.playing import BOSS_BLINDS
+                    if current_blind_name in BOSS_BLINDS:
+                        state["_boss_disabled"] = True
+                        log.info("[BOSS] Luchador sold — %s effect disabled", current_blind_name)
             prev_joker_keys = cur_joker_keys
 
             consecutive_errors = 0

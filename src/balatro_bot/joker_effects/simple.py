@@ -115,14 +115,15 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     # j_vampire — moved to complex.py (before-phase enhancement stripping + pre-increment)
     ("j_hologram",      "parsed_xmult", {"fallback": 1.5}),
     # j_obelisk — moved to complex.py (needs most-played hand check + pre-scoring increment)
-    ("j_ramen",         "parsed_xmult", {"fallback": 1.5}),
+    # j_ramen — moved to complex.py (Hook boss discard adjusts xmult before scoring)
     # j_lucky_cat — moved to complex.py (EV pre-increment for Lucky triggers)
     ("j_campfire",      "parsed_xmult", {"fallback": 1.5}),
     ("j_hit_the_road",  "parsed_xmult", {"fallback": 1.5}),
     ("j_glass",         "parsed_xmult", {"fallback": 1.5}),
     ("j_throwback",     "parsed_xmult", {"fallback": 1.5}),
     ("j_canio",         "parsed_xmult", {"fallback": 2.0}),
-    ("j_yorick",        "parsed_xmult", {"fallback": 2.0}),
+    # j_yorick — moved to complex.py (Hook boss discard advances discard counter)
+
     # j_steel_joker: moved to complex.py (dynamic Steel card counting)
 ]
 

@@ -11,6 +11,7 @@ class BlindSnapshot:
     name: str
     score: int
     status: str
+    boss_disabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class RoundSnapshot:
     hands_left: int
     discards_left: int
     ancient_suit: str | None
+    most_played_poker_hand: str | None = None
 
 
 @dataclass(frozen=True)

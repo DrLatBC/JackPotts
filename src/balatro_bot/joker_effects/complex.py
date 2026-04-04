@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from balatro_bot.cards import card_rank, card_suits, is_debuffed, _modifier, rank_value
 from balatro_bot.constants import FACE_RANKS, FIBONACCI_RANKS, EVEN_RANKS, ODD_RANKS, RANK_CHIPS
-from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult, _get_parsed_value
+from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult, _get_parsed_value, _parse_bracket_counter
 from balatro_bot.joker_effects.context import ScoreContext, retrigger_count, _count_suit_in_scoring, _count_face_in_scoring, _hand_contains
 
 if TYPE_CHECKING:
@@ -95,9 +95,18 @@ def _supernova(ctx: ScoreContext, j: dict) -> None:
 
 def _green_joker(ctx: ScoreContext, j: dict) -> None:
     """Green Joker: +mult per hand played, -mult per discard.
-    The ability field is pre-increment, so add +hand_add for the current hand."""
+
+    The ability field is pre-increment, so add +hand_add for the current hand.
+    Exception: The Hook's boss effect (discard 2 cards = 1 discard event) fires
+    BEFORE On Played jokers in the activation sequence.  That means Green Joker's
+    discard_sub already decremented the stored mult before hand_add fires,
+    and the two cancel out — the stored value is used as-is.
+    """
     ab = _ability(j)
-    ctx.mult += _ab_mult(j, fallback=0) + ab.get("hand_add", 1)
+    hand_add = ab.get("hand_add", 1)
+    if ctx.blind_name == "The Hook":
+        hand_add = 0  # Boss discard already cancelled the increment
+    ctx.mult += _ab_mult(j, fallback=0) + hand_add
 
 def _ride_the_bus(ctx: ScoreContext, j: dict) -> None:
     """Ride the Bus: +mult per hand without face cards, resets on face cards.
@@ -206,11 +215,14 @@ def _flower_pot(ctx: ScoreContext, j: dict) -> None:
         red_count = 0
         black_count = 0
         for c in ctx.scoring_cards:
-            if not is_debuffed(c) and _modifier(c).get("enhancement") == "WILD":
-                if red_count <= black_count:
-                    red_count += 1
-                else:
-                    black_count += 1
+            enhancement = _modifier(c).get("enhancement")
+            if enhancement == "WILD":
+                # Debuffed WILD contributes nothing (game quirk per wiki)
+                if not is_debuffed(c):
+                    if red_count <= black_count:
+                        red_count += 1
+                    else:
+                        black_count += 1
             else:
                 suit = c.get("value", {}).get("suit")
                 if suit in ("H", "D"):
@@ -223,8 +235,11 @@ def _flower_pot(ctx: ScoreContext, j: dict) -> None:
         natural_suits: set[str] = set()
         wild_count = 0
         for c in ctx.scoring_cards:
-            if not is_debuffed(c) and _modifier(c).get("enhancement") == "WILD":
-                wild_count += 1
+            enhancement = _modifier(c).get("enhancement")
+            if enhancement == "WILD":
+                # Debuffed WILD contributes nothing (game quirk per wiki)
+                if not is_debuffed(c):
+                    wild_count += 1
             else:
                 natural_suits |= card_suits(c, smeared=False)
         if len(natural_suits) + wild_count >= 4:
@@ -391,6 +406,36 @@ def _steel_joker(ctx: ScoreContext, j: dict) -> None:
         ctx.mult *= xmult
 
 
+def _ramen(ctx: ScoreContext, j: dict) -> None:
+    """Ramen: xmult that decays -0.01 per card discarded.
+
+    The Hook's boss effect discards 2 cards before scoring, so the snapshot
+    xmult is stale by -0.02.  Adjust before applying.
+    """
+    xmult = _ab_xmult(j, fallback=1.5)
+    if ctx.blind_name == "The Hook":
+        xmult -= 0.02
+    if xmult > 1:
+        ctx.mult *= xmult
+
+
+def _yorick(ctx: ScoreContext, j: dict) -> None:
+    """Yorick: X1 Mult, gains X1 per 23 cards discarded.
+
+    The remaining discard counter shows in effect text as [N].
+    ability.discards is the threshold constant (23), NOT the counter.
+    The Hook's boss effect discards 2 cards before scoring, advancing
+    the counter by 2.  If remaining <= 2, the threshold is crossed
+    and xmult ticks up.
+    """
+    xmult = _ab_xmult(j, fallback=2.0)
+    if ctx.blind_name == "The Hook":
+        remaining = _parse_bracket_counter(j)
+        if remaining is not None and remaining <= 2:
+            xmult += 1
+    ctx.mult *= xmult
+
+
 # Collected dict of complex effects for the registry
 COMPLEX_EFFECTS: dict[str, object] = {
     "j_half": _half,
@@ -442,4 +487,6 @@ COMPLEX_EFFECTS: dict[str, object] = {
     "j_obelisk": _obelisk,
     "j_vampire": _vampire,
     "j_steel_joker": _steel_joker,
+    "j_ramen": _ramen,
+    "j_yorick": _yorick,
 }

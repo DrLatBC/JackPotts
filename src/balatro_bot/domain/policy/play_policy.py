@@ -222,6 +222,12 @@ def choose_milk_play(ctx: RoundContext) -> Action | None:
     has_mystic = "j_mystic_summit" in joker_keys
     has_green = "j_green_joker" in joker_keys
 
+    # The Hook's boss discard fires before On Played jokers, so Green
+    # Joker's +1 hand_add is cancelled by -1 discard_sub every hand.
+    # Net scaling is zero — don't waste hands milking it.
+    if has_green and ctx.blind_name == "The Hook":
+        active.pop("j_green_joker", None)
+
     should_preserve_discards = (has_banner and not has_mystic) or has_green
 
     if not should_preserve_discards and ctx.discards_left > 0:

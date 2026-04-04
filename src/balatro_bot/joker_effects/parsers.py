@@ -17,6 +17,8 @@ _CURRENTLY_MULT_PATTERN = re.compile(r'Currently\s+\+(\d+(?:\.\d+)?)\s+Mult')
 _CURRENTLY_BARE_PATTERN = re.compile(r'Currently\s+\+(\d+(?:\.\d+)?)\b')
 # Scaling chip jokers show "gains +5 Chips... (Currently +37 Chips)"
 _CURRENTLY_CHIPS_PATTERN = re.compile(r'Currently\s+\+(\d+(?:\.\d+)?)\s+Chips')
+# Bracketed counter at end of effect text, e.g. Yorick's "[13]" remaining discards
+_BRACKET_COUNTER_PATTERN = re.compile(r'\[(\d+)\]')
 
 
 def parse_effect_value(effect_text: str) -> dict[str, float | None]:
@@ -92,6 +94,15 @@ def _get_parsed_value(joker: dict, key: str, fallback: float) -> float:
     return value if value is not None else fallback
 
 
+def _parse_bracket_counter(joker: dict) -> int | None:
+    """Extract a bracketed counter [N] from effect text (e.g. Yorick's remaining discards)."""
+    effect_text = joker.get("value", {}).get("effect", "")
+    if not effect_text:
+        return None
+    m = _BRACKET_COUNTER_PATTERN.search(effect_text)
+    return int(m.group(1)) if m else None
+
+
 def _ability(joker: dict) -> dict:
     """Return the joker's ability dict from the API (empty dict if absent)."""
     return joker.get("value", {}).get("ability", {})
@@ -109,7 +120,9 @@ def _ab_chips(joker: dict, fallback: float = 0) -> float:
 def _ab_mult(joker: dict, fallback: float = 0) -> float:
     """Get mult value from ability data, then text parsing, then fallback."""
     ab = _ability(joker)
-    v = ab.get("mult") or ab.get("t_mult")
+    v = ab.get("mult")
+    if v is None:
+        v = ab.get("t_mult")
     if v is not None:
         return float(v)
     return _get_parsed_value(joker, "mult", fallback)
@@ -118,7 +131,9 @@ def _ab_mult(joker: dict, fallback: float = 0) -> float:
 def _ab_xmult(joker: dict, fallback: float = 1.0) -> float:
     """Get xmult value from ability data, then text parsing, then fallback."""
     ab = _ability(joker)
-    v = ab.get("Xmult") or ab.get("x_mult")
+    v = ab.get("Xmult")
+    if v is None:
+        v = ab.get("x_mult")
     if v is not None:
         return float(v)
     return _get_parsed_value(joker, "xmult", fallback)

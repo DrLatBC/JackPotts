@@ -81,6 +81,7 @@ def enumerate_hands(
     deck_count: int = 0,
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
+    ox_most_played: str | None = None,
 ) -> list[HandCandidate]:
     """Enumerate all valid poker hands from the cards in hand."""
     candidates: list[HandCandidate] = []
@@ -94,6 +95,9 @@ def enumerate_hands(
     smeared      = "j_smeared" in joker_keys
 
     from balatro_bot.rules._helpers import _sort_play_order
+
+    # The Ox: use the game's locked hand directly from API
+    _ox_mp = ox_most_played if blind_name == "The Ox" else None
 
     for size in range(min_select, min(max_select, n) + 1):
         for indices in combinations(range(n), size):
@@ -111,7 +115,7 @@ def enumerate_hands(
             else:
                 played_in_order = subset
 
-            scoring = subset if has_splash else _scoring_cards_for(hand_name, subset, four_fingers=four_fingers, smeared=smeared)
+            scoring = subset if has_splash else _scoring_cards_for(hand_name, subset, four_fingers=four_fingers, smeared=smeared, shortcut=shortcut)
             held = [hand_cards[i] for i in indices_set - set(indices)] if jokers else []
             chips, mult, total = score_hand(
                 hand_name, scoring, hand_levels,
@@ -120,6 +124,7 @@ def enumerate_hands(
                 joker_limit=joker_limit, ancient_suit=ancient_suit,
                 deck_count=deck_count, deck_cards=deck_cards,
                 blind_name=blind_name,
+                ox_most_played=_ox_mp,
             )
 
             candidates.append(HandCandidate(
@@ -161,6 +166,7 @@ def best_hand(
     deck_count: int = 0,
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
+    ox_most_played: str | None = None,
 ) -> HandCandidate | None:
     """Return the single best hand playable from the given cards."""
     candidates = enumerate_hands(
@@ -175,6 +181,7 @@ def best_hand(
         excluded_hands=excluded_hands,
         deck_count=deck_count, deck_cards=deck_cards,
         blind_name=blind_name,
+        ox_most_played=ox_most_played,
     )
     return candidates[0] if candidates else None
 
