@@ -97,49 +97,68 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
 
     _per_card = []
     _first_face_found = False
-    for j in (jokers or []):
-        if is_joker_debuffed(j):
-            continue
-        k = j.get("key", "")
-        ab = j.get("value", {}).get("ability", {})
-        if k == "j_greedy_joker":
+
+    def _add_per_card_effect(key: str, joker: dict) -> None:
+        """Add per-card scoring effects for a joker key, using joker's ability data."""
+        ab = joker.get("value", {}).get("ability", {})
+        if key == "j_greedy_joker":
             _per_card.append(("suit_mult", "D", ab.get("s_mult", 3)))
-        elif k == "j_lusty_joker":
+        elif key == "j_lusty_joker":
             _per_card.append(("suit_mult", "H", ab.get("s_mult", 3)))
-        elif k == "j_wrathful_joker":
+        elif key == "j_wrathful_joker":
             _per_card.append(("suit_mult", "S", ab.get("s_mult", 3)))
-        elif k == "j_gluttenous_joker":
+        elif key == "j_gluttenous_joker":
             _per_card.append(("suit_mult", "C", ab.get("s_mult", 3)))
-        elif k == "j_fibonacci":
+        elif key == "j_fibonacci":
             _per_card.append(("ranks_mult", FIBONACCI_RANKS, ab.get("extra", 8)))
-        elif k == "j_even_steven":
+        elif key == "j_even_steven":
             _per_card.append(("ranks_mult", EVEN_RANKS, ab.get("extra", 4)))
-        elif k == "j_odd_todd":
+        elif key == "j_odd_todd":
             _per_card.append(("ranks_chips", ODD_RANKS, ab.get("extra", 31)))
-        elif k == "j_scholar":
+        elif key == "j_scholar":
             _per_card.append(("ranks_cm", frozenset({"A"}), ab.get("chips", 20), ab.get("mult", 4)))
-        elif k == "j_smiley":
+        elif key == "j_smiley":
             _per_card.append(("face_mult", ab.get("extra", 5)))
-        elif k == "j_scary_face":
+        elif key == "j_scary_face":
             _per_card.append(("face_chips", ab.get("extra", 30)))
-        elif k == "j_walkie_talkie":
+        elif key == "j_walkie_talkie":
             _per_card.append(("ranks_cm", frozenset({"T", "4"}), ab.get("chips", 10), ab.get("mult", 4)))
-        elif k == "j_photograph":
+        elif key == "j_photograph":
             _per_card.append(("first_face_xmult", ab.get("extra", 2.0)))
-        elif k == "j_triboulet":
+        elif key == "j_triboulet":
             _per_card.append(("ranks_xmult", frozenset({"K", "Q"}), ab.get("extra", 2.0)))
-        elif k == "j_ancient":
+        elif key == "j_ancient":
             _per_card.append(("suit_xmult", ancient_suit, 1.5))
-        elif k == "j_arrowhead":
+        elif key == "j_arrowhead":
             _per_card.append(("suit_chips", "S", ab.get("extra", 50)))
-        elif k == "j_onyx_agate":
+        elif key == "j_onyx_agate":
             _per_card.append(("suit_mult", "C", ab.get("extra", 7)))
-        elif k == "j_bloodstone":
+        elif key == "j_bloodstone":
             xm = ab.get("Xmult", 1.5)
             odds = ab.get("odds", 2)
             _per_card.append(("suit_expected_xmult", "H", xm, odds))
-        elif k == "j_hiker":
+        elif key == "j_hiker":
             _per_card.append(("all_chips", ab.get("extra", 5)))
+
+    joker_list = jokers or []
+    for i, j in enumerate(joker_list):
+        if is_joker_debuffed(j):
+            continue
+        k = j.get("key", "")
+        if k == "j_blueprint":
+            # Blueprint copies the joker to its right
+            if i + 1 < len(joker_list):
+                target = joker_list[i + 1]
+                if not is_joker_debuffed(target):
+                    _add_per_card_effect(target.get("key", ""), target)
+        elif k == "j_brainstorm":
+            # Brainstorm copies the leftmost joker
+            if joker_list and joker_list[0] is not j:
+                target = joker_list[0]
+                if not is_joker_debuffed(target):
+                    _add_per_card_effect(target.get("key", ""), target)
+        else:
+            _add_per_card_effect(k, j)
 
     _has_midas = any(j.get("key") == "j_midas_mask" for j in (jokers or []))
     if _has_midas:

@@ -96,7 +96,6 @@ def wait_for_server(client: BalatroClient, timeout: float = 30.0) -> None:
 
 _scoring_log = logging.getLogger("balatro_scoring")
 
-
 def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt_card) -> None:
     """Log a detailed scoring breakdown for a hand that was just played."""
     if not snapshot or not _scoring_log.handlers:
@@ -761,37 +760,9 @@ def run_bot(
                 total_hands_played += 1
                 post_chips = state.get("round", {}).get("chips", 0)
                 _scoring_log.info("  POST_PLAY chips_in_round=%d, delta=%d", post_chips, post_chips - pre_play_chips)
-                # The Hook discards 2 held cards and triggers scaling joker
-                # updates BEFORE scoring.  Use post-play state for jokers
-                # (already incremented/decremented) and reconstruct held cards
-                # by removing cards that The Hook discarded.
-                if play_snapshot and play_snapshot.get("blind_name") == "The Hook":
-                    play_snapshot["jokers"] = state.get("jokers", {}).get("cards", [])
-                    post_hand = state.get("hand", {}).get("cards", [])
-                    # When the play beats the blind, the game transitions
-                    # away from SELECTING_HAND and clears the hand.  In that
-                    # case we can't diff, so keep original held cards (will
-                    # include the 2 Hook-discarded cards — accepted noise).
-                    if post_hand:
-                        # Build multiset of post-play hand cards for diffing
-                        def _card_key(c):
-                            v = c.get("value", {})
-                            m = c.get("modifier", {})
-                            if not isinstance(m, dict):
-                                m = {}
-                            return (v.get("rank"), v.get("suit"), m.get("enhancement", ""), m.get("edition", ""))
-                        post_keys: dict[tuple, int] = {}
-                        for c in post_hand:
-                            k = _card_key(c)
-                            post_keys[k] = post_keys.get(k, 0) + 1
-                        # Keep only held cards that survived (present in post-play hand)
-                        surviving = []
-                        for c in play_snapshot["held"]:
-                            k = _card_key(c)
-                            if post_keys.get(k, 0) > 0:
-                                surviving.append(c)
-                                post_keys[k] -= 1
-                        play_snapshot["held"] = surviving
+                # The Hook discards 2 held cards AFTER scoring (before
+                # cards are replenished), so it does not affect this hand's
+                # score.  The pre-play snapshot is correct as-is.
                 _log_played_hand(play_snapshot, pre_play_chips, state, fmt_card)
             elif method == "discard":
                 total_discards_used += 1

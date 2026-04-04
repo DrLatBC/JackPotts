@@ -141,13 +141,14 @@ def _trousers(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += base
 
 def _blackboard(ctx: ScoreContext, j: dict) -> None:
-    # All held cards must be Spades or Clubs.  Stone cards return an empty
-    # suit set which must FAIL the check (the game treats them as no-suit,
-    # not as "skip").  So no `if card_suits(...)` filter — every card votes.
-    # Debuffed held cards are ignored (don't break the all-Spades/Clubs check)
-    active_held = [c for c in ctx.held_cards if not is_debuffed(c)]
+    # All held cards must be Spades or Clubs for Blackboard to activate.
+    # Wild cards count as spades/clubs (card_suits returns all four suits).
+    # Stone cards have no suit → block activation (card_suits returns empty set).
+    # Debuffed Wild cards revert to their natural suit (may block).
+    # Debuffed Stone cards still have no suit → block activation.
+    # Debuffed base cards use their natural suit as normal.
     if all(
-        card_suits(c, smeared=ctx.smeared) & {"S", "C"} for c in active_held
+        card_suits(c, smeared=ctx.smeared) & {"S", "C"} for c in ctx.held_cards
     ):
         ctx.mult *= _ability(j).get("extra", 3.0)
 

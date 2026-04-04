@@ -62,6 +62,10 @@ def merge_stats(all_stats: list[dict]) -> dict:
         "seal_in_mismatch": Counter(),
         "ed_in_all": Counter(),
         "ed_in_mismatch": Counter(),
+        "combo2_in_all": Counter(),
+        "combo2_in_mismatch": Counter(),
+        "combo3_in_all": Counter(),
+        "combo3_in_mismatch": Counter(),
         "actual_values": [],
     }
     for s in all_stats:
@@ -127,5 +131,9 @@ def merge_stats(all_stats: list[dict]) -> dict:
         merged["seal_in_mismatch"] += s.get("seal_in_mismatch", Counter())
         merged["ed_in_all"] += s.get("ed_in_all", Counter())
         merged["ed_in_mismatch"] += s.get("ed_in_mismatch", Counter())
+        merged["combo2_in_all"] += s.get("combo2_in_all", Counter())
+        merged["combo2_in_mismatch"] += s.get("combo2_in_mismatch", Counter())
+        merged["combo3_in_all"] += s.get("combo3_in_all", Counter())
+        merged["combo3_in_mismatch"] += s.get("combo3_in_mismatch", Counter())
         merged["actual_values"].extend(s.get("actual_values", []))
     return merged

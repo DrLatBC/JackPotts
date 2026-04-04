@@ -231,7 +231,7 @@ class ReorderJokersForScoring:
         self._last_order: list[int] | None = None
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        from balatro_bot.joker_scoring_phase import (
+        from balatro_bot.joker_effects.scoring_phase import (
             get_joker_phase, get_joker_edition_phase,
             PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
         )

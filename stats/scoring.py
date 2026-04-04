@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from itertools import combinations
 from pathlib import Path
 
 # Scoring-log-specific patterns (local to this module)
@@ -51,6 +52,8 @@ def parse_scoring_log(path: Path) -> dict:
         "blind_in_all": Counter(), "blind_in_mismatch": Counter(),
         "ante_in_all": Counter(), "ante_in_mismatch": Counter(),
         "hands_left_in_all": Counter(), "hands_left_in_mismatch": Counter(),
+        "combo2_in_all": Counter(), "combo2_in_mismatch": Counter(),
+        "combo3_in_all": Counter(), "combo3_in_mismatch": Counter(),
         "actual_values": [],
     }
     if not path.exists():
@@ -80,6 +83,10 @@ def parse_scoring_log(path: Path) -> dict:
     ante_in_mismatch: Counter = Counter()
     hands_left_in_all: Counter = Counter()
     hands_left_in_mismatch: Counter = Counter()
+    combo2_in_all: Counter = Counter()
+    combo2_in_mismatch: Counter = Counter()
+    combo3_in_all: Counter = Counter()
+    combo3_in_mismatch: Counter = Counter()
     actual_values: list[int] = []
 
     for line in text.splitlines():
@@ -143,6 +150,30 @@ def parse_scoring_log(path: Path) -> dict:
         if hl_val:
             hands_left_in_all[hl_val] += 1
 
+        # Build tagged attribute set for combo lift analysis
+        tags: list[str] = []
+        if jm:
+            for label in _extract_joker_labels(jm.group(1)):
+                tags.append(f"joker:{label}")
+        for v in hand_enhs:
+            tags.append(f"enh:{v}")
+        for v in hand_seals:
+            tags.append(f"seal:{v}")
+        for v in hand_eds:
+            tags.append(f"ed:{v}")
+        if blind_val:
+            tags.append(f"blind:{blind_val}")
+        tags.append(f"hand:{hand_type}")
+        if hl_val:
+            tags.append(f"hl:{hl_val}")
+
+        if len(tags) >= 2:
+            for pair in combinations(sorted(set(tags)), 2):
+                combo2_in_all[" + ".join(pair)] += 1
+        if len(tags) >= 3:
+            for triple in combinations(sorted(set(tags)), 3):
+                combo3_in_all[" + ".join(triple)] += 1
+
         mm = _RE_SCORE_MISMATCH.search(line)
         if mm:
             mismatches += 1
@@ -168,6 +199,12 @@ def parse_scoring_log(path: Path) -> dict:
                 ante_in_mismatch[ante_val] += 1
             if hl_val:
                 hands_left_in_mismatch[hl_val] += 1
+            if len(tags) >= 2:
+                for pair in combinations(sorted(set(tags)), 2):
+                    combo2_in_mismatch[" + ".join(pair)] += 1
+            if len(tags) >= 3:
+                for triple in combinations(sorted(set(tags)), 3):
+                    combo3_in_mismatch[" + ".join(triple)] += 1
 
     return {
         "total_scores": total, "mismatches": mismatches, "mismatch_diffs": diffs,
@@ -181,5 +218,7 @@ def parse_scoring_log(path: Path) -> dict:
         "blind_in_all": blind_in_all, "blind_in_mismatch": blind_in_mismatch,
         "ante_in_all": ante_in_all, "ante_in_mismatch": ante_in_mismatch,
         "hands_left_in_all": hands_left_in_all, "hands_left_in_mismatch": hands_left_in_mismatch,
+        "combo2_in_all": combo2_in_all, "combo2_in_mismatch": combo2_in_mismatch,
+        "combo3_in_all": combo3_in_all, "combo3_in_mismatch": combo3_in_mismatch,
         "actual_values": actual_values,
     }

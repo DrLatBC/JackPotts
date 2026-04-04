@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from itertools import combinations
 
 
 def _md_table(headers: list, rows: list, right_cols: set | None = None) -> list[str]:
@@ -573,6 +574,65 @@ def generate_markdown(stats: dict, batch_label: str) -> str:
                 stats.get("hands_left_in_all", Counter()), stats.get("hands_left_in_mismatch", Counter()),
                 "Hands Left",
             )
+
+        # Combo lift — pairs and triples of attributes that mismatch together
+        def _combo_lift_table(heading: str, in_all: Counter, in_mismatch: Counter,
+                              min_appearances: int, min_lift: float,
+                              prune_parents: Counter | None = None,
+                              parent_all: Counter | None = None) -> None:
+            if not in_mismatch or stats["total_scores"] == 0 or stats["mismatches"] == 0:
+                return
+            overall_rate = stats["mismatches"] / stats["total_scores"]
+            rows = []
+            for combo, mm_count in in_mismatch.most_common():
+                total_appearances = in_all.get(combo, 0)
+                if total_appearances < min_appearances:
+                    continue
+                combo_rate = mm_count / total_appearances
+                lift = combo_rate / overall_rate
+                if lift < min_lift:
+                    continue
+                # Redundancy pruning: skip triples where a constituent pair
+                # already has >= 95% mismatch rate
+                if prune_parents and parent_all:
+                    parts = combo.split(" + ")
+                    redundant = False
+                    for pair in combinations(parts, 2):
+                        pair_key = " + ".join(pair)
+                        pair_total = parent_all.get(pair_key, 0)
+                        pair_mm = prune_parents.get(pair_key, 0)
+                        if pair_total >= min_appearances and pair_mm / pair_total >= 0.95:
+                            redundant = True
+                            break
+                    if redundant:
+                        continue
+                rows.append((combo, mm_count, total_appearances, combo_rate, lift))
+            rows.sort(key=lambda x: -x[4])
+            if not rows:
+                return
+            w("")
+            w(f"### {heading}")
+            w("")
+            w("Attribute combinations appearing disproportionately in mismatches.")
+            w("")
+            tbl = [[combo, str(mm), str(tot), _pct(mm, tot), f"{lift:.1f}x"]
+                   for combo, mm, tot, _, lift in rows[:20]]
+            table(["Combo", "Mismatches", "Appearances", "Rate", "Lift"], tbl, right_cols={1, 2, 3, 4})
+
+        combo2_all = stats.get("combo2_in_all", Counter())
+        combo2_mm = stats.get("combo2_in_mismatch", Counter())
+        combo3_all = stats.get("combo3_in_all", Counter())
+        combo3_mm = stats.get("combo3_in_mismatch", Counter())
+
+        _combo_lift_table(
+            "Pair Combo Mismatch Lift", combo2_all, combo2_mm,
+            min_appearances=3, min_lift=2.0,
+        )
+        _combo_lift_table(
+            "Triple Combo Mismatch Lift", combo3_all, combo3_mm,
+            min_appearances=2, min_lift=3.0,
+            prune_parents=combo2_mm, parent_all=combo2_all,
+        )
 
     milk_total = sum(stats["milk_actions"].values())
     if milk_total:

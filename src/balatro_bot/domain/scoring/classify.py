@@ -142,6 +142,10 @@ def _scoring_cards_for(
 
     if hand_name in ("Flush", "Straight Flush", "Flush Five", "Flush House"):
         if four_fingers:
+            # Straight Flush with Four Fingers: off-suit cards that contribute
+            # to the straight component still score — return all cards.
+            if hand_name == "Straight Flush":
+                return list(cards)
             suited = [c for c in cards if not is_stone(c)]
             if suited:
                 common = card_suits(suited[0], smeared=smeared)

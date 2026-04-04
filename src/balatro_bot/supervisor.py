@@ -525,14 +525,14 @@ class Supervisor:
         print(f"\n  Running stats for batch {batch}...")
         try:
             result = subprocess.run(
-                [PYTHON, str(BASE_DIR / "stats.py"), batch],
+                [PYTHON, "-m", "stats", batch],
                 cwd=str(BASE_DIR),
                 capture_output=False,
             )
             if result.returncode != 0:
-                log.warning("stats.py exited with rc=%d", result.returncode)
+                log.warning("stats exited with rc=%d", result.returncode)
         except Exception as e:
-            log.warning("Failed to run stats.py: %s", e)
+            log.warning("Failed to run stats: %s", e)
         self._rotate_logs()
 
     def _rotate_logs(self, keep: int = 10) -> None:
