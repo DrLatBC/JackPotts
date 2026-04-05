@@ -3,7 +3,7 @@
 [![built with Python](https://img.shields.io/badge/built%20with-Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![version v0.1.0](https://img.shields.io/badge/version-v0.2.0--beta-blue)](https://github.com/DrLatBC/JackPotts/releases)
-[![tests 233 passing](https://img.shields.io/badge/tests-233%20passing-brightgreen)](tests/)
+[![tests 266 passing](https://img.shields.io/badge/tests-266%20passing-brightgreen)](tests/)
 [![platform Windows](https://img.shields.io/badge/platform-Windows-lightgrey)](https://github.com/DrLatBC/JackPotts)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/DrLatBC/JackPotts/pulls)
 
@@ -11,7 +11,7 @@ Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/B
 
 The bot fully simulates Balatro's scoring pipeline — joker effects, card enhancements, editions, seals, retriggers, and boss blind modifiers — to predict exact chip totals for every candidate hand before choosing what to play.
 
-**Current peak: Ante 11 | Scoring accuracy: 99.5% | 2.5% win rate**
+**Current peak: Ante 11 | Scoring accuracy: 99.5% | 2.5% win rate** — [full stats](STATS.md)
 
 ## Prerequisites
 
