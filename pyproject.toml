@@ -18,10 +18,14 @@ dev = ["pytest"]
 balatro-bot = "balatro_bot.cli:main"
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests"]
 # Integration tests require a running balatrobot server; run them explicitly:
 #   python tests/integration/test_acrobat.py --port 12346
 addopts = "--ignore=tests/integration"
+markers = [
+    "integration: requires a running balatrobot server",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
