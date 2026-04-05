@@ -2,7 +2,7 @@
 
 [![built with Python](https://img.shields.io/badge/built%20with-Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![version v0.1.0](https://img.shields.io/badge/version-v0.1.0-blue)](https://github.com/DrLatBC/JackPotts/releases)
+[![version v0.1.0](https://img.shields.io/badge/version-v0.2.0--beta-blue)](https://github.com/DrLatBC/JackPotts/releases)
 [![tests 233 passing](https://img.shields.io/badge/tests-233%20passing-brightgreen)](tests/)
 [![platform Windows](https://img.shields.io/badge/platform-Windows-lightgrey)](https://github.com/DrLatBC/JackPotts)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/DrLatBC/JackPotts/pulls)
@@ -17,8 +17,10 @@ The bot fully simulates Balatro's scoring pipeline — joker effects, card enhan
 
 - **Balatro** (Steam)
 - **[Lovely](https://github.com/ethangreen-dev/lovely-injector)** mod loader for Balatro
-- **[balatrobot](https://github.com/coder/balatrobot) mod** installed into Balatro (provides the JSON-RPC server the bot talks to)
+- **[balatrobot mod](https://github.com/DrLatBC/balatrobot)** (our fork) installed into Balatro — provides the JSON-RPC server the bot talks to
 - **Python 3.11+**
+
+> **Why our fork?** Jack Potts requires API fields and fixes not yet in [upstream balatrobot](https://github.com/coder/balatrobot): edition scoring values, joker ability data, The Ox's locked hand, Ancient Joker suit, boss blind forcing, endless mode support, and several endpoint hang fixes. A [PR is open](https://github.com/coder/balatrobot/pull/181) to merge these upstream — once accepted, the official mod will work. Until then, use our fork.
 
 ## Installation
 
