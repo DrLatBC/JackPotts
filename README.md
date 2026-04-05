@@ -1,4 +1,4 @@
-# Balatro Bot
+# Jack Potts
 
 [![built with Python](https://img.shields.io/badge/built%20with-Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
