@@ -107,11 +107,93 @@ Unit tests (no server required):
 pytest
 ```
 
-Integration tests (requires a running `balatrobot serve` instance):
+### Integration Test Harness
+
+The `tests/integration/` directory contains a full in-game test harness that launches Balatro, injects specific game states, plays hands, and compares the bot's predicted score against the game's actual score. This is how we verify scoring accuracy at 99.5%.
+
+**Quick start** — run any test with `--start-server` to auto-launch a headless Balatro instance:
 
 ```bash
-python tests/integration/test_scoring_bugs.py --port 12346
+python tests/integration/test_batch069_fixes.py --start-server
 ```
+
+Or connect to an already-running server:
+
+```bash
+python tests/integration/test_batch069_fixes.py --port 12346
+```
+
+#### Harness Helpers (`harness.py`)
+
+All integration tests share a common harness with these key functions:
+
+| Function | Description |
+|----------|-------------|
+| `start_server(port)` | Launches a headless balatrobot server and waits for health |
+| `ensure_server(port)` | Connects to existing server or starts a new one |
+| `setup_game(client, seed)` | Starts a fresh game with a fixed seed, waits for SELECTING_HAND |
+| `setup_game_full(client, seed, joker_keys, card_configs)` | Full setup — sells default jokers, discards hand, injects specific jokers and cards |
+| `advance_to_boss_select(client, target_ante)` | Fast-forwards through blinds to reach boss select at a specific ante |
+| `force_boss(client, boss_name)` | Forces a specific boss blind via the `set` API (e.g. `"The Ox"`, `"The Flint"`) |
+| `beat_blind_fast(client, state)` | Sets chips to 999999 and plays to instantly win the current blind |
+| `cheat_win_if_needed(client, blind_name)` | Beats the named blind only if still playing it |
+| `inject_jokers(client, joker_keys)` | Sells existing jokers and adds the specified ones |
+| `inject_god_mode(client)` | Injects an overpowered build (leveled High Card + power jokers) for win testing |
+| `burn_discards(client, target)` | Burns N discards to advance discard-tracking jokers (Yorick, etc.) |
+| `wait_for_state(client, targets)` | Polls until the game reaches a target state, auto-advancing through intermediate states |
+| `take_screenshot(client, label)` | Captures a screenshot for debugging failed tests |
+
+#### Writing a Test
+
+A typical integration test follows this pattern:
+
+```python
+from harness import ensure_server, stop_server, setup_game_full, force_boss, advance_to_boss_select
+
+def test_example():
+    client, server = ensure_server()
+    try:
+        # Set up a specific scenario
+        setup_game_full(client, seed="TESTSEED",
+                        joker_keys=["j_four_fingers", "j_shortcut"],
+                        card_configs=[
+                            {"key": "H_K"},  # King of Hearts
+                            {"key": "S_A", "edition": "FOIL"},  # Foil Ace of Spades
+                        ])
+
+        # Optionally force a boss blind
+        advance_to_boss_select(client, target_ante=2)
+        force_boss(client, "The Flint")
+
+        # Play a hand and compare scores
+        state = client.call("gamestate")
+        predicted = your_scoring_function(state)
+        result = client.call("play", {"cards": [0, 1, 2, 3, 4]})
+        actual = result["chips"]
+        assert predicted == actual, f"Mismatch: {predicted} vs {actual}"
+    finally:
+        if server:
+            stop_server(server)
+```
+
+#### Card Format
+
+Cards use `{Suit}_{Rank}` format: `H_K` = King of Hearts, `S_A` = Ace of Spades, `D_T` = 10 of Diamonds, `C_2` = 2 of Clubs.
+
+#### Available Test Suites
+
+| Test File | What It Tests |
+|-----------|--------------|
+| `test_batch069_fixes.py` | Four Fingers, Shortcut, Flower Pot, Ox, Luchador edge cases |
+| `test_shortcut_edges.py` | Shortcut joker gapped straights, combined with Four Fingers |
+| `test_ox.py` | The Ox boss — most-played hand locking and money zeroing |
+| `test_boss.py` | General boss blind scoring interactions |
+| `test_hook_scaling.py` | Scaling/state-dependent joker scoring under bosses |
+| `test_win.py` | Full game win path (uses seed `GODMODE1`) |
+| `test_glass_poly.py` | Glass + Polychrome edition x_mult interactions |
+| `test_holo_edition.py` | Holographic edition scoring |
+| `test_percard_scoring.py` | Per-card scoring breakdown validation |
+| `test_rearrange.py` | Card rearrangement visual + logical ordering |
 
 ## Architecture
 
