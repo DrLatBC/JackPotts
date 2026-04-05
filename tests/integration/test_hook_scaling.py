@@ -1,6 +1,6 @@
 """Test boss-blind scoring mismatches for scaling/state-dependent jokers.
 
-Reproduces bugs from DrLatBC/balatro-bot#14 and related mismatch clusters.
+Reproduces bugs from DrLatBC/JackPotts#14 and related mismatch clusters.
 
 Two test modes per bucket:
   1. NAIVE baseline (SB+BB): fresh gamestate -> play first 5 -> compare.

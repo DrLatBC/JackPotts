@@ -2,10 +2,10 @@
 
 [![built with Python](https://img.shields.io/badge/built%20with-Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![version v0.1.0](https://img.shields.io/badge/version-v0.1.0-blue)](https://github.com/DrLatBC/balatro-bot/releases)
+[![version v0.1.0](https://img.shields.io/badge/version-v0.1.0-blue)](https://github.com/DrLatBC/JackPotts/releases)
 [![tests 233 passing](https://img.shields.io/badge/tests-233%20passing-brightgreen)](tests/)
-[![platform Windows](https://img.shields.io/badge/platform-Windows-lightgrey)](https://github.com/DrLatBC/balatro-bot)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/DrLatBC/balatro-bot/pulls)
+[![platform Windows](https://img.shields.io/badge/platform-Windows-lightgrey)](https://github.com/DrLatBC/JackPotts)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/DrLatBC/JackPotts/pulls)
 
 Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/Balatro/) autonomously via the [balatrobot](https://github.com/coder/balatrobot) mod's JSON-RPC API. It evaluates every game state through a priority-ordered rule engine, picking the first rule that fires — no ML, no tree search, just hand-tuned heuristics.
 
