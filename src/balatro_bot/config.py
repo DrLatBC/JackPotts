@@ -8,22 +8,56 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _resolve_path(env_var: str, fallback: str, label: str) -> str:
+    """Resolve a path from env var, with a fallback. Raises if neither exists."""
+    path = os.environ.get(env_var, "")
+    if path and os.path.exists(path):
+        return path
+    if os.path.exists(fallback):
+        return fallback
+    if path:
+        # Env var was set but path doesn't exist
+        raise FileNotFoundError(
+            f"{label}: ${env_var} is set to '{path}' but the file doesn't exist."
+        )
+    raise FileNotFoundError(
+        f"{label}: Set the {env_var} environment variable to your {label} path.\n"
+        f"  Example (PowerShell): $env:{env_var} = \"C:\\path\\to\\{os.path.basename(fallback)}\""
+    )
+
+
 def _default_love_path() -> str:
-    return os.environ.get(
+    return _resolve_path(
         "BALATRO_EXE",
         r"C:\Program Files (x86)\Steam\steamapps\common\Balatro\Balatro.exe",
+        "Balatro executable",
     )
 
 
 def _default_lovely_path() -> str:
-    return os.environ.get(
+    return _resolve_path(
         "LOVELY_DLL",
         r"C:\Program Files (x86)\Steam\steamapps\common\Balatro\version.dll",
+        "Lovely mod loader",
     )
 
 
 def _default_uvx_path() -> str:
-    return os.environ.get("UVX_PATH", "") or shutil.which("uvx") or "uvx"
+    env = os.environ.get("UVX_PATH", "")
+    if env:
+        if os.path.exists(env):
+            return env
+        raise FileNotFoundError(
+            f"uvx: $UVX_PATH is set to '{env}' but the file doesn't exist."
+        )
+    found = shutil.which("uvx")
+    if found:
+        return found
+    raise FileNotFoundError(
+        "uvx: not found on PATH. Install it (pip install uv) or set the UVX_PATH "
+        "environment variable.\n"
+        "  Example (PowerShell): $env:UVX_PATH = \"C:\\path\\to\\uvx.exe\""
+    )
 
 
 @dataclass
