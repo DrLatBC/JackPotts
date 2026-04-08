@@ -106,7 +106,7 @@ _COMPLEX_PHASES: dict[str, int] = {
 # Retrigger jokers
 # ---------------------------------------------------------------------------
 _RETRIGGER_KEYS = frozenset({
-    "j_hack", "j_dusk", "j_sock_and_buskin", "j_hanging_chad", "j_seltzer", "j_mime",
+    "j_hack", "j_dusk", "j_sock_and_buskin", "j_hanging_chad", "j_selzer", "j_mime",
 })
 
 # ---------------------------------------------------------------------------

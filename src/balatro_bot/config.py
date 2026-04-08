@@ -8,6 +8,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _load_env_local() -> None:
+    """Load .env.local from the repo root if it exists (no dependency needed)."""
+    root = Path(__file__).resolve().parent.parent.parent
+    env_file = root / ".env.local"
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env_local()
+
+
 def _resolve_path(env_var: str, fallback: str, label: str) -> str:
     """Resolve a path from env var, with a fallback. Raises if neither exists."""
     path = os.environ.get(env_var, "")

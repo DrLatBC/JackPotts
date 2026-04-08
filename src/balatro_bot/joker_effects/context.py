@@ -140,7 +140,7 @@ def retrigger_count(card: dict, ctx: ScoreContext) -> int:
     if "j_dusk" in joker_keys and ctx.hands_left == 1:
         count += 1
 
-    if "j_selzer" in joker_keys:
+    if "j_selzer" in joker_keys:  # game API key is j_selzer (no second 't')
         count += 1
 
     if _modifier(card).get("seal") == "RED":

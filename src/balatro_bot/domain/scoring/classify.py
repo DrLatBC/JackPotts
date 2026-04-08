@@ -225,7 +225,11 @@ def _scoring_cards_for(
             # Straight Flush: union of flush-subset and straight-subset.
             # A card scores if it contributed to EITHER the flush or the straight.
             if hand_name == "Straight Flush":
-                straight_cards = _straight_scoring_cards(cards, four_fingers=True, shortcut=shortcut) or []
+                straight_cards = (
+                    _straight_scoring_cards(cards, four_fingers=False, shortcut=shortcut)
+                    or _straight_scoring_cards(cards, four_fingers=True, shortcut=shortcut)
+                    or []
+                )
                 scored_ids = set(id(c) for c in straight_cards)
                 # Add any flush-subset cards not already in the straight set
                 flush_cards = _flush_scoring_cards(cards, smeared=smeared, four_fingers=True)
@@ -257,6 +261,12 @@ def _scoring_cards_for(
         return list(cards)
     if hand_name == "Straight":
         if four_fingers:
+            # All 5 cards score when they form a normal straight, even with
+            # Four Fingers active.  Only fall back to the 4-card window when
+            # the 5th card breaks the run.
+            five = _straight_scoring_cards(cards, four_fingers=False, shortcut=shortcut)
+            if five:
+                return five
             return _straight_scoring_cards(cards, four_fingers=True, shortcut=shortcut) or list(cards)
         return list(cards)
 

@@ -145,9 +145,11 @@ class PickFromBuffoonPack:
         if not any(c.get("set") == "JOKER" for c in cards):
             return None
 
-        # Can't pick jokers with full slots — skip the pack
+        # Can't pick jokers with full slots — unless a Negative joker is available
         if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
-            return PackAction(card_index=None, reason="skip buffoon pack (joker slots full)")
+            from balatro_bot.domain.policy.shop import _is_negative
+            if not any(_is_negative(c) for c in cards):
+                return PackAction(card_index=None, reason="skip buffoon pack (joker slots full)")
 
         owned_jokers = joker_slots.get("cards", [])
         hand_levels = state.get("hands", {})

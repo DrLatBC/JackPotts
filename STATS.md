@@ -1,42 +1,42 @@
-# Batch 069
+# Batch 080
 
 | Stat           | Value       |
 |----------------|-------------|
-| Games          |        1396 |
-| Wins           |   37 (2.7%) |
-| Stake          | WHITE ×1405 |
-| Avg Ante       |         4.5 |
-| Median Ante    |           4 |
+| Games          |        1238 |
+| Wins           |   46 (3.7%) |
+| Stake          | WHITE ×1248 |
+| Avg Ante       |         4.6 |
+| Median Ante    |           5 |
 | Max Ante       |          11 |
 | Avg Final $    |         $28 |
-| Median Final $ |         $29 |
-| Total Rounds   |       18350 |
-| Tarots Used    |        2651 |
-| Rerolls        |        6287 |
+| Median Final $ |         $30 |
+| Total Rounds   |       16868 |
+| Tarots Used    |        2459 |
+| Rerolls        |        6199 |
 
 ## Deaths by Ante
 
 | Ante | Deaths | Death % | Reached % |                        |
 |------|--------|---------|-----------|------------------------|
-|    1 |    112 |    8.0% |    100.0% | `████████████████████` |
-|    2 |     95 |    6.8% |     92.0% | `██████████████████░░` |
-|    3 |    177 |   12.7% |     85.2% | `█████████████████░░░` |
-|    4 |    324 |   23.2% |     72.5% | `██████████████░░░░░░` |
-|    5 |    330 |   23.6% |     49.3% | `██████████░░░░░░░░░░` |
-|    6 |    190 |   13.6% |     25.6% | `█████░░░░░░░░░░░░░░░` |
-|    7 |    100 |    7.2% |     12.0% | `██░░░░░░░░░░░░░░░░░░` |
-|    8 |     32 |    2.3% |      4.9% | `█░░░░░░░░░░░░░░░░░░░` |
-|    9 |     19 |    1.4% |      2.6% | `█░░░░░░░░░░░░░░░░░░░` |
-|   10 |     15 |    1.1% |      1.2% | `█░░░░░░░░░░░░░░░░░░░` |
-|   11 |      2 |    0.1% |      0.1% | `█░░░░░░░░░░░░░░░░░░░` |
+|    1 |     79 |    6.4% |    100.0% | `████████████████████` |
+|    2 |     88 |    7.1% |     93.6% | `███████████████████░` |
+|    3 |    143 |   11.6% |     86.5% | `█████████████████░░░` |
+|    4 |    289 |   23.3% |     75.0% | `███████████████░░░░░` |
+|    5 |    303 |   24.5% |     51.6% | `██████████░░░░░░░░░░` |
+|    6 |    168 |   13.6% |     27.1% | `█████░░░░░░░░░░░░░░░` |
+|    7 |     76 |    6.1% |     13.6% | `███░░░░░░░░░░░░░░░░░` |
+|    8 |     46 |    3.7% |      7.4% | `█░░░░░░░░░░░░░░░░░░░` |
+|    9 |     25 |    2.0% |      3.7% | `█░░░░░░░░░░░░░░░░░░░` |
+|   10 |     20 |    1.6% |      1.7% | `█░░░░░░░░░░░░░░░░░░░` |
+|   11 |      1 |    0.1% |      0.1% | `█░░░░░░░░░░░░░░░░░░░` |
 
 ## Deck Breakdown
 
 | Deck   | Games | Wins | Win% | Avg Ante | Median Ante |
 |--------|-------|------|------|----------|-------------|
-| RED    |   499 |    8 | 1.6% |      4.3 |           4 |
-| YELLOW |   465 |   19 | 4.1% |      4.4 |           4 |
-| BLUE   |   432 |   10 | 2.3% |      4.6 |           5 |
+| RED    |   457 |    7 | 1.5% |      4.4 |           4 |
+| YELLOW |   403 |   20 | 5.0% |      4.6 |           5 |
+| BLUE   |   378 |   19 | 5.0% |      4.8 |           5 |
 
 ## Killing Blind
 
@@ -44,165 +44,165 @@ What blind type ended each lost run.
 
 | Blind       | Deaths | % of Losses |
 |-------------|--------|-------------|
-| Small Blind |    209 |       15.4% |
-| Big Blind   |    397 |       29.2% |
-| Boss Blind  |    790 |       58.1% |
+| Small Blind |    168 |       14.1% |
+| Big Blind   |    357 |       29.9% |
+| Boss Blind  |    713 |       59.8% |
 
 ## Boss Blind Performance
 
 | Boss          | W   | L  | Total | Win%          |
 |---------------|-----|----|-------|---------------|
-| The Goad      | 361 | 38 |   399 |           90% |
-| The Window    | 348 | 31 |   379 |           92% |
-| The Hook      | 359 | 17 |   376 |           95% |
-| The Manacle   | 330 | 39 |   369 |           89% |
-| The Psychic   | 343 | 24 |   367 |           93% |
-| The Club      | 332 | 31 |   363 |           91% |
-| The Head      | 324 | 28 |   352 |           92% |
-| The Pillar    | 287 | 38 |   325 |           88% |
-| The Fish      | 234 | 19 |   253 |           92% |
-| The Water     | 194 | 54 |   248 |           78% |
-| The Wheel     | 221 | 20 |   241 |           92% |
-| The Flint     | 194 | 41 |   235 |           83% |
-| The House     | 215 | 19 |   234 |           92% |
-| The Needle    | 178 | 54 |   232 |           77% |
-| The Wall      | 143 | 82 |   225 |           64% |
-| The Arm       | 183 | 33 |   216 |           85% |
-| The Mouth     | 132 | 77 |   209 |           63% |
-| The Mark      | 195 | 14 |   209 |           93% |
-| The Tooth     | 136 | 16 |   152 |           89% |
-| The Eye       | 108 | 41 |   149 |           72% |
-| The Plant     |  76 | 28 |   104 |           73% |
-| The Serpent   |  37 | 16 |    53 |           70% |
-| The Ox        |  21 |  8 |    29 |           72% |
-| Crimson Heart |  12 |  8 |    20 |           60% |
-| Cerulean Bell |  14 |  0 |    14 |          100% |
-| Verdant Leaf  |   4 |  5 |     9 | 44% :warning: |
-| Amber Acorn   |   5 |  4 |     9 | 56% :warning: |
-| Violet Vessel |   3 |  5 |     8 | 38% :warning: |
+| The Psychic   | 328 | 28 |   356 |           92% |
+| The Club      | 326 | 29 |   355 |           92% |
+| The Window    | 330 | 22 |   352 |           94% |
+| The Hook      | 321 | 21 |   342 |           94% |
+| The Head      | 300 | 24 |   324 |           93% |
+| The Manacle   | 290 | 23 |   313 |           93% |
+| The Goad      | 281 | 22 |   303 |           93% |
+| The Pillar    | 266 | 37 |   303 |           88% |
+| The Needle    | 169 | 55 |   224 |           75% |
+| The Mouth     | 147 | 76 |   223 |           66% |
+| The Fish      | 201 | 17 |   218 |           92% |
+| The House     | 198 | 16 |   214 |           93% |
+| The Water     | 171 | 41 |   212 |           81% |
+| The Mark      | 196 | 15 |   211 |           93% |
+| The Wall      | 142 | 67 |   209 |           68% |
+| The Arm       | 170 | 27 |   197 |           86% |
+| The Flint     | 149 | 45 |   194 |           77% |
+| The Wheel     | 183 | 11 |   194 |           94% |
+| The Tooth     | 149 | 17 |   166 |           90% |
+| The Eye       | 120 | 38 |   158 |           76% |
+| The Plant     |  70 | 30 |   100 |           70% |
+| The Serpent   |  39 | 14 |    53 |           74% |
+| The Ox        |  19 |  5 |    24 |           79% |
+| Crimson Heart |  14 |  7 |    21 |           67% |
+| Cerulean Bell |  12 |  6 |    18 |           67% |
+| Violet Vessel |   5 | 12 |    17 | 29% :warning: |
+| Amber Acorn   |   9 |  4 |    13 |           69% |
+| Verdant Leaf  |   7 |  4 |    11 |           64% |
 
 ### Antes 1–3
 
 | Boss        | W   | L  | Total | Win%          |
 |-------------|-----|----|-------|---------------|
-| The Goad    | 235 | 19 |   254 |           93% |
-| The Window  | 241 | 12 |   253 |           95% |
-| The Hook    | 248 |  3 |   251 |           99% |
-| The Manacle | 222 | 23 |   245 |           91% |
-| The Psychic | 225 | 12 |   237 |           95% |
-| The Head    | 223 | 13 |   236 |           94% |
-| The Club    | 214 | 14 |   228 |           94% |
-| The Pillar  | 196 | 19 |   215 |           91% |
-| The Flint   |  87 |  9 |    96 |           91% |
-| The Water   |  77 | 19 |    96 |           80% |
-| The Needle  |  78 | 17 |    95 |           82% |
-| The Wall    |  67 | 19 |    86 |           78% |
-| The Wheel   |  80 |  5 |    85 |           94% |
-| The Mouth   |  53 | 31 |    84 |           63% |
-| The Fish    |  82 |  1 |    83 |           99% |
-| The House   |  79 |  2 |    81 |           98% |
-| The Mark    |  74 |  2 |    76 |           97% |
-| The Arm     |  62 |  5 |    67 |           93% |
-| The Tooth   |   3 |  3 |     6 | 50% :warning: |
-| The Eye     |   1 |  3 |     4 | 25% :warning: |
+| The Club    | 244 | 11 |   255 |           96% |
+| The Psychic | 225 | 14 |   239 |           94% |
+| The Window  | 220 |  8 |   228 |           96% |
+| The Hook    | 212 |  6 |   218 |           97% |
+| The Manacle | 195 | 13 |   208 |           94% |
+| The Head    | 196 | 11 |   207 |           95% |
+| The Goad    | 190 | 10 |   200 |           95% |
+| The Pillar  | 173 | 16 |   189 |           92% |
+| The Needle  |  71 | 16 |    87 |           82% |
+| The Water   |  70 | 14 |    84 |           83% |
+| The Mouth   |  53 | 26 |    79 |           67% |
+| The Mark    |  74 |  4 |    78 |           95% |
+| The Wall    |  59 | 17 |    76 |           78% |
+| The Fish    |  74 |  2 |    76 |           97% |
+| The House   |  68 |  3 |    71 |           96% |
+| The Wheel   |  64 |  4 |    68 |           94% |
+| The Flint   |  60 |  7 |    67 |           90% |
+| The Arm     |  47 |  6 |    53 |           89% |
+| The Eye     |   1 |  5 |     6 | 17% :warning: |
+| The Tooth   |   0 |  4 |     4 |  0% :warning: |
 
 ### Antes 4–6
 
 | Boss        | W   | L  | Total | Win%          |
 |-------------|-----|----|-------|---------------|
-| The Water   | 111 | 34 |   145 |           77% |
-| The Fish    | 129 | 15 |   144 |           90% |
-| The Wheel   | 126 | 14 |   140 |           90% |
-| The Arm     | 114 | 26 |   140 |           81% |
-| The House   | 125 | 13 |   138 |           91% |
-| The Tooth   | 122 | 13 |   135 |           90% |
-| The Eye     |  99 | 34 |   133 |           74% |
-| The Goad    | 113 | 16 |   129 |           88% |
-| The Wall    |  72 | 56 |   128 | 56% :warning: |
-| The Flint   | 100 | 27 |   127 |           79% |
-| The Club    | 106 | 16 |   122 |           87% |
-| The Needle  |  91 | 31 |   122 |           75% |
-| The Psychic | 106 | 12 |   118 |           90% |
-| The Manacle | 100 | 15 |   115 |           87% |
-| The Window  |  99 | 16 |   115 |           86% |
-| The Mouth   |  70 | 42 |   112 |           62% |
-| The Mark    | 100 | 12 |   112 |           89% |
-| The Hook    |  96 | 13 |   109 |           88% |
-| The Pillar  |  87 | 17 |   104 |           84% |
-| The Head    |  90 | 13 |   103 |           87% |
-| The Plant   |  59 | 20 |    79 |           75% |
-| The Serpent |  26 | 12 |    38 |           68% |
-| The Ox      |   3 |  5 |     8 | 38% :warning: |
+| The Tooth   | 132 | 11 |   143 |           92% |
+| The Eye     | 110 | 30 |   140 |           79% |
+| The Mouth   |  84 | 48 |   132 |           64% |
+| The Fish    | 118 | 12 |   130 |           91% |
+| The House   | 112 | 12 |   124 |           90% |
+| The Arm     | 105 | 19 |   124 |           85% |
+| The Needle  |  87 | 35 |   122 |           71% |
+| The Wall    |  74 | 46 |   120 |           62% |
+| The Mark    | 109 |  9 |   118 |           92% |
+| The Wheel   | 109 |  7 |   116 |           94% |
+| The Window  | 101 | 12 |   113 |           89% |
+| The Flint   |  77 | 36 |   113 |           68% |
+| The Hook    |  96 | 15 |   111 |           86% |
+| The Water   |  89 | 21 |   110 |           81% |
+| The Psychic |  91 | 13 |   104 |           88% |
+| The Head    |  90 | 11 |   101 |           89% |
+| The Pillar  |  82 | 18 |   100 |           82% |
+| The Manacle |  84 | 10 |    94 |           89% |
+| The Goad    |  82 | 10 |    92 |           89% |
+| The Club    |  69 | 15 |    84 |           82% |
+| The Plant   |  60 | 21 |    81 |           74% |
+| The Serpent |  20 | 11 |    31 |           65% |
+| The Ox      |   1 |  3 |     4 | 25% :warning: |
 
 ### Antes 7+
 
-| Boss          | W  | L | Total | Win%          |
-|---------------|----|---|-------|---------------|
-| The Fish      | 23 | 3 |    26 |           88% |
-| The Plant     | 17 | 8 |    25 |           68% |
-| The Mark      | 21 | 0 |    21 |          100% |
-| The Ox        | 18 | 3 |    21 |           86% |
-| Crimson Heart | 12 | 8 |    20 |           60% |
-| The Wheel     | 15 | 1 |    16 |           94% |
-| The Hook      | 15 | 1 |    16 |           94% |
-| The Goad      | 13 | 3 |    16 |           81% |
-| The House     | 11 | 4 |    15 |           73% |
-| The Needle    |  9 | 6 |    15 |           60% |
-| The Serpent   | 11 | 4 |    15 |           73% |
-| Cerulean Bell | 14 | 0 |    14 |          100% |
-| The Head      | 11 | 2 |    13 |           85% |
-| The Club      | 12 | 1 |    13 |           92% |
-| The Mouth     |  9 | 4 |    13 |           69% |
-| The Flint     |  7 | 5 |    12 | 58% :warning: |
-| The Eye       |  8 | 4 |    12 |           67% |
-| The Psychic   | 12 | 0 |    12 |          100% |
-| The Window    |  8 | 3 |    11 |           73% |
-| The Wall      |  4 | 7 |    11 | 36% :warning: |
-| The Tooth     | 11 | 0 |    11 |          100% |
-| The Manacle   |  8 | 1 |     9 |           89% |
-| The Arm       |  7 | 2 |     9 |           78% |
-| Verdant Leaf  |  4 | 5 |     9 | 44% :warning: |
-| Amber Acorn   |  5 | 4 |     9 | 56% :warning: |
-| Violet Vessel |  3 | 5 |     8 | 38% :warning: |
-| The Water     |  6 | 1 |     7 |           86% |
-| The Pillar    |  4 | 2 |     6 |           67% |
+| Boss          | W  | L  | Total | Win%          |
+|---------------|----|----|-------|---------------|
+| The Serpent   | 19 |  3 |    22 |           86% |
+| Crimson Heart | 14 |  7 |    21 |           67% |
+| The Arm       | 18 |  2 |    20 |           90% |
+| The Ox        | 18 |  2 |    20 |           90% |
+| The House     | 18 |  1 |    19 |           95% |
+| The Tooth     | 17 |  2 |    19 |           89% |
+| The Plant     | 10 |  9 |    19 | 53% :warning: |
+| The Water     | 12 |  6 |    18 |           67% |
+| Cerulean Bell | 12 |  6 |    18 |           67% |
+| Violet Vessel |  5 | 12 |    17 | 29% :warning: |
+| The Head      | 14 |  2 |    16 |           88% |
+| The Club      | 13 |  3 |    16 |           81% |
+| The Needle    | 11 |  4 |    15 |           73% |
+| The Mark      | 13 |  2 |    15 |           87% |
+| The Flint     | 12 |  2 |    14 |           86% |
+| The Pillar    | 11 |  3 |    14 |           79% |
+| The Wall      |  9 |  4 |    13 |           69% |
+| The Psychic   | 12 |  1 |    13 |           92% |
+| The Hook      | 13 |  0 |    13 |          100% |
+| Amber Acorn   |  9 |  4 |    13 |           69% |
+| The Eye       |  9 |  3 |    12 |           75% |
+| The Fish      |  9 |  3 |    12 |           75% |
+| The Mouth     | 10 |  2 |    12 |           83% |
+| Verdant Leaf  |  7 |  4 |    11 |           64% |
+| The Window    |  9 |  2 |    11 |           82% |
+| The Goad      |  9 |  2 |    11 |           82% |
+| The Manacle   | 11 |  0 |    11 |          100% |
+| The Wheel     | 10 |  0 |    10 |          100% |
 
 ## Close Calls by Blind
 
 | Blind       | Close Wins | Total Wins | Close % |
 |-------------|------------|------------|---------|
-| Small Blind |       1890 |       6184 |   30.6% |
-| Big Blind   |       1615 |       5781 |   27.9% |
-| The Goad    |        121 |        361 |   33.5% |
-| The Window  |        114 |        348 |   32.8% |
-| The Head    |        107 |        324 |   33.0% |
-| The Manacle |        102 |        330 |   30.9% |
-| The Psychic |         97 |        343 |   28.3% |
-| The Club    |         94 |        332 |   28.3% |
-| The Hook    |         87 |        359 |   24.2% |
-| The Pillar  |         78 |        287 |   27.2% |
-| The Fish    |         75 |        234 |   32.1% |
-| The House   |         73 |        215 |   34.0% |
-| The Water   |         67 |        194 |   34.5% |
-| The Flint   |         65 |        194 |   33.5% |
-| The Arm     |         63 |        183 |   34.4% |
+| Small Blind |       1825 |       5689 |   32.1% |
+| Big Blind   |       1477 |       5329 |   27.7% |
+| The Window  |         97 |        330 |   29.4% |
+| The Head    |         94 |        300 |   31.3% |
+| The Club    |         93 |        326 |   28.5% |
+| The Manacle |         87 |        290 |   30.0% |
+| The Pillar  |         85 |        266 |   32.0% |
+| The Hook    |         85 |        321 |   26.5% |
+| The Psychic |         84 |        328 |   25.6% |
+| The Goad    |         70 |        281 |   24.9% |
+| The Wall    |         66 |        142 |   46.5% |
+| The Fish    |         61 |        201 |   30.3% |
+| The House   |         60 |        198 |   30.3% |
+| The Mark    |         58 |        196 |   29.6% |
+| The Water   |         56 |        171 |   32.7% |
 
 ## Round Efficiency
 
 | Metric                    | Value                           |
 |---------------------------|---------------------------------|
-| One-shot rate             |              6230/16954 (36.7%) |
+| One-shot rate             |              5635/15630 (36.1%) |
 | Avg hands/round           |                             2.1 |
-| Close calls (<15% margin) |                    5039 (29.7%) |
-| Over interest cap ($30+)  |             29135/51326 (56.8%) |
-| Pack pick rate            | 14926 picks / 816 skips (94.8%) |
+| Close calls (<15% margin) |                    4709 (30.1%) |
+| Over interest cap ($30+)  |             28268/48151 (58.7%) |
+| Pack pick rate            | 13991 picks / 802 skips (94.6%) |
 
 ### Desperation & Tarot Survival
 
 | Scenario               | Outcome    | Win%  |
 |------------------------|------------|-------|
-| Desperation plays      |  16W / 54L | 22.9% |
-| Tarot used (desperate) | 239W / 75L | 76.1% |
+| Desperation plays      |  15W / 50L | 23.1% |
+| Tarot used (desperate) | 282W / 86L | 76.6% |
 
 ### Scoring Headroom by Ante
 
@@ -210,33 +210,33 @@ Average (scored / needed) and hands used for won rounds.
 
 | Ante | Overkill | Avg Hands | Rounds |
 |------|----------|-----------|--------|
-|    1 |     1.5x |       1.8 |   2766 |
-|    2 |     2.1x |       1.8 |   3857 |
-|    3 |     1.9x |       1.9 |   3625 |
-|    4 |     1.6x |       2.3 |   2994 |
-|    5 |     1.4x |       2.7 |   1939 |
-|    6 |     1.5x |       2.9 |    992 |
-|    7 |     1.5x |       3.1 |    458 |
-|    8 |     1.4x |       3.1 |    231 |
-|    9 |     1.5x |       3.2 |     61 |
-|   10 |     1.4x |       3.2 |     29 |
-|   11 |     1.1x |       3.5 |      2 |
+|    1 |     1.5x |       1.8 |   2461 |
+|    2 |     2.1x |       1.8 |   3515 |
+|    3 |     1.8x |       1.8 |   3269 |
+|    4 |     1.5x |       2.3 |   2740 |
+|    5 |     1.4x |       2.8 |   1798 |
+|    6 |     1.4x |       3.0 |    950 |
+|    7 |     1.5x |       3.1 |    474 |
+|    8 |     1.4x |       3.2 |    312 |
+|    9 |     1.7x |       3.3 |     80 |
+|   10 |     2.0x |       3.3 |     30 |
+|   11 |     1.2x |       4.0 |      1 |
 
 ## Hand Types Played
 
 | Hand Type       | Count | %     |
 |-----------------|-------|-------|
-| Two Pair        |  8720 | 22.5% |
-| Pair            |  8705 | 22.4% |
-| Flush           |  7012 | 18.1% |
-| Straight        |  5457 | 14.1% |
-| Full House      |  3500 |  9.0% |
-| High Card       |  2655 |  6.8% |
-| Three of a Kind |  2252 |  5.8% |
-| Straight Flush  |   273 |  0.7% |
-| Four of a Kind  |   213 |  0.5% |
-| Flush House     |    21 |  0.1% |
-| Five of a Kind  |     3 |  0.0% |
+| Two Pair        |  8159 | 22.8% |
+| Pair            |  7841 | 21.9% |
+| Flush           |  6254 | 17.5% |
+| Straight        |  5019 | 14.0% |
+| Full House      |  3369 |  9.4% |
+| High Card       |  2450 |  6.9% |
+| Three of a Kind |  2055 |  5.7% |
+| Straight Flush  |   371 |  1.0% |
+| Four of a Kind  |   212 |  0.6% |
+| Flush House     |     9 |  0.0% |
+| Five of a Kind  |     1 |  0.0% |
 
 ## Hand Types by Ante Band
 
@@ -244,48 +244,47 @@ Average (scored / needed) and hands used for won rounds.
 
 | Hand Type       | Count | %     |
 |-----------------|-------|-------|
-| Two Pair        |  4869 | 24.0% |
-| Flush           |  4080 | 20.1% |
-| Pair            |  3313 | 16.3% |
-| Straight        |  3171 | 15.6% |
-| Full House      |  2268 | 11.2% |
-| Three of a Kind |  1255 |  6.2% |
-| High Card       |  1093 |  5.4% |
-| Four of a Kind  |   124 |  0.6% |
-| Straight Flush  |   107 |  0.5% |
-| Flush House     |     5 |  0.0% |
-| Five of a Kind  |     1 |  0.0% |
+| Two Pair        |  4295 | 23.8% |
+| Flush           |  3642 | 20.2% |
+| Pair            |  2839 | 15.8% |
+| Straight        |  2807 | 15.6% |
+| Full House      |  2070 | 11.5% |
+| Three of a Kind |  1076 |  6.0% |
+| High Card       |  1026 |  5.7% |
+| Straight Flush  |   134 |  0.7% |
+| Four of a Kind  |   123 |  0.7% |
+| Flush House     |     4 |  0.0% |
 
 ### Antes 4–6
 
 | Hand Type       | Count | %     |
 |-----------------|-------|-------|
-| Pair            |  4382 | 27.3% |
-| Two Pair        |  3365 | 21.0% |
-| Flush           |  2652 | 16.5% |
-| Straight        |  1990 | 12.4% |
-| High Card       |  1354 |  8.4% |
-| Full House      |  1140 |  7.1% |
-| Three of a Kind |   915 |  5.7% |
-| Straight Flush  |   142 |  0.9% |
-| Four of a Kind  |    80 |  0.5% |
-| Flush House     |    12 |  0.1% |
-| Five of a Kind  |     2 |  0.0% |
+| Pair            |  3979 | 26.8% |
+| Two Pair        |  3276 | 22.0% |
+| Flush           |  2261 | 15.2% |
+| Straight        |  1897 | 12.8% |
+| Full House      |  1160 |  7.8% |
+| High Card       |  1157 |  7.8% |
+| Three of a Kind |   846 |  5.7% |
+| Straight Flush  |   201 |  1.4% |
+| Four of a Kind  |    83 |  0.6% |
+| Flush House     |     4 |  0.0% |
+| Five of a Kind  |     1 |  0.0% |
 
 ### Antes 7+
 
 | Hand Type       | Count | %     |
 |-----------------|-------|-------|
-| Pair            |  1010 | 40.5% |
-| Two Pair        |   486 | 19.5% |
-| Straight        |   296 | 11.9% |
-| Flush           |   280 | 11.2% |
-| High Card       |   208 |  8.4% |
-| Full House      |    92 |  3.7% |
-| Three of a Kind |    82 |  3.3% |
-| Straight Flush  |    24 |  1.0% |
-| Four of a Kind  |     9 |  0.4% |
-| Flush House     |     4 |  0.2% |
+| Pair            |  1023 | 35.8% |
+| Two Pair        |   588 | 20.6% |
+| Flush           |   351 | 12.3% |
+| Straight        |   315 | 11.0% |
+| High Card       |   267 |  9.3% |
+| Full House      |   139 |  4.9% |
+| Three of a Kind |   133 |  4.7% |
+| Straight Flush  |    36 |  1.3% |
+| Four of a Kind  |     6 |  0.2% |
+| Flush House     |     1 |  0.0% |
 
 ## Consumable Purchases
 
@@ -293,114 +292,231 @@ Average (scored / needed) and hands used for won rounds.
 
 | Planet  | Count |
 |---------|-------|
-| Earth   |   530 |
-| Neptune |   522 |
-| Venus   |   450 |
-| Mercury |   434 |
-| Uranus  |   402 |
-| Saturn  |   310 |
-| Pluto   |   296 |
-| Jupiter |   264 |
-| Mars    |   174 |
+| Earth   |   492 |
+| Neptune |   416 |
+| Mercury |   398 |
+| Venus   |   390 |
+| Uranus  |   334 |
+| Jupiter |   280 |
+| Pluto   |   256 |
+| Saturn  |   226 |
+| Mars    |   202 |
+| Ceres   |     2 |
 
 ### Tarots & Spectrals
 
-| Card               | Count |
-|--------------------|-------|
-| Death              |   618 |
-| Strength           |   588 |
-| The World          |   578 |
-| The Empress        |   572 |
-| The Lovers         |   566 |
-| The Moon           |   564 |
-| The High Priestess |   564 |
-| The Chariot        |   556 |
-| The Devil          |   554 |
-| The Hanged Man     |   552 |
-| Temperance         |   550 |
-| The Emperor        |   548 |
-| Justice            |   540 |
-| The Sun            |   540 |
-| The Fool           |   534 |
+| Card                 | Count |
+|----------------------|-------|
+| The Hermit           |   556 |
+| The Magician         |   546 |
+| Justice              |   546 |
+| The Star             |   542 |
+| The Devil            |   538 |
+| Death                |   532 |
+| The Empress          |   530 |
+| The High Priestess   |   526 |
+| The Moon             |   522 |
+| The Chariot          |   508 |
+| The Lovers           |   504 |
+| The Tower            |   500 |
+| Temperance           |   490 |
+| The Fool             |   486 |
+| Strength             |   484 |
+| The World            |   478 |
+| The Emperor          |   478 |
+| The Wheel of Fortune |   468 |
+| The Hanged Man       |   460 |
+| The Sun              |   448 |
+| Judgement            |   158 |
 
 ## Voucher Purchases
 
 | Voucher        | Count |
 |----------------|-------|
-| Clearance Sale |   163 |
-| Wasteful       |   161 |
-| Crystal Ball   |   150 |
-| Hieroglyph     |   144 |
-| Grabber        |   141 |
-| Paint Brush    |   141 |
-| Seed Money     |   132 |
-| Nacho Tong     |    15 |
-| Recyclomancy   |    12 |
-| Money Tree     |    11 |
+| Wasteful       |   142 |
+| Paint Brush    |   136 |
+| Hieroglyph     |   135 |
+| Seed Money     |   134 |
+| Crystal Ball   |   130 |
+| Clearance Sale |   130 |
+| Grabber        |   128 |
+| Recyclomancy   |    14 |
+| Nacho Tong     |    13 |
+| Money Tree     |    12 |
 
 ## Joker Categories
 
 ### All Purchases
 
-| Joker          | Bought |
-|----------------|--------|
-| Photograph     |    264 |
-| Half Joker     |    213 |
-| Popcorn        |    191 |
-| Gros Michel    |    183 |
-| Blue Joker     |    168 |
-| Abstract Joker |    166 |
-| Zany Joker     |    159 |
-| Devious Joker  |    155 |
-| Splash         |    145 |
-| Blackboard     |    143 |
-| Mystic Summit  |    141 |
-| Ice Cream      |    139 |
-| Hallucination  |    139 |
-| Crazy Joker    |    136 |
-| Crafty Joker   |    135 |
+| Joker                 | Bought |
+|-----------------------|--------|
+| Photograph            |    245 |
+| Half Joker            |    185 |
+| Popcorn               |    169 |
+| Splash                |    163 |
+| Gros Michel           |    155 |
+| Blue Joker            |    143 |
+| Wily Joker            |    132 |
+| Crazy Joker           |    132 |
+| Abstract Joker        |    132 |
+| Devious Joker         |    131 |
+| Flower Pot            |    128 |
+| Zany Joker            |    125 |
+| Hallucination         |    124 |
+| Droll Joker           |    123 |
+| 8 Ball                |    122 |
+| Acrobat               |    122 |
+| Ice Cream             |    122 |
+| Mystic Summit         |    120 |
+| Sly Joker             |    118 |
+| Even Steven           |    116 |
+| Swashbuckler          |    115 |
+| Loyalty Card          |    115 |
+| Misprint              |    114 |
+| Mad Joker             |    113 |
+| Blackboard            |    109 |
+| Joker                 |    108 |
+| Scholar               |    103 |
+| Walkie Talkie         |    102 |
+| Jolly Joker           |    102 |
+| Card Sharp            |    102 |
+| Crafty Joker          |    100 |
+| Ramen                 |    100 |
+| Green Joker           |     99 |
+| Smiley Face           |     99 |
+| Supernova             |     98 |
+| Clever Joker          |     97 |
+| Hanging Chad          |     97 |
+| Square Joker          |     96 |
+| Greedy Joker          |     96 |
+| Superposition         |     95 |
+| Juggler               |     94 |
+| Drunkard              |     94 |
+| Odd Todd              |     94 |
+| Smeared Joker         |     94 |
+| Scary Face            |     90 |
+| Lusty Joker           |     90 |
+| Riff-raff             |     89 |
+| Gluttonous Joker      |     85 |
+| Driver's License      |     85 |
+| Four Fingers          |     83 |
+| The Order             |     83 |
+| Wrathful Joker        |     82 |
+| Ancient Joker         |     82 |
+| Ride the Bus          |     81 |
+| Baseball Card         |     80 |
+| The Family            |     78 |
+| Mr. Bones             |     74 |
+| Baron                 |     72 |
+| Banner                |     71 |
+| Space Joker           |     68 |
+| Shortcut              |     66 |
+| Cartomancer           |     62 |
+| Joker Stencil         |     61 |
+| Turtle Bean           |     61 |
+| Fortune Teller        |     58 |
+| Pareidolia            |     56 |
+| Hack                  |     54 |
+| Constellation         |     51 |
+| Seltzer               |     49 |
+| Bull                  |     44 |
+| Oops! All 6s          |     43 |
+| Mime                  |     39 |
+| Dusk                  |     38 |
+| Sock and Buskin       |     37 |
+| Hiker                 |     35 |
+| Showman               |     34 |
+| Luchador              |     34 |
+| Campfire              |     34 |
+| Marble Joker          |     32 |
+| Troubadour            |     32 |
+| Diet Cola             |     32 |
+| Seance                |     31 |
+| Runner                |     30 |
+| Midas Mask            |     29 |
+| Fibonacci             |     29 |
+| Sixth Sense           |     29 |
+| Burglar               |     28 |
+| Madness               |     27 |
+| Vagabond              |     27 |
+| Delayed Gratification |     24 |
+| Spare Trousers        |     24 |
+| Steel Joker           |     23 |
+| Burnt Joker           |     21 |
+| DNA                   |     21 |
+| Invisible Joker       |     21 |
+| Raised Fist           |     21 |
+| Red Card              |     20 |
+| Obelisk               |     20 |
+| Business Card         |     19 |
+| Credit Card           |     18 |
+| Throwback             |     18 |
+| To Do List            |     17 |
+| Golden Joker          |     17 |
+| Cavendish             |     15 |
+| Erosion               |     14 |
+| Chaos the Clown       |     14 |
+| Egg                   |     14 |
+| Mail-In Rebate        |     13 |
+| Vampire               |     12 |
+| Faceless Joker        |     12 |
+| Reserved Parking      |     12 |
+| Castle                |     11 |
+| Trading Card          |     11 |
+| Flash Card            |     10 |
+| Ceremonial Dagger     |      9 |
+| Hologram              |      8 |
+| Wee Joker             |      7 |
+| Blueprint             |      7 |
+| Matador               |      6 |
+| Cloud 9               |      6 |
+| To the Moon           |      5 |
+| Gift Card             |      4 |
+| Rocket                |      4 |
+| Lucky Cat             |      3 |
+| Stone Joker           |      2 |
 
-### xMult Jokers (751 bought)
+### xMult Jokers (728 bought)
 
 | Joker         | Count |
 |---------------|-------|
-| Blackboard    |   143 |
-| Flower Pot    |   125 |
-| Acrobat       |   112 |
-| The Order     |    84 |
-| The Family    |    72 |
-| Joker Stencil |    57 |
-| Constellation |    54 |
-| Campfire      |    33 |
-| Madness       |    33 |
+| Flower Pot    |   128 |
+| Acrobat       |   122 |
+| Blackboard    |   109 |
+| The Order     |    83 |
+| The Family    |    78 |
+| Joker Stencil |    61 |
+| Constellation |    51 |
+| Campfire      |    34 |
+| Madness       |    27 |
 | Cavendish     |    15 |
-| Vampire       |    13 |
-| Hologram      |    10 |
+| Vampire       |    12 |
+| Hologram      |     8 |
 
-### Utility Jokers (1529 bought)
+### Utility Jokers (1415 bought)
 
 | Joker           | Count |
 |-----------------|-------|
-| Splash          |   145 |
-| Hallucination   |   139 |
-| 8 Ball          |   135 |
-| Four Fingers    |   111 |
-| Drunkard        |   100 |
-| Mr. Bones       |    98 |
-| Juggler         |    98 |
-| Pareidolia      |    87 |
-| Space Joker     |    82 |
-| Shortcut        |    76 |
-| Cartomancer     |    76 |
-| Smeared Joker   |    74 |
-| Turtle Bean     |    65 |
-| Oops! All 6s    |    61 |
-| Hack            |    47 |
-| Luchador        |    38 |
-| Diet Cola       |    35 |
-| Invisible Joker |    31 |
+| Splash          |   163 |
+| Hallucination   |   124 |
+| 8 Ball          |   122 |
+| Juggler         |    94 |
+| Drunkard        |    94 |
+| Smeared Joker   |    94 |
+| Four Fingers    |    83 |
+| Mr. Bones       |    74 |
+| Space Joker     |    68 |
+| Shortcut        |    66 |
+| Cartomancer     |    62 |
+| Turtle Bean     |    61 |
+| Pareidolia      |    56 |
+| Hack            |    54 |
+| Seltzer         |    49 |
+| Oops! All 6s    |    43 |
+| Luchador        |    34 |
+| Diet Cola       |    32 |
 | Burnt Joker     |    21 |
-| Seltzer         |    10 |
+| Invisible Joker |    21 |
 
 ## Joker Acquisition Timing
 
@@ -408,41 +524,41 @@ Average ante at first acquisition (top jokers by purchase count).
 
 | Joker          | Avg Ante | Count |
 |----------------|----------|-------|
-| Photograph     |      3.3 |   264 |
-| Half Joker     |      2.7 |   209 |
-| Popcorn        |      2.4 |   184 |
-| Gros Michel    |      2.3 |   183 |
-| Blue Joker     |      2.4 |   167 |
-| Abstract Joker |      2.5 |   166 |
-| Zany Joker     |      2.1 |   159 |
-| Devious Joker  |      2.0 |   154 |
-| Splash         |      2.5 |   144 |
-| Blackboard     |      3.2 |   143 |
-| Mystic Summit  |      2.1 |   141 |
-| Ice Cream      |      2.4 |   139 |
-| Hallucination  |      2.2 |   139 |
-| Crazy Joker    |      2.2 |   136 |
-| Crafty Joker   |      2.1 |   135 |
+| Photograph     |      3.3 |   244 |
+| Half Joker     |      2.7 |   183 |
+| Popcorn        |      2.6 |   165 |
+| Splash         |      2.6 |   161 |
+| Gros Michel    |      2.4 |   155 |
+| Blue Joker     |      2.4 |   143 |
+| Wily Joker     |      2.6 |   131 |
+| Crazy Joker    |      2.3 |   130 |
+| Abstract Joker |      2.5 |   132 |
+| Devious Joker  |      2.2 |   130 |
+| Flower Pot     |      3.4 |   127 |
+| Zany Joker     |      2.2 |   125 |
+| Hallucination  |      2.2 |   124 |
+| Droll Joker    |      2.1 |   122 |
+| 8 Ball         |      2.6 |   121 |
 
 ## Joker Sells
 
 | Joker            | Sold | Upgrade | Proactive |
 |------------------|------|---------|-----------|
-| Joker            |   76 |      76 |         0 |
-| Lusty Joker      |   68 |      68 |         0 |
-| Odd Todd         |   66 |      66 |         0 |
-| Even Steven      |   61 |      61 |         0 |
-| Scary Face       |   60 |      60 |         0 |
-| Smiley Face      |   60 |      60 |         0 |
-| Walkie Talkie    |   60 |      60 |         0 |
-| Gluttonous Joker |   58 |      58 |         0 |
-| Greedy Joker     |   57 |      57 |         0 |
-| Scholar          |   54 |      54 |         0 |
-| Wrathful Joker   |   52 |      52 |         0 |
-| Jolly Joker      |   51 |      51 |         0 |
-| Sly Joker        |   51 |      51 |         0 |
-| Swashbuckler     |   49 |      49 |         0 |
-| Hanging Chad     |   46 |      46 |         0 |
+| Even Steven      |   71 |      71 |         0 |
+| Sly Joker        |   65 |      62 |         3 |
+| Scary Face       |   62 |      62 |         0 |
+| Joker            |   61 |      61 |         0 |
+| Odd Todd         |   59 |      58 |         1 |
+| Lusty Joker      |   58 |      57 |         1 |
+| Greedy Joker     |   57 |      56 |         1 |
+| Wrathful Joker   |   53 |      53 |         0 |
+| Smiley Face      |   53 |      52 |         1 |
+| Mad Joker        |   52 |      51 |         1 |
+| Misprint         |   52 |      50 |         2 |
+| Gluttonous Joker |   50 |      48 |         2 |
+| Scholar          |   50 |      49 |         1 |
+| Walkie Talkie    |   49 |      48 |         1 |
+| Supernova        |   48 |      48 |         0 |
 
 ## Scaling Joker Values at End of Game
 
@@ -450,283 +566,286 @@ Average accumulated value from last Roster line, split by outcome.
 
 | Joker             | Avg (Wins) | Avg (Losses) | Games |
 |-------------------|------------|--------------|-------|
-| Photograph        |        2.0 |          2.0 |   208 |
-| Half Joker        |       20.0 |         20.0 |   176 |
-| Blue Joker        |       96.0 |        101.7 |   154 |
-| Mystic Summit     |       15.0 |         15.0 |   143 |
-| Abstract Joker    |       15.0 |         15.1 |   139 |
-| Blackboard        |        3.0 |          3.0 |   132 |
-| Zany Joker        |          — |         12.0 |   124 |
-| Devious Joker     |      100.0 |        100.0 |   120 |
-| Ice Cream         |       75.0 |         51.7 |   110 |
-| Crazy Joker       |       12.0 |         12.0 |   103 |
-| Droll Joker       |          — |         10.0 |   103 |
-| Flower Pot        |        3.0 |          3.0 |   102 |
-| Wily Joker        |          — |        100.0 |    93 |
-| Ramen             |        1.6 |          1.9 |    92 |
-| Card Sharp        |        3.0 |          3.0 |    90 |
-| Crafty Joker      |          — |         80.0 |    88 |
-| Clever Joker      |       80.0 |         80.0 |    88 |
-| Jolly Joker       |        8.0 |          8.0 |    87 |
-| Swashbuckler      |       13.0 |          9.6 |    87 |
-| Mad Joker         |          — |         10.0 |    86 |
-| Green Joker       |       46.1 |         25.8 |    86 |
-| Acrobat           |        3.0 |          3.0 |    84 |
-| Sly Joker         |          — |         50.0 |    83 |
-| Baseball Card     |        1.5 |          1.5 |    75 |
-| Smiley Face       |          — |          5.0 |    72 |
-| Loyalty Card      |        4.0 |          4.0 |    72 |
-| Ancient Joker     |        1.5 |          1.5 |    71 |
-| Popcorn           |          — |          9.0 |    70 |
-| Joker             |          — |          4.0 |    69 |
-| The Order         |        3.0 |          3.0 |    64 |
-| Banner            |       30.0 |         30.0 |    64 |
-| Scholar           |          — |          4.0 |    60 |
-| Gros Michel       |          — |         15.0 |    58 |
-| Baron             |        1.5 |          1.5 |    56 |
-| Walkie Talkie     |          — |          4.0 |    55 |
-| s License         |        3.0 |          3.0 |    52 |
-| Gluttonous Joker  |          — |          3.0 |    51 |
-| Lusty Joker       |          — |          3.0 |    51 |
-| Greedy Joker      |        3.0 |          3.0 |    51 |
-| Constellation     |        3.6 |          1.8 |    50 |
-| Wrathful Joker    |          — |          3.0 |    49 |
-| Ride the Bus      |          — |          7.5 |    47 |
-| The Family        |        4.0 |          4.0 |    45 |
+| Photograph        |        2.0 |          2.0 |   206 |
+| Half Joker        |       20.0 |         20.0 |   159 |
+| Mystic Summit     |       15.0 |         15.0 |   121 |
+| Blue Joker        |      101.0 |        102.0 |   121 |
+| Abstract Joker    |       16.0 |         15.2 |   117 |
+| Flower Pot        |        3.0 |          3.0 |   103 |
+| Devious Joker     |          — |        100.0 |   101 |
+| Blackboard        |        3.0 |          3.0 |    99 |
+| Acrobat           |        3.0 |          3.0 |    99 |
+| Zany Joker        |          — |         12.0 |    96 |
+| Ramen             |        1.7 |          1.9 |    93 |
+| Card Sharp        |        3.0 |          3.0 |    92 |
+| Wily Joker        |          — |        100.0 |    88 |
+| Crazy Joker       |          — |         12.0 |    88 |
+| Droll Joker       |       10.0 |         10.0 |    86 |
+| Green Joker       |       63.2 |         25.2 |    86 |
+| Loyalty Card      |        4.0 |          4.0 |    83 |
+| Swashbuckler      |       11.0 |         10.4 |    83 |
+| Ice Cream         |          — |         46.5 |    82 |
+| Mad Joker         |          — |         10.0 |    73 |
+| Sly Joker         |       50.0 |         50.0 |    73 |
+| Baseball Card     |        1.5 |          1.5 |    72 |
+| Jolly Joker       |        8.0 |          8.0 |    70 |
+| Clever Joker      |          — |         80.0 |    66 |
+| Square Joker      |        4.0 |          4.0 |    66 |
+| Popcorn           |          — |          9.8 |    61 |
+| s License         |        3.0 |          3.0 |    60 |
+| The Order         |        3.0 |          3.0 |    60 |
+| Ancient Joker     |        1.5 |          1.5 |    59 |
+| Crafty Joker      |          — |         80.0 |    58 |
+| Scholar           |          — |          4.0 |    58 |
+| Walkie Talkie     |        4.0 |          4.0 |    58 |
+| The Family        |        4.0 |          4.0 |    57 |
+| Banner            |       30.0 |         30.0 |    56 |
+| Even Steven       |          — |          4.0 |    51 |
+| Constellation     |        3.0 |          1.7 |    49 |
+| Smiley Face       |        5.0 |          5.0 |    49 |
+| Joker             |          — |          4.0 |    48 |
+| Lusty Joker       |        3.0 |          3.0 |    47 |
+| Baron             |        1.5 |          1.5 |    46 |
+| Odd Todd          |       31.0 |         31.0 |    46 |
 | Scary Face        |          — |         30.0 |    45 |
-| Even Steven       |          — |          4.0 |    43 |
-| Fortune Teller    |       37.0 |          9.8 |    41 |
-| Square Joker      |          — |          4.0 |    40 |
-| Odd Todd          |          — |         31.0 |    37 |
-| Madness           |        8.5 |          3.3 |    31 |
-| Campfire          |        1.0 |          1.0 |    30 |
-| Joker Stencil     |        1.0 |          1.7 |    29 |
-| Runner            |      195.0 |         73.9 |    28 |
-| Red Card          |       71.0 |         31.0 |    27 |
-| Fibonacci         |          — |          8.0 |    24 |
-| Obelisk           |          — |          1.8 |    19 |
-| Steel Joker       |        1.4 |          1.3 |    18 |
-| Spare Trousers    |       48.7 |         19.7 |    17 |
-| Cavendish         |        3.0 |          3.0 |    16 |
-| Bull              |       58.0 |         53.9 |    15 |
-| Vampire           |          — |          1.2 |    14 |
-| Hiker             |          — |          5.0 |    14 |
-| Wee Joker         |      136.0 |         46.2 |    10 |
-| Castle            |          — |         56.7 |     9 |
-| Hologram          |        7.8 |          1.0 |     9 |
-| Ceremonial Dagger |          — |         12.4 |     9 |
-| Erosion           |       52.0 |          8.0 |     6 |
+| Greedy Joker      |        3.0 |          3.0 |    44 |
+| Gros Michel       |          — |         15.0 |    44 |
+| Wrathful Joker    |        3.0 |          3.0 |    43 |
+| Ride the Bus      |       33.0 |          6.1 |    42 |
+| Fortune Teller    |       32.5 |          8.1 |    37 |
+| Gluttonous Joker  |          — |          3.0 |    35 |
+| Campfire          |          — |          1.0 |    29 |
+| Joker Stencil     |        1.0 |          1.8 |    27 |
+| Red Card          |       73.0 |         27.3 |    25 |
+| Spare Trousers    |       66.7 |         20.8 |    24 |
+| Madness           |        6.7 |          3.9 |    24 |
+| Fibonacci         |          — |          8.0 |    22 |
+| Runner            |      225.0 |         63.8 |    22 |
+| Obelisk           |        3.9 |          1.5 |    21 |
+| Bull              |          — |         48.4 |    19 |
+| Hiker             |          — |          5.0 |    17 |
+| Steel Joker       |        1.4 |          1.3 |    16 |
+| Cavendish         |        3.0 |          3.0 |    14 |
+| Vampire           |          — |          1.1 |    14 |
+| Hologram          |          — |          1.0 |     9 |
+| Ceremonial Dagger |          — |         16.2 |     8 |
+| Erosion           |       48.0 |         21.7 |     8 |
+| Castle            |          — |         28.7 |     7 |
 | Throwback         |          — |          1.0 |     6 |
-| Stone Joker       |      675.0 |         50.0 |     3 |
-| Flash Card        |          — |         14.7 |     3 |
-| Lucky Cat         |          — |          1.4 |     2 |
+| Wee Joker         |          — |         52.8 |     5 |
+| Lucky Cat         |        1.5 |          1.5 |     3 |
+| Flash Card        |          — |          7.0 |     2 |
+| Stone Joker       |          — |         25.0 |     1 |
 
 ## Jokers in Winning Rosters
 
-| Joker            | Appearances | out of 37 wins |
+| Joker            | Appearances | out of 46 wins |
 |------------------|-------------|----------------|
-| Blackboard       |          14 |          37.8% |
-| Baseball Card    |          10 |          27.0% |
-| Card Sharp       |          10 |          27.0% |
-| Photograph       |          10 |          27.0% |
-| Green Joker      |           7 |          18.9% |
-| Cavendish        |           6 |          16.2% |
-| Space Joker      |           6 |          16.2% |
-| Superposition    |           5 |          13.5% |
-| Mystic Summit    |           5 |          13.5% |
-| Abstract Joker   |           5 |          13.5% |
-| Constellation    |           5 |          13.5% |
-| Ancient Joker    |           5 |          13.5% |
-| Ramen            |           5 |          13.5% |
-| Half Joker       |           5 |          13.5% |
-| Splash           |           4 |          10.8% |
-| Acrobat          |           4 |          10.8% |
-| The Order        |           4 |          10.8% |
-| Driver's License |           4 |          10.8% |
-| Blue Joker       |           4 |          10.8% |
-| Baron            |           3 |           8.1% |
-| The Family       |           3 |           8.1% |
-| Four Fingers     |           3 |           8.1% |
-| Steel Joker      |           3 |           8.1% |
-| Shortcut         |           3 |           8.1% |
-| Loyalty Card     |           3 |           8.1% |
-| Red Card         |           3 |           8.1% |
-| Smeared Joker    |           3 |           8.1% |
-| Supernova        |           3 |           8.1% |
-| Marble Joker     |           2 |           5.4% |
-| Misprint         |           2 |           5.4% |
-| Erosion          |           2 |           5.4% |
-| Spare Trousers   |           2 |           5.4% |
-| Swashbuckler     |           2 |           5.4% |
-| Dusk             |           2 |           5.4% |
-| Oops! All 6s     |           2 |           5.4% |
-| Burnt Joker      |           2 |           5.4% |
-| Stone Joker      |           1 |           2.7% |
-| Hologram         |           1 |           2.7% |
-| Campfire         |           1 |           2.7% |
-| Crazy Joker      |           1 |           2.7% |
-| Cartomancer      |           1 |           2.7% |
-| Chaos the Clown  |           1 |           2.7% |
-| Pareidolia       |           1 |           2.7% |
-| Burglar          |           1 |           2.7% |
-| Ice Cream        |           1 |           2.7% |
-| Joker Stencil    |           1 |           2.7% |
-| 8 Ball           |           1 |           2.7% |
-| Jolly Joker      |           1 |           2.7% |
-| Riff-raff        |           1 |           2.7% |
-| Banner           |           1 |           2.7% |
-| Sock and Buskin  |           1 |           2.7% |
-| Bull             |           1 |           2.7% |
-| DNA              |           1 |           2.7% |
-| Juggler          |           1 |           2.7% |
-| Wee Joker        |           1 |           2.7% |
-| Mad Joker        |           1 |           2.7% |
-| Devious Joker    |           1 |           2.7% |
-| Clever Joker     |           1 |           2.7% |
-| Greedy Joker     |           1 |           2.7% |
-| Fortune Teller   |           1 |           2.7% |
-| Blueprint        |           1 |           2.7% |
-| Flower Pot       |           1 |           2.7% |
-| Mime             |           1 |           2.7% |
-| Wrathful Joker   |           1 |           2.7% |
-| Runner           |           1 |           2.7% |
-| Madness          |           1 |           2.7% |
+| Card Sharp       |          15 |          32.6% |
+| Blackboard       |          14 |          30.4% |
+| Acrobat          |          14 |          30.4% |
+| Green Joker      |          11 |          23.9% |
+| Baseball Card    |          11 |          23.9% |
+| Photograph       |          11 |          23.9% |
+| Loyalty Card     |           8 |          17.4% |
+| Flower Pot       |           8 |          17.4% |
+| Baron            |           8 |          17.4% |
+| Mystic Summit    |           7 |          15.2% |
+| The Order        |           7 |          15.2% |
+| Space Joker      |           6 |          13.0% |
+| Driver's License |           6 |          13.0% |
+| Constellation    |           6 |          13.0% |
+| Four Fingers     |           6 |          13.0% |
+| Abstract Joker   |           6 |          13.0% |
+| Ancient Joker    |           5 |          10.9% |
+| Swashbuckler     |           4 |           8.7% |
+| Ramen            |           4 |           8.7% |
+| Drunkard         |           4 |           8.7% |
+| Spare Trousers   |           4 |           8.7% |
+| Smeared Joker    |           4 |           8.7% |
+| Fortune Teller   |           3 |           6.5% |
+| 8 Ball           |           3 |           6.5% |
+| Walkie Talkie    |           3 |           6.5% |
+| Madness          |           3 |           6.5% |
+| Shortcut         |           3 |           6.5% |
+| Blue Joker       |           3 |           6.5% |
+| Half Joker       |           3 |           6.5% |
+| Obelisk          |           3 |           6.5% |
+| Red Card         |           3 |           6.5% |
+| Odd Todd         |           3 |           6.5% |
+| Lucky Cat        |           2 |           4.3% |
+| Joker Stencil    |           2 |           4.3% |
+| Square Joker     |           2 |           4.3% |
+| Steel Joker      |           2 |           4.3% |
+| Credit Card      |           2 |           4.3% |
+| The Family       |           2 |           4.3% |
+| Splash           |           2 |           4.3% |
+| Runner           |           2 |           4.3% |
+| Sly Joker        |           2 |           4.3% |
+| Cartomancer      |           2 |           4.3% |
+| Cavendish        |           2 |           4.3% |
+| Burglar          |           1 |           2.2% |
+| Supernova        |           1 |           2.2% |
+| Erosion          |           1 |           2.2% |
+| Droll Joker      |           1 |           2.2% |
+| Greedy Joker     |           1 |           2.2% |
+| Invisible Joker  |           1 |           2.2% |
+| Smiley Face      |           1 |           2.2% |
+| To Do List       |           1 |           2.2% |
+| Superposition    |           1 |           2.2% |
+| Matador          |           1 |           2.2% |
+| Banner           |           1 |           2.2% |
+| Scary Face       |           1 |           2.2% |
+| Scholar          |           1 |           2.2% |
+| Pareidolia       |           1 |           2.2% |
+| Juggler          |           1 |           2.2% |
+| Hallucination    |           1 |           2.2% |
+| Ride the Bus     |           1 |           2.2% |
+| Wrathful Joker   |           1 |           2.2% |
+| Zany Joker       |           1 |           2.2% |
+| Hack             |           1 |           2.2% |
+| Flash Card       |           1 |           2.2% |
+| Devious Joker    |           1 |           2.2% |
+| Sixth Sense      |           1 |           2.2% |
+| Even Steven      |           1 |           2.2% |
 
 ## Miscellaneous
 
-- Luchador boss-cancel sells: **19**
-- Invisible Joker dupe sells: **8**
-- Diet Cola free reroll sells: **37**
+- Luchador boss-cancel sells: **22**
+- Invisible Joker dupe sells: **6**
+- Diet Cola free reroll sells: **33**
 
 ## Scoring Accuracy
 
-| Metric          | Value                  |
-|-----------------|------------------------|
-| Hands scored    |                  36398 |
-| Mismatches      |             126 (0.3%) |
-| Avg diff        |             +687 chips |
-| Over-estimates  |             17 (13.5%) |
-| Under-estimates |            109 (86.5%) |
-| Systematic bias | +14.3% of actual score |
+| Metric          | Value                 |
+|-----------------|-----------------------|
+| Hands scored    |                 33575 |
+| Mismatches      |             37 (0.1%) |
+| Avg diff        |             -73 chips |
+| Over-estimates  |            22 (59.5%) |
+| Under-estimates |            15 (40.5%) |
+| Systematic bias | -1.3% of actual score |
 
 ### Mismatch Magnitude
 
 | Diff size | Count | %     |
 |-----------|-------|-------|
-| <50       |     2 |  1.6% |
-| 50–499    |    37 | 29.4% |
-| 500–4999  |    71 | 56.3% |
-| 5000+     |    16 | 12.7% |
+| 50–499    |     7 | 18.9% |
+| 500–4999  |    25 | 67.6% |
+| 5000+     |     5 | 13.5% |
 
 ### Mismatch Rate by Hand Type
 
-| Hand Type       | Scored | Mismatches | Rate  |
-|-----------------|--------|------------|-------|
-| Pair            |   8046 |         27 |  0.3% |
-| Two Pair        |   7670 |         24 |  0.3% |
-| Flush           |   6173 |         19 |  0.3% |
-| Straight        |   4877 |         10 |  0.2% |
-| High Card       |   3990 |         20 |  0.5% |
-| Full House      |   3130 |          5 |  0.2% |
-| Three of a Kind |   2061 |          7 |  0.3% |
-| Straight Flush  |    240 |          1 |  0.4% |
-| Four of a Kind  |    188 |          1 |  0.5% |
-| Flush House     |     20 |         12 | 60.0% |
-| Five of a Kind  |      3 |          0 |  0.0% |
+| Hand Type       | Scored | Mismatches | Rate |
+|-----------------|--------|------------|------|
+| Pair            |   7294 |         13 | 0.2% |
+| Two Pair        |   7118 |          9 | 0.1% |
+| Flush           |   5540 |          3 | 0.1% |
+| Straight        |   4452 |          4 | 0.1% |
+| High Card       |   3827 |          6 | 0.2% |
+| Full House      |   3000 |          2 | 0.1% |
+| Three of a Kind |   1835 |          0 | 0.0% |
+| Straight Flush  |    303 |          0 | 0.0% |
+| Four of a Kind  |    197 |          0 | 0.0% |
+| Flush House     |      8 |          0 | 0.0% |
+| Five of a Kind  |      1 |          0 | 0.0% |
 
 ### Joker Mismatch Lift
 
 Jokers appearing disproportionately often in mismatches. Lift = joker's mismatch rate / overall rate.
 
-| Joker         | Mismatches | Appearances | Rate  | Lift  |
-|---------------|------------|-------------|-------|-------|
-| Vagabond      |          1 |           3 | 33.3% | 96.3x |
-| Raised Fist   |         52 |         436 | 11.9% | 34.5x |
-| Vampire       |         21 |         243 |  8.6% | 25.0x |
-| Steel Joker   |         17 |         296 |  5.7% | 16.6x |
-| Four Fingers  |          7 |         208 |  3.4% |  9.7x |
-| Superposition |          1 |          65 |  1.5% |  4.4x |
-| Loyalty Card  |          3 |         263 |  1.1% |  3.3x |
-| Banner        |         14 |        1336 |  1.0% |  3.0x |
-| Crafty Joker  |          8 |         773 |  1.0% |  3.0x |
-| Pareidolia    |          1 |         103 |  1.0% |  2.8x |
-| Acrobat       |          7 |         810 |  0.9% |  2.5x |
-| Ice Cream     |         17 |        2078 |  0.8% |  2.4x |
-| Smeared Joker |          2 |         247 |  0.8% |  2.3x |
-| Flower Pot    |          6 |         750 |  0.8% |  2.3x |
-| Cartomancer   |          1 |         150 |  0.7% |  1.9x |
+| Joker            | Mismatches | Appearances | Rate | Lift  |
+|------------------|------------|-------------|------|-------|
+| Wee Joker        |          3 |         159 | 1.9% | 17.1x |
+| Driver's License |          1 |          65 | 1.5% | 14.0x |
+| Baron            |          1 |         132 | 0.8% |  6.9x |
+| Bull             |          3 |         601 | 0.5% |  4.5x |
+| Loyalty Card     |          2 |         483 | 0.4% |  3.8x |
+| Photograph       |          1 |         243 | 0.4% |  3.7x |
+| Acrobat          |          3 |         909 | 0.3% |  3.0x |
+| Obelisk          |          1 |         337 | 0.3% |  2.7x |
+| The Order        |          1 |         356 | 0.3% |  2.5x |
+| Card Sharp       |          2 |        1165 | 0.2% |  1.6x |
+
+### Rank Mismatch Lift
+
+| Rank | Mismatches | Appearances | Rate | Lift |
+|------|------------|-------------|------|------|
+| 2    |          7 |        3907 | 0.2% | 1.6x |
 
 ### Enhancement Mismatch Lift
 
 | Enhancement | Mismatches | Appearances | Rate | Lift |
 |-------------|------------|-------------|------|------|
-| MULT        |         11 |        1433 | 0.8% | 2.2x |
+| GOLD        |          3 |         942 | 0.3% | 2.9x |
+| STEEL       |          2 |         651 | 0.3% | 2.8x |
+| WILD        |          2 |         973 | 0.2% | 1.9x |
 
 ### Pair Combo Mismatch Lift
 
 Attribute combinations appearing disproportionately in mismatches.
 
-| Combo                                    | Mismatches | Appearances | Rate   | Lift   |
-|------------------------------------------|------------|-------------|--------|--------|
-| joker:Raised Fist + joker:Vampire        |         17 |          17 | 100.0% | 288.9x |
-| joker:Raised Fist + joker:Steel Joker    |         16 |          16 | 100.0% | 288.9x |
-| joker:Banner + joker:Steel Joker         |         13 |          13 | 100.0% | 288.9x |
-| joker:Blue Joker + joker:Raised Fist     |          7 |           7 | 100.0% | 288.9x |
-| blind:Crimson Heart + joker:Four Fingers |          4 |           4 | 100.0% | 288.9x |
-| hand:Flush House + joker:Sly Joker       |          3 |           3 | 100.0% | 288.9x |
-| blind:Crimson Heart + joker:Vampire      |          3 |           3 | 100.0% | 288.9x |
-| hand:Flush House + hl:4                  |          5 |           6 |  83.3% | 240.7x |
-| joker:Flower Pot + joker:Raised Fist     |          3 |           4 |  75.0% | 216.7x |
-| hand:Flush House + joker:Clever Joker    |          3 |           4 |  75.0% | 216.7x |
-| blind:Crimson Heart + joker:Acrobat      |          3 |           4 |  75.0% | 216.7x |
-| blind:Big Blind + hand:Flush House       |          5 |           7 |  71.4% | 206.3x |
-| blind:The Hook + joker:Raised Fist       |          7 |          10 |  70.0% | 202.2x |
-| hand:Flush House + hl:3                  |          4 |           6 |  66.7% | 192.6x |
-| blind:The Tooth + joker:Raised Fist      |          4 |           6 |  66.7% | 192.6x |
-| hand:Flush House + joker:Crafty Joker    |          3 |           5 |  60.0% | 173.3x |
-| joker:Banner + joker:Raised Fist         |         13 |          25 |  52.0% | 150.2x |
-| blind:The Tooth + joker:Steel Joker      |          4 |           8 |  50.0% | 144.4x |
-| blind:Small Blind + hand:Flush House     |          2 |           4 |  50.0% | 144.4x |
-| blind:The Wheel + joker:Vampire          |          4 |           9 |  44.4% | 128.4x |
+| Combo                                      | Mismatches | Appearances | Rate  | Lift   |
+|--------------------------------------------|------------|-------------|-------|--------|
+| joker:Ice Cream + joker:Wee Joker          |          2 |           5 | 40.0% | 363.0x |
+| blind:Crimson Heart + joker:Acrobat        |          2 |           6 | 33.3% | 302.5x |
+| blind:Crimson Heart + joker:Fortune Teller |          1 |           3 | 33.3% | 302.5x |
+| blind:The Wheel + joker:The Order          |          1 |           3 | 33.3% | 302.5x |
+| enh:MULT + joker:Driver's License          |          1 |           4 | 25.0% | 226.9x |
+| blind:The Goad + joker:Obelisk             |          1 |           4 | 25.0% | 226.9x |
+| blind:The Head + hl:7                      |          1 |           4 | 25.0% | 226.9x |
+| blind:Crimson Heart + hand:Pair            |          3 |          14 | 21.4% | 194.4x |
+| blind:Crimson Heart + joker:Green Joker    |          3 |          15 | 20.0% | 181.5x |
+| blind:Crimson Heart + joker:Constellation  |          1 |           5 | 20.0% | 181.5x |
+| blind:The Mouth + joker:Baron              |          1 |           5 | 20.0% | 181.5x |
+| blind:The Head + hl:6                      |          1 |           5 | 20.0% | 181.5x |
+| hand:High Card + joker:The Order           |          1 |           5 | 20.0% | 181.5x |
+| blind:Crimson Heart + enh:STEEL            |          1 |           5 | 20.0% | 181.5x |
+| blind:Crimson Heart + joker:Card Sharp     |          2 |          12 | 16.7% | 151.2x |
+| blind:The Mouth + joker:Loyalty Card       |          1 |           6 | 16.7% | 151.2x |
+| blind:Crimson Heart + enh:MULT             |          1 |           6 | 16.7% | 151.2x |
+| blind:Crimson Heart + enh:WILD             |          1 |           6 | 16.7% | 151.2x |
+| blind:Cerulean Bell + enh:GOLD             |          1 |           6 | 16.7% | 151.2x |
+| blind:Crimson Heart + hl:5                 |          1 |           7 | 14.3% | 129.6x |
 
 ### Triple Combo Mismatch Lift
 
 Attribute combinations appearing disproportionately in mismatches.
 
-| Combo                                                      | Mismatches | Appearances | Rate   | Lift   |
-|------------------------------------------------------------|------------|-------------|--------|--------|
-| blind:The Hook + hl:4 + joker:Raised Fist                  |          6 |           6 | 100.0% | 288.9x |
-| hl:3 + joker:Banner + joker:Raised Fist                    |          5 |           5 | 100.0% | 288.9x |
-| blind:The Tooth + joker:Ice Cream + joker:Raised Fist      |          4 |           4 | 100.0% | 288.9x |
-| blind:The Tooth + joker:Ice Cream + joker:Steel Joker      |          4 |           4 | 100.0% | 288.9x |
-| blind:Big Blind + hand:Flush House + hl:4                  |          3 |           3 | 100.0% | 288.9x |
-| blind:The Pillar + joker:Banner + joker:Raised Fist        |          2 |           2 | 100.0% | 288.9x |
-| blind:The Pillar + joker:Ice Cream + joker:Raised Fist     |          2 |           2 | 100.0% | 288.9x |
-| hand:Three of a Kind + joker:Banner + joker:Ice Cream      |          2 |           2 | 100.0% | 288.9x |
-| hand:Three of a Kind + joker:Banner + joker:Raised Fist    |          2 |           2 | 100.0% | 288.9x |
-| hand:Three of a Kind + joker:Ice Cream + joker:Steel Joker |          2 |           2 | 100.0% | 288.9x |
-| blind:The Tooth + enh:MULT + joker:Raised Fist             |          2 |           2 | 100.0% | 288.9x |
-| blind:The Tooth + enh:MULT + joker:Steel Joker             |          2 |           2 | 100.0% | 288.9x |
-| blind:The Tooth + hand:Pair + joker:Steel Joker            |          2 |           2 | 100.0% | 288.9x |
-| hl:5 + joker:Raised Fist + joker:Square Joker              |          2 |           2 | 100.0% | 288.9x |
-| blind:Small Blind + joker:Flower Pot + joker:Raised Fist   |          2 |           2 | 100.0% | 288.9x |
-| hl:5 + joker:Flower Pot + joker:Raised Fist                |          2 |           2 | 100.0% | 288.9x |
-| blind:Big Blind + hand:Flush House + joker:Clever Joker    |          2 |           2 | 100.0% | 288.9x |
-| blind:Crimson Heart + hand:Flush + joker:Acrobat           |          2 |           2 | 100.0% | 288.9x |
-| blind:Crimson Heart + joker:Acrobat + joker:Blackboard     |          2 |           2 | 100.0% | 288.9x |
-| joker:Banner + joker:Ice Cream + joker:Raised Fist         |         13 |          16 |  81.2% | 234.7x |
+| Combo                                                     | Mismatches | Appearances | Rate   | Lift   |
+|-----------------------------------------------------------|------------|-------------|--------|--------|
+| blind:Big Blind + joker:Ice Cream + joker:Wee Joker       |          2 |           2 | 100.0% | 907.4x |
+| blind:Crimson Heart + hand:Pair + joker:Green Joker       |          3 |           4 |  75.0% | 680.6x |
+| joker:Abstract Joker + joker:Bull + joker:Jolly Joker     |          2 |           3 |  66.7% | 605.0x |
+| blind:Crimson Heart + joker:Acrobat + joker:Green Joker   |          2 |           3 |  66.7% | 605.0x |
+| hl:5 + joker:Abstract Joker + joker:Jolly Joker           |          2 |           4 |  50.0% | 453.7x |
+| blind:Crimson Heart + hand:Pair + joker:Acrobat           |          2 |           4 |  50.0% | 453.7x |
+| blind:Crimson Heart + hand:Two Pair + hl:5                |          1 |           2 |  50.0% | 453.7x |
+| blind:Crimson Heart + hand:Two Pair + joker:Constellation |          1 |           2 |  50.0% | 453.7x |
+| blind:The Mouth + hand:Two Pair + joker:Baron             |          1 |           2 |  50.0% | 453.7x |
+| blind:The Mouth + hl:3 + joker:Loyalty Card               |          1 |           2 |  50.0% | 453.7x |
+| blind:The Mouth + joker:Baron + joker:Loyalty Card        |          1 |           2 |  50.0% | 453.7x |
+| blind:The Mouth + joker:Blackboard + joker:Loyalty Card   |          1 |           2 |  50.0% | 453.7x |
+| blind:Crimson Heart + enh:GOLD + enh:WILD                 |          1 |           2 |  50.0% | 453.7x |
+| blind:Crimson Heart + enh:MULT + enh:WILD                 |          1 |           2 |  50.0% | 453.7x |
+| blind:Crimson Heart + enh:MULT + hand:Flush               |          1 |           2 |  50.0% | 453.7x |
+| blind:Crimson Heart + enh:MULT + joker:Card Sharp         |          1 |           2 |  50.0% | 453.7x |
+| blind:Crimson Heart + enh:WILD + hand:Flush               |          1 |           2 |  50.0% | 453.7x |
+| enh:GOLD + enh:MULT + joker:Driver's License              |          1 |           2 |  50.0% | 453.7x |
+| enh:MULT + enh:WILD + joker:Driver's License              |          1 |           2 |  50.0% | 453.7x |
+| enh:MULT + hand:Flush + joker:Driver's License            |          1 |           2 |  50.0% | 453.7x |
 
-## Milk Actions (4225 total)
+## Milk Actions (3927 total)
 
-| Action                          | Count |
-|---------------------------------|-------|
-| burn 1 for Mystic Summit        |   379 |
-| burn 2 for Mystic Summit        |   345 |
-| cycle 3 junk for j_green_joker  |   297 |
-| burn 3 for Mystic Summit        |   269 |
-| cycle 3 junk for j_acrobat      |   256 |
-| cycle 4 junk for j_green_joker  |   174 |
-| cycle 4 junk for Square         |   164 |
-| cycle 3 junk for j_supernova    |   160 |
-| cycle 5 junk for j_acrobat      |   150 |
-| cycle 3 junk for j_ride_the_bus |   130 |
+| Action                         | Count |
+|--------------------------------|-------|
+| cycle 3 junk for j_green_joker |   319 |
+| burn 1 for Mystic Summit       |   263 |
+| burn 2 for Mystic Summit       |   236 |
+| cycle 4 junk for Square        |   224 |
+| cycle 3 junk for j_acrobat     |   207 |
+| cycle 3 junk for j_supernova   |   186 |
+| burn 3 for Mystic Summit       |   185 |
+| cycle 4 junk for j_green_joker |   149 |
+| cycle 3 junk for j_dusk        |   146 |
+| Two Pair for j_trousers        |   141 |

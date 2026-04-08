@@ -22,7 +22,7 @@ from balatro_bot.cards import (
     is_stone,
     rank_value,
 )
-from balatro_bot.constants import HAND_INFO
+from balatro_bot.constants import HAND_INFO, RANK_CHIPS
 
 if TYPE_CHECKING:
     from typing import Any
@@ -235,6 +235,7 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     _baron_xm = 0.0
     _shoot_moon_mult = 0.0
     _has_mime = False
+    _has_raised_fist = False
     for j in (jokers or []):
         k = j.get("key", "")
         if k == "j_baron":
@@ -245,6 +246,22 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
             _shoot_moon_mult = _ab(j).get("extra", 13)
         elif k == "j_mime":
             _has_mime = True
+        elif k == "j_raised_fist":
+            _has_raised_fist = True
+
+    # Raised Fist: find the lowest-ranked held card (by chip value, matching game logic)
+    _raised_fist_card = None
+    _raised_fist_add = 0.0
+    if _has_raised_fist and ctx.held_cards:
+        min_id = 15
+        for c in ctx.held_cards:
+            r = card_rank(c)
+            if r and not is_debuffed(c):
+                rv = rank_value(r)
+                if rv <= min_id:
+                    min_id = rv
+                    _raised_fist_card = c
+                    _raised_fist_add = 2 * RANK_CHIPS.get(r, 0)
 
     _held_triggers = 2 if _has_mime else 1
     for card in ctx.held_cards:
@@ -256,6 +273,8 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
                     ctx.mult *= _baron_xm
                 if _shoot_moon_mult and card_rank(card) == "Q":
                     ctx.mult += _shoot_moon_mult
+                if _raised_fist_card is card:
+                    ctx.mult += _raised_fist_add
 
 
 def ox_most_played_hand(hand_levels: dict) -> str | None:

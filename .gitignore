@@ -22,3 +22,6 @@ logs/
 # Claude
 .claude/
 CLAUDE.md
+
+# Local config (machine-specific paths)
+.env.local

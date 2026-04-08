@@ -126,14 +126,21 @@ def choose_from_buffoon_pack(
     from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
     from balatro_bot.scaling import check_anti_synergy
 
+    from balatro_bot.domain.policy.shop import _is_negative
+
     owned_keys = {j.get("key") for j in owned_jokers}
     has_madness = "j_madness" in owned_keys
+    slots_full = len(owned_jokers) >= joker_limit
 
     best_idx = 0
     best_score = -1.0
 
     for i, card in enumerate(cards):
         key = card.get("key", "")
+
+        # Non-Negative jokers can't be picked when slots are full
+        if slots_full and not _is_negative(card):
+            continue
 
         # Madness interaction (bidirectional)
         if has_madness and key in SCALING_JOKERS:
@@ -152,6 +159,10 @@ def choose_from_buffoon_pack(
         )
         # S-tier jokers get a massive boost
         if key in always_buy_keys:
+            score = max(score, 10.0)
+
+        # Negative jokers in packs are free — always take them
+        if _is_negative(card):
             score = max(score, 10.0)
 
         if score > best_score:

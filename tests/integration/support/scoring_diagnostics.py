@@ -183,10 +183,11 @@ def build_snapshot(state: dict, params: dict, hand_name: str) -> dict:
 
     snap_hand_levels = state.get("hands", {})
     snap_blind_name = ""
+    boss_disabled = state.get("_boss_disabled", False)
     for b in state.get("blinds", {}).values():
         if isinstance(b, dict) and b.get("status") == "CURRENT":
             snap_blind_name = b.get("name", "")
-            if snap_blind_name == "The Flint":
+            if snap_blind_name == "The Flint" and not boss_disabled:
                 from balatro_bot.domain.scoring.base import flint_halve_hand_levels
                 snap_hand_levels = flint_halve_hand_levels(snap_hand_levels)
             break

@@ -11,14 +11,14 @@ Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/B
 
 The bot fully simulates Balatro's scoring pipeline — joker effects, card enhancements, editions, seals, retriggers, and boss blind modifiers — to predict exact chip totals for every candidate hand before choosing what to play.
 
-**Current peak: Ante 11 | Scoring accuracy: 99.5% | 2.5% win rate** — [full stats](STATS.md)
+**Current peak: Ante 11 | Scoring accuracy: 99.9% | 3.7% win rate** — [full stats](STATS.md)
 
 ## Prerequisites
 
 - **Balatro** (Steam)
 - **[Lovely](https://github.com/ethangreen-dev/lovely-injector)** mod loader for Balatro
 - **[balatrobot mod](https://github.com/DrLatBC/balatrobot)** (our fork) installed into Balatro — provides the JSON-RPC server the bot talks to
-- **Python 3.11+**
+- **Python 3.13+**
 
 > **Why our fork?** Jack Potts requires API fields and fixes not yet in [upstream balatrobot](https://github.com/coder/balatrobot): edition scoring values, joker ability data, The Ox's locked hand, Ancient Joker suit, boss blind forcing, endless mode support, and several endpoint hang fixes. A [PR is open](https://github.com/coder/balatrobot/pull/181) to merge these upstream — once accepted, the official mod will work. Until then, use our fork.
 
@@ -31,6 +31,18 @@ pip install -e ".[dev]"
 ```
 
 This installs the bot as an editable package along with `httpx`, `balatrobot` (client library), and `pytest` for development.
+
+### Local environment config
+
+Create a `.env.local` file in the repo root with paths to your Balatro install. This file is gitignored and loaded automatically by the bot and test harness:
+
+```ini
+BALATRO_EXE=G:\SteamLibrary\steamapps\common\Balatro\Balatro.exe
+LOVELY_DLL=G:\SteamLibrary\steamapps\common\Balatro\version.dll
+UVX_PATH=C:\path\to\.venv\Scripts\uvx.exe
+```
+
+Adjust paths to match your Steam library location. `UVX_PATH` is only needed if `uvx` isn't on your system PATH (e.g. when it's installed inside a virtualenv).
 
 ## Usage
 

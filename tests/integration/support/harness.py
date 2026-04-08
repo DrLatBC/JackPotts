@@ -29,6 +29,13 @@ _src = os.path.join(os.path.dirname(__file__), "..", "..", "src")
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
+# balatrobot is a pip-installed package (the game server/client).  If we're
+# running from the system Python rather than the activated venv, add the
+# venv's site-packages so the import succeeds.
+_venv_sp = os.path.join(os.path.dirname(__file__), "..", "..", ".venv", "Lib", "site-packages")
+if os.path.isdir(_venv_sp) and _venv_sp not in sys.path:
+    sys.path.insert(0, os.path.abspath(_venv_sp))
+
 from balatrobot.cli.client import BalatroClient, APIError
 from balatro_bot.config import SupervisorConfig
 

@@ -16,7 +16,7 @@ JOKER_EFFECTS.update(SIMPLE_EFFECTS)
 JOKER_EFFECTS.update(COMPLEX_EFFECTS)
 
 # --- Retrigger jokers (scoring handled in retrigger_count) ---
-for key in ("j_hack", "j_dusk", "j_sock_and_buskin", "j_hanging_chad", "j_seltzer", "j_mime"):
+for key in ("j_hack", "j_dusk", "j_sock_and_buskin", "j_hanging_chad", "j_selzer", "j_mime"):
     JOKER_EFFECTS[key] = _noop
 
 # --- Per-card jokers handled in _apply_card_scoring (hand_evaluator.py) ---
@@ -28,6 +28,8 @@ JOKER_EFFECTS["j_hiker"] = _noop
 JOKER_EFFECTS["j_baron"] = _noop
 # Shoot the Moon: +13 mult per held Queen — fires in held-in-hand phase
 JOKER_EFFECTS["j_shoot_the_moon"] = _noop
+# Raised Fist: +2×(lowest held rank chips) — fires in held-in-hand phase, not joker phase
+JOKER_EFFECTS["j_raised_fist"] = _noop
 
 # --- Per-card jokers (applied per trigger in _apply_card_scoring, before joker effects) ---
 # These fire "when scored" interleaved with Glass xmult / editions / retriggers.

@@ -223,6 +223,19 @@ def _log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict, fmt
                               "j_lucky_cat", "j_obelisk"}
                 for jk in joker_keys & hook_noisy:
                     noise_sources.append(f"hook+{jk.removeprefix('j_')}")
+                # Hook removes held cards before scoring — held-card effects
+                # (Steel, Baron, Smiley Face, Blackboard) see a reduced hand
+                # that the bot can't predict.
+                held = snapshot.get("held", [])
+                _hmod = lambda c: c.get("modifier", {}) if isinstance(c.get("modifier", {}), dict) else {}
+                if any(_hmod(c).get("enhancement") == "STEEL" for c in held):
+                    noise_sources.append("hook+steel")
+                if "j_baron" in joker_keys and any(c.get("value", {}).get("rank") == "K" for c in held):
+                    noise_sources.append("hook+baron")
+                if "j_smiley" in joker_keys:
+                    noise_sources.append("hook+smiley")
+                if "j_blackboard" in joker_keys:
+                    noise_sources.append("hook+blackboard")
             if noise_sources:
                 diff = actual_chips - detail["total"]
                 mismatch = f" MISMATCH_NOISE(diff={diff:+d}, {'+'.join(noise_sources)})"
@@ -679,6 +692,14 @@ def run_bot(
                     )
                     hand_context_logged = True
 
+        # Refresh state before deciding — previous action response may have
+        # stale money, joker counters, or debuff flags.
+        if game_state == "SELECTING_HAND":
+            _boss_disabled_before = state.get("_boss_disabled", False)
+            state = client.call("gamestate")
+            if _boss_disabled_before:
+                state["_boss_disabled"] = True
+
         action = engine.decide(state)
         if action is None:
             log.debug("No rule matched for state=%s, polling...", game_state)
@@ -713,12 +734,14 @@ def run_bot(
             hand_cards_snap = state.get("hand", {}).get("cards", [])
             play_indices = set(params.get("cards", []))
             # Detect The Flint and halve hand levels for accurate scoring
+            # Skip halving if Luchador was sold to disable the boss effect
             snap_hand_levels = state.get("hands", {})
-            for b in state.get("blinds", {}).values():
-                if isinstance(b, dict) and b.get("status") == "CURRENT" and b.get("name") == "The Flint":
-                    from balatro_bot.domain.scoring.base import flint_halve_hand_levels
-                    snap_hand_levels = flint_halve_hand_levels(snap_hand_levels)
-                    break
+            if not state.get("_boss_disabled", False):
+                for b in state.get("blinds", {}).values():
+                    if isinstance(b, dict) and b.get("status") == "CURRENT" and b.get("name") == "The Flint":
+                        from balatro_bot.domain.scoring.base import flint_halve_hand_levels
+                        snap_hand_levels = flint_halve_hand_levels(snap_hand_levels)
+                        break
 
             # Detect current blind name for snapshot
             snap_blind_name = ""
@@ -763,7 +786,13 @@ def run_bot(
             client.timeout = 5.0
 
         try:
+            _boss_disabled_before = state.get("_boss_disabled", False)
             state = client.call(method, params)
+            # Preserve _boss_disabled across state replacement — the API
+            # never reports blind.disabled, so this side-channel flag
+            # (set when Luchador is sold) would otherwise be lost.
+            if _boss_disabled_before:
+                state["_boss_disabled"] = True
             actions_taken += 1
             if method == "play":
                 total_hands_played += 1
@@ -798,6 +827,8 @@ def run_bot(
             log.warning("Timeout on %s(%s) — re-polling gamestate", method, params)
             try:
                 state = client.call("gamestate")
+                if _boss_disabled_before:
+                    state["_boss_disabled"] = True
                 # Check if game ended during the timeout
                 if state.get("state") == "GAME_OVER":
                     break
@@ -865,10 +896,14 @@ def run_bot(
                     except APIError:
                         pass
                 state = client.call("gamestate")
+                if _boss_disabled_before:
+                    state["_boss_disabled"] = True
                 consecutive_errors = 0
             else:
                 time.sleep(poll_interval)
                 state = client.call("gamestate")
+                if _boss_disabled_before:
+                    state["_boss_disabled"] = True
         finally:
             if saved_timeout is not None:
                 client.timeout = saved_timeout

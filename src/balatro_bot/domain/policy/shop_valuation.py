@@ -108,7 +108,7 @@ UTILITY_VALUE: dict[str, float] = {
     "j_hanging_chad":  1.0,
     "j_dusk":          1.5,
     "j_sock_and_buskin": 1.0,
-    "j_seltzer":       1.5,
+    "j_selzer":       1.5,
     "j_mime":          1.0,
     "j_luchador":      1.0,
     "j_invisible":     1.0,
@@ -396,7 +396,7 @@ def _utility_synergy_bonus(key: str, owned_keys: set[str], strat: Strategy) -> f
     elif key == "j_marble" and "j_stone" in owned_keys:
         bonus += 2.0
     elif key == "j_splash":
-        per_card = {"j_hiker", "j_seltzer", "j_hanging_chad"}
+        per_card = {"j_hiker", "j_selzer", "j_hanging_chad"}
         bonus += len(owned_keys & per_card) * 1.5
 
     return bonus
@@ -531,4 +531,23 @@ def evaluate_joker_value(
     # Layer 3: context
     context = _context_scale(key, owned_jokers, ante)
 
-    return base_value * synergy * context
+    return base_value * synergy * context + _edition_bonus(candidate)
+
+
+def _edition_bonus(card: dict) -> float:
+    """Additive value bonus for joker editions.
+
+    Polychrome (×1.5 every hand) is massive.  Holo (+10 mult) is solid.
+    Foil (+50 chips) is minor.  Negative is handled separately in shop.py.
+    """
+    mod = card.get("modifier")
+    if not isinstance(mod, dict):
+        return 0.0
+    edition = mod.get("edition")
+    if edition == "POLYCHROME":
+        return 4.0
+    if edition in ("HOLO", "HOLOGRAPHIC"):
+        return 1.5
+    if edition == "FOIL":
+        return 0.5
+    return 0.0

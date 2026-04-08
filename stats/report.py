@@ -321,7 +321,7 @@ def generate_markdown(stats: dict, batch_label: str) -> str:
             w("")
             w("### Tarots & Spectrals")
             w("")
-            tarot_rows = [[name, str(count)] for name, count in stats["tarot_buys"].most_common(15)]
+            tarot_rows = [[name, str(count)] for name, count in stats["tarot_buys"].most_common(1000)]
             table(["Card", "Count"], tarot_rows, right_cols={1})
 
     if stats["voucher_buys"]:
@@ -340,7 +340,7 @@ def generate_markdown(stats: dict, batch_label: str) -> str:
         if stats["joker_buys"]:
             w("### All Purchases")
             w("")
-            jb_rows = [[name, str(count)] for name, count in stats["joker_buys"].most_common(15)]
+            jb_rows = [[name, str(count)] for name, count in stats["joker_buys"].most_common(1000)]
             table(["Joker", "Bought"], jb_rows, right_cols={1})
             w("")
         if xmult_total:

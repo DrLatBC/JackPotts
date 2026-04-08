@@ -45,8 +45,8 @@ def _loyalty_card(ctx: ScoreContext, j: dict) -> None:
     ab = _ability(j)
     remaining = ab.get("loyalty_remaining")
     if remaining is not None:
-        # loyalty_remaining counts down each hand played. At 0, the card fires.
-        # The snapshot is pre-play state: remaining=0 means it fires this hand.
+        # loyalty_remaining counts down each hand played.  With fresh
+        # gamestate, 0 means it fires on THIS play.
         if remaining == 0:
             ctx.mult *= ab.get("Xmult", 4)
     else:
@@ -101,21 +101,29 @@ def _green_joker(ctx: ScoreContext, j: dict) -> None:
     BEFORE On Played jokers in the activation sequence.  That means Green Joker's
     discard_sub already decremented the stored mult before hand_add fires,
     and the two cancel out — the stored value is used as-is.
+    However, the game clamps Green Joker's mult to max(0, ...) on discard
+    (card.lua:3203), so when stored mult is already 0 the discard has no effect
+    and hand_add still fires — net +1 instead of 0.
     """
     ab = _ability(j)
+    stored = _ab_mult(j, fallback=0)
     hand_add = ab.get("hand_add", 1)
-    if ctx.blind_name == "The Hook":
-        hand_add = 0  # Boss discard already cancelled the increment
-    ctx.mult += _ab_mult(j, fallback=0) + hand_add
+    if ctx.blind_name == "The Hook" and stored > 0:
+        hand_add = 0  # Boss discard cancels the increment (only when mult > 0)
+    ctx.mult += stored + hand_add
 
 def _ride_the_bus(ctx: ScoreContext, j: dict) -> None:
     """Ride the Bus: +mult per hand without face cards, resets on face cards.
     The ability field is pre-increment, so add +extra when no faces are scored.
-    Pareidolia makes ALL cards face cards, so Ride the Bus always resets."""
+    Pareidolia makes ALL cards face cards, so Ride the Bus always resets.
+    Debuffed cards are skipped in the game's face check (blind.lua), so a
+    debuffed Queen/Jack/King does NOT trigger the reset."""
     ab = _ability(j)
     base = _ab_mult(j, fallback=5)
     has_face = ctx.pareidolia or any(
-        card_rank(c) in FACE_RANKS for c in ctx.scoring_cards if card_rank(c)
+        card_rank(c) in FACE_RANKS
+        for c in ctx.scoring_cards
+        if card_rank(c) and not is_debuffed(c)
     )
     if has_face:
         pass  # game resets to 0 before scoring
@@ -223,6 +231,8 @@ def _flower_pot(ctx: ScoreContext, j: dict) -> None:
                         red_count += 1
                     else:
                         black_count += 1
+            elif enhancement == "STONE":
+                pass  # Stone cards have no suit
             else:
                 suit = c.get("value", {}).get("suit")
                 if suit in ("H", "D"):

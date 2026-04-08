@@ -28,6 +28,22 @@ log = logging.getLogger("balatro_bot")
 INTEREST_CAP = 25
 MIN_VALUE = 1.5
 
+
+def _get_edition(card: dict) -> str | None:
+    """Return the edition string for a card, or None."""
+    mod = card.get("modifier")
+    return mod.get("edition") if isinstance(mod, dict) else None
+
+
+def _is_negative(card: dict) -> bool:
+    """True if the card has Negative edition (+1 joker slot, no scoring bonus)."""
+    return _get_edition(card) == "NEGATIVE"
+
+
+def _is_polychrome(card: dict) -> bool:
+    """True if the card has Polychrome edition (×1.5 mult every hand)."""
+    return _get_edition(card) == "POLYCHROME"
+
 ALWAYS_BUY = {
     "j_cavendish", "j_stencil",
     "j_duo", "j_trio", "j_family", "j_order", "j_tribe",
@@ -154,7 +170,8 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
         (i, evaluate_joker_value(j, owned_jokers=owned,
                                  hand_levels=hand_levels, ante=ante, strategy=strat), j)
         for i, j in enumerate(owned)
-        if j.get("key") not in protected or _is_stale_scaler(j, ante)
+        if (j.get("key") not in protected or _is_stale_scaler(j, ante))
+        and not _is_polychrome(j)  # never sell Polychrome — ×1.5 every hand
     ]
     if not owned_values:
         return None
@@ -220,6 +237,23 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
             reason=f"sell {weakest_joker.get('label', '?')} (value={weakest_value:.1f}) "
                    f"for {best_shop_label} (value={best_shop_value:.1f}, threshold={best_threshold:.1f}) "
                    f"[strategy: {', '.join(n for n, _ in strat.preferred_hands[:2])}]",
+        )
+
+    # Negative joker in shop — sell weakest to make room.  The game requires
+    # a free slot to buy even though Negative won't consume it permanently.
+    for card in shop.get("cards", []):
+        if card.get("set") != "JOKER" or not _is_negative(card):
+            continue
+        cost = card.get("cost", {}).get("buy", 999)
+        if cost > money + sell_value:
+            continue
+        neg_label = card.get("label", "?")
+        log.info("[SHOP] Negative %s in shop — selling %s to make room",
+                 neg_label, weakest_joker.get("label", "?"))
+        return SellJoker(
+            weakest_idx,
+            reason=f"sell {weakest_joker.get('label', '?')} (value={weakest_value:.1f}) "
+                   f"to make room for Negative {neg_label}",
         )
 
     return None
@@ -310,10 +344,10 @@ def choose_buy_joker_in_shop(state: dict[str, Any]) -> Action | None:
             if card.get("set") != "JOKER":
                 continue
             key = card.get("key", "")
-            if key in ALWAYS_BUY or key in HIGH_PRIORITY:
+            if key in ALWAYS_BUY or key in HIGH_PRIORITY or _is_negative(card):
                 label = card.get("label", "?")
                 cost = card.get("cost", {}).get("buy", 999)
-                log.info("[SHOP] %s($%d): slots full (%d/%d) — can't buy",
+                log.info("[SHOP] %s($%d): slots full (%d/%d) — can't buy (sell first)",
                          label, cost, joker_slots.get("count", 0), joker_slots.get("limit", 5))
         return None
 
@@ -355,8 +389,10 @@ def choose_buy_joker_in_shop(state: dict[str, Any]) -> Action | None:
                 passed_on.append(f"{label}(${cost}, Madness would eat it)")
                 continue
 
+        negative = _is_negative(card)
+
         SLOW_SCALERS = (SCALING_JOKERS | {"j_madness", "j_ceremonial"}) - SCALING_XMULT
-        if key in SLOW_SCALERS and ante >= 6:
+        if not negative and key in SLOW_SCALERS and ante >= 6:
             passed_on.append(f"{label}(${cost}, too late for slow scaler at ante {ante})")
             continue
 
@@ -374,7 +410,12 @@ def choose_buy_joker_in_shop(state: dict[str, Any]) -> Action | None:
             value = max(value, 8.0)
             force_buy = True
 
-        if any(j.get("key") == "j_stencil" for j in joker_slots.get("cards", [])):
+        # Negative jokers are essentially free — force-buy with a high floor
+        if negative:
+            value = max(value, 10.0)
+            force_buy = True
+
+        if not negative and any(j.get("key") == "j_stencil" for j in joker_slots.get("cards", [])):
             stencil_count = sum(1 for j in joker_slots.get("cards", []) if j.get("key") == "j_stencil")
             stencil_mult_after = (jlimit - joker_count - 1) + stencil_count
             if stencil_mult_after <= 2 and value < 5.0:
@@ -399,7 +440,7 @@ def choose_buy_joker_in_shop(state: dict[str, Any]) -> Action | None:
                         passed_on.append(f"{label}(${cost}, saving for interest)")
                         continue
 
-        if joker_count >= jlimit - 1:
+        if joker_count >= jlimit - 1 and not negative:
             value *= 0.5
 
         if value > best_improvement:
