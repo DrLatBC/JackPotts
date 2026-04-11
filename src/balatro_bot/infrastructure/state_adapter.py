@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from balatro_bot.domain.models.card import card_from_dict
+from balatro_bot.domain.models.joker import joker_from_dict
 from balatro_bot.domain.models.snapshot import BlindSnapshot, RoundSnapshot, Snapshot
 
 
@@ -42,12 +44,12 @@ def adapt_state(state: dict) -> Snapshot:
         deck_count=state.get("cards", {}).get("count", 0),
         round=round_snap,
         current_blind=current_blind,
-        hand_cards=state.get("hand", {}).get("cards", []),
+        hand_cards=[card_from_dict(c) for c in state.get("hand", {}).get("cards", [])],
         hand_levels=state.get("hands", {}),
-        jokers=state.get("jokers", {}).get("cards", []),
-        deck_cards=state.get("cards", {}).get("cards", []),
-        consumables=state.get("consumables", {}).get("cards", []),
-        shop_cards=state.get("shop", {}).get("cards", []),
-        vouchers=state.get("vouchers", {}).get("cards", []),
-        pack_cards=state.get("pack", {}).get("cards", []),
+        jokers=[joker_from_dict(j) for j in state.get("jokers", {}).get("cards", [])],
+        deck_cards=[card_from_dict(c) for c in state.get("cards", {}).get("cards", [])],
+        consumables=[card_from_dict(c) for c in state.get("consumables", {}).get("cards", [])],
+        shop_cards=[card_from_dict(c) for c in state.get("shop", {}).get("cards", [])],
+        vouchers=[card_from_dict(c) for c in state.get("vouchers", {}).get("cards", [])],
+        pack_cards=[card_from_dict(c) for c in state.get("pack", {}).get("cards", [])],
     )

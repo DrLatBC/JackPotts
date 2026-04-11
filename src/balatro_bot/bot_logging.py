@@ -7,6 +7,8 @@ import re
 from typing import TYPE_CHECKING
 
 from balatro_bot.bot_format import fmt_card, format_deck_snapshot
+from balatro_bot.cards import joker_key
+from balatro_bot.domain.models.card import Card
 
 if TYPE_CHECKING:
     from balatro_bot.bot import GameLoopState
@@ -188,10 +190,12 @@ def log_hand_state(gs: GameLoopState, state: dict) -> None:
     else:
         drew_str = ""
     debuffed = [fmt_card(c) for c in hand_cards
-                if isinstance(c.get("state", {}), dict) and c["state"].get("debuff")]
+                if (c.state.debuff if isinstance(c, Card)
+                    else (isinstance(c.get("state", {}), dict) and c["state"].get("debuff")))]
     debuff_str = f" | DEBUFFED: [{', '.join(debuffed)}]" if debuffed else ""
     log.info("Hand: [%s]%s%s", hand_str, drew_str, debuff_str)
-    gs.prev_hand_labels = [c.get("label", "") for c in hand_cards]
+    gs.prev_hand_labels = [(c.label if isinstance(c, Card) else c.get("label", ""))
+                           for c in hand_cards]
     gs.last_logged_hand = hand_id
 
     # First hand of a new blind — log context once
@@ -314,7 +318,7 @@ def build_play_snapshot(state: dict, params: dict, action: object) -> dict:
 
 def detect_joker_changes(gs: GameLoopState, state: dict) -> None:
     """Detect joker roster changes, log strategy shift, handle Luchador sell."""
-    cur_joker_keys = {j.get("key") for j in state.get("jokers", {}).get("cards", [])}
+    cur_joker_keys = {joker_key(j) for j in state.get("jokers", {}).get("cards", [])}
     if cur_joker_keys != gs.prev_joker_keys and gs.prev_joker_keys:
         from balatro_bot.strategy import compute_strategy as _cs
         new_strat = _cs(state.get("jokers", {}).get("cards", []), state.get("hands", {}))
@@ -392,7 +396,7 @@ def log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict) -> N
         if not hand_name:
             hand_name = classify_hand(played)
 
-        joker_keys = {j.get("key") for j in snapshot["jokers"]}
+        joker_keys = {joker_key(j) for j in snapshot["jokers"]}
         has_splash = "j_splash" in joker_keys
         four_fingers = "j_four_fingers" in joker_keys
         smeared = "j_smeared" in joker_keys
@@ -589,20 +593,29 @@ def log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict) -> N
 
             for i, c in enumerate(scoring):
                 mod = _modifier(c)
-                rank = c.get("value", {}).get("rank", "?")
-                suit = c.get("value", {}).get("suit", "?")
-                enh = mod.get("enhancement", "")
-                edition = mod.get("edition", "")
-                seal = mod.get("seal", "")
-                debuff = c.get("state", {})
-                if isinstance(debuff, dict):
-                    debuff = debuff.get("debuff", False)
+                if isinstance(c, Card):
+                    rank = c.value.rank or "?"
+                    suit = c.value.suit or "?"
+                    enh = c.modifier.enhancement or ""
+                    edition = c.modifier.edition or ""
+                    seal = c.modifier.seal or ""
+                    debuff = c.state.debuff
+                    perma = c.value.perma_bonus
                 else:
-                    debuff = False
+                    rank = c.get("value", {}).get("rank", "?")
+                    suit = c.get("value", {}).get("suit", "?")
+                    enh = mod.get("enhancement", "")
+                    edition = mod.get("edition", "")
+                    seal = mod.get("seal", "")
+                    debuff = c.get("state", {})
+                    if isinstance(debuff, dict):
+                        debuff = debuff.get("debuff", False)
+                    else:
+                        debuff = False
+                    perma = c.get("value", {}).get("perma_bonus", 0) or 0
                 chips = card_chip_value(c)
                 mult = card_mult_value(c)
                 xmult = card_xmult_value(c)
-                perma = c.get("value", {}).get("perma_bonus", 0) or 0
                 triggers = retrigger_count(c, ctx_for_retrigger)
                 _scoring_log.info(
                     "  card[%d] %s %s (SCORING) | chips=%d mult=%.1f xmult=%.2f triggers=%d | "
@@ -614,10 +627,15 @@ def log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict) -> N
                 )
             # Dump all held cards (Baron checks Kings, Shoot the Moon checks Queens, etc.)
             for i, c in enumerate(snapshot["held"]):
-                mod_h = _modifier(c)
-                rank_h = c.get("value", {}).get("rank", "?")
-                suit_h = c.get("value", {}).get("suit", "?")
-                enh_h = mod_h.get("enhancement", "")
+                if isinstance(c, Card):
+                    rank_h = c.value.rank or "?"
+                    suit_h = c.value.suit or "?"
+                    enh_h = c.modifier.enhancement or ""
+                else:
+                    mod_h = _modifier(c)
+                    rank_h = c.get("value", {}).get("rank", "?")
+                    suit_h = c.get("value", {}).get("suit", "?")
+                    enh_h = mod_h.get("enhancement", "")
                 _scoring_log.info("  held[%d] %s %s | enh=%s", i, rank_h, suit_h, enh_h or "-")
             # Dump raw joker ability data + parsed values so we can compare
             for i, j in enumerate(snapshot["jokers"]):
@@ -643,7 +661,7 @@ def log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict) -> N
                 jed_str = " ".join(jed_parts) if jed_parts else "-"
                 _scoring_log.info(
                     "  joker[%d] %s | rarity=%s ed=%s | ability=%s | parsed=%s | effect=%s",
-                    i, j.get("key", "?"), rarity, jed_str, ability, parsed,
+                    i, joker_key(j) or "?", rarity, jed_str, ability, parsed,
                     effect[:120] if effect else "-",
                 )
     except Exception as e:

@@ -6,7 +6,8 @@ import math
 from balatro_bot.domain.scoring.estimate import score_hand, score_hand_detailed
 from balatro_bot.domain.scoring.base import arm_reduce_hand_levels, flint_halve_hand_levels
 from balatro_bot.cards import card_chip_value
-from tests.conftest import card, wild_card, stone_card, joker
+from dataclasses import replace as dc_replace
+from tests.conftest import card, wild_card, stone_card, card_with_perma, debuffed_card, joker
 
 
 def _joker_with_ability(key: str, ability: dict, **extra) -> dict:
@@ -340,14 +341,12 @@ class TestStoneCardPermaBonus:
 
     def test_stone_with_perma_bonus(self):
         """Stone card with perma_bonus (e.g. from Hiker) adds to 50 base."""
-        sc = stone_card()
-        sc["value"]["perma_bonus"] = 25
+        sc = dc_replace(stone_card(), value=dc_replace(stone_card().value, perma_bonus=25))
         assert card_chip_value(sc) == 75
 
     def test_stone_perma_bonus_zero(self):
         """Stone card with perma_bonus=0 still gives 50."""
         sc = stone_card()
-        sc["value"]["perma_bonus"] = 0
         assert card_chip_value(sc) == 50
 
 
@@ -365,11 +364,9 @@ class TestFlowerPotDebuffed:
             card("A", "H"),
             card("K", "D"),
             card("Q", "C"),
-            card("J", "S"),
+            debuffed_card("J", "S"),
             card("T", "H"),
         ]
-        # Debuff the Spade card — it should still provide its suit
-        cards[3]["state"] = {"debuff": True}
         _, _, total_with = score_hand("Straight", cards, jokers=[self._flower_pot_joker()])
         _, _, total_without = score_hand("Straight", cards)
         # All 4 suits present (debuffed J♠ still contributes Spade)
@@ -631,8 +628,7 @@ class TestRaisedFistDebuffed:
     def test_lowest_debuffed_adds_zero(self):
         """Lowest held card (4♣) debuffed by boss → 0 mult from Raised Fist."""
         played = [card("5", "H"), card("5", "D")]
-        held = [card("A", "D"), card("Q", "D"), card("4", "C")]
-        held[2]["state"] = {"debuff": True}
+        held = [card("A", "D"), card("Q", "D"), debuffed_card("4", "C")]
         result = score_hand_detailed(
             "Pair", played, hand_levels=self._HL,
             jokers=[self._raised_fist_joker()],
@@ -644,8 +640,7 @@ class TestRaisedFistDebuffed:
     def test_non_lowest_debuffed_still_adds(self):
         """Higher card (K♣) debuffed, lowest (4♥) fine → adds 2×4 = 8."""
         played = [card("5", "H"), card("5", "D")]
-        held = [card("K", "C"), card("Q", "D"), card("4", "H")]
-        held[0]["state"] = {"debuff": True}
+        held = [debuffed_card("K", "C"), card("Q", "D"), card("4", "H")]
         result = score_hand_detailed(
             "Pair", played, hand_levels=self._HL,
             jokers=[self._raised_fist_joker()],
@@ -657,9 +652,7 @@ class TestRaisedFistDebuffed:
     def test_all_held_debuffed_adds_zero(self):
         """All held cards debuffed → 0 mult from Raised Fist."""
         played = [card("5", "H"), card("5", "D")]
-        held = [card("A", "C"), card("Q", "C"), card("4", "C")]
-        for c in held:
-            c["state"] = {"debuff": True}
+        held = [debuffed_card("A", "C"), debuffed_card("Q", "C"), debuffed_card("4", "C")]
         result = score_hand_detailed(
             "Pair", played, hand_levels=self._HL,
             jokers=[self._raised_fist_joker()],

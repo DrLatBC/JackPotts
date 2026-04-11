@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from balatro_bot.domain.models.card import Card
+
 # Card formatting constants
 SUIT_SYM = {"H": "\u2665", "D": "\u2666", "C": "\u2663", "S": "\u2660"}
 RANK_SYM = {
@@ -13,8 +15,10 @@ RANK_SYM = {
 }
 
 
-def fmt_card(c: dict) -> str:
-    """Format a card dict as a compact label like '10\u2665' or 'A\u2660'."""
+def fmt_card(c: Card | dict) -> str:
+    """Format a card as a compact label like '10\u2665' or 'A\u2660'."""
+    if isinstance(c, Card):
+        return RANK_SYM.get(c.value.rank or "", "?") + SUIT_SYM.get(c.value.suit or "", "?")
     val = c.get("value", {})
     return RANK_SYM.get(val.get("rank", ""), "?") + SUIT_SYM.get(val.get("suit", ""), "?")
 
@@ -56,18 +60,29 @@ def format_deck_snapshot(deck_cards: list) -> str:
     stone_count = 0
 
     for card in deck_cards:
-        mod = card.get("modifier", {})
-        if not isinstance(mod, dict):
-            mod = {}
-        enh = mod.get("enhancement", "")
-        if enh == "STONE":
-            stone_count += 1
-            continue
-        rank = card.get("value", {}).get("rank")
-        suit = card.get("value", {}).get("suit")
-        if not rank or not suit:
-            continue
-        seal = mod.get("seal", "")
+        if isinstance(card, Card):
+            enh = card.modifier.enhancement or ""
+            if enh == "STONE":
+                stone_count += 1
+                continue
+            rank = card.value.rank
+            suit = card.value.suit
+            if not rank or not suit:
+                continue
+            seal = card.modifier.seal or ""
+        else:
+            mod = card.get("modifier", {})
+            if not isinstance(mod, dict):
+                mod = {}
+            enh = mod.get("enhancement", "")
+            if enh == "STONE":
+                stone_count += 1
+                continue
+            rank = card.get("value", {}).get("rank")
+            suit = card.get("value", {}).get("suit")
+            if not rank or not suit:
+                continue
+            seal = mod.get("seal", "")
         by_rank[rank].append((suit, enh, seal))
 
     parts = []

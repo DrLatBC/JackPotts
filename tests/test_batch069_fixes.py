@@ -8,6 +8,7 @@ Fix 5: Luchador sell clears boss restrictions (context-level)
 """
 
 import math
+from dataclasses import replace as dc_replace
 
 from balatro_bot.domain.scoring.classify import (
     classify_hand,
@@ -201,8 +202,9 @@ class TestFlowerPotDebuffedWild:
             card("T", "H"),   # Heart
         ]
         # Make J♥ a debuffed WILD — should NOT fill the missing Spade
-        cards[3]["modifier"]["enhancement"] = "WILD"
-        cards[3]["state"] = {"debuff": True}
+        cards[3] = dc_replace(cards[3],
+                              modifier=dc_replace(cards[3].modifier, enhancement="WILD"),
+                              state=dc_replace(cards[3].state, debuff=True))
 
         _, _, total_with = score_hand("Straight", cards, jokers=[self._flower_pot()])
         _, _, total_without = score_hand("Straight", cards)
@@ -232,7 +234,7 @@ class TestFlowerPotDebuffedWild:
             card("J", "S"),   # natural Spade
             card("T", "H"),
         ]
-        cards[3]["state"] = {"debuff": True}
+        cards[3] = dc_replace(cards[3], state=dc_replace(cards[3].state, debuff=True))
         _, _, total_with = score_hand("Straight", cards, jokers=[self._flower_pot()])
         _, _, total_without = score_hand("Straight", cards)
         assert total_with > total_without, \

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
-from balatro_bot.cards import is_joker_debuffed
+from balatro_bot.cards import is_joker_debuffed, joker_key
+from balatro_bot.domain.models.joker import Joker
 from balatro_bot.joker_effects.context import ScoreContext, _noop
 from balatro_bot.joker_effects.simple import SIMPLE_EFFECTS
 from balatro_bot.joker_effects.complex import COMPLEX_EFFECTS
 
+if TYPE_CHECKING:
+    from typing import Any
+
+    JokerLike = Joker | dict[str, Any]
+
 
 # Merge simple and complex effects. Complex takes precedence if both define the same key.
-JOKER_EFFECTS: dict[str, Callable[[ScoreContext, dict], None]] = {}
+JOKER_EFFECTS: dict[str, Callable[[ScoreContext, JokerLike], None]] = {}
 JOKER_EFFECTS.update(SIMPLE_EFFECTS)
 JOKER_EFFECTS.update(COMPLEX_EFFECTS)
 
@@ -66,13 +72,25 @@ for key in (
     JOKER_EFFECTS[key] = _noop
 
 
-def _joker_modifier(joker: dict) -> dict:
-    """Return the modifier dict for a joker, handling [] for empty."""
+def _joker_modifier(joker: JokerLike) -> dict:
+    """Return the modifier dict for a joker, handling both Joker and dict."""
+    if isinstance(joker, Joker):
+        mod = joker.modifier
+        d: dict[str, Any] = {}
+        if mod.edition is not None:
+            d["edition"] = mod.edition
+        if mod.edition_chips:
+            d["edition_chips"] = mod.edition_chips
+        if mod.edition_mult:
+            d["edition_mult"] = mod.edition_mult
+        if mod.edition_x_mult:
+            d["edition_x_mult"] = mod.edition_x_mult
+        return d
     m = joker.get("modifier", {})
     return m if isinstance(m, dict) else {}
 
 
-def _apply_joker_edition_pre(ctx: ScoreContext, joker: dict) -> None:
+def _apply_joker_edition_pre(ctx: ScoreContext, joker: JokerLike) -> None:
     """Apply pre-joker edition effects: Foil (+chips), HOLO (+mult)."""
     mod = _joker_modifier(joker)
     edition = mod.get("edition", "")
@@ -82,7 +100,7 @@ def _apply_joker_edition_pre(ctx: ScoreContext, joker: dict) -> None:
         ctx.mult += mod.get("edition_mult", 10)
 
 
-def _apply_joker_edition_post(ctx: ScoreContext, joker: dict) -> None:
+def _apply_joker_edition_post(ctx: ScoreContext, joker: JokerLike) -> None:
     """Apply post-joker edition effects: Polychrome (xmult).
     Negative has no scoring effect (just +1 slot, already in joker_limit)."""
     mod = _joker_modifier(joker)
@@ -93,8 +111,10 @@ def _apply_joker_edition_post(ctx: ScoreContext, joker: dict) -> None:
         ctx.mult *= mod["edition_x_mult"]
 
 
-def _is_uncommon(joker: dict) -> bool:
+def _is_uncommon(joker: JokerLike) -> bool:
     """Check if a joker is Uncommon rarity (API sends int or string)."""
+    if isinstance(joker, Joker):
+        return joker.value.rarity in (2, "Uncommon")
     rarity = joker.get("value", {}).get("rarity")
     return rarity in (2, "Uncommon")
 
@@ -102,7 +122,7 @@ def _is_uncommon(joker: dict) -> bool:
 def _get_baseball_xmult(ctx: ScoreContext) -> float:
     """Return Baseball Card's xmult if owned, else 0."""
     for j in ctx.jokers:
-        if j.get("key") == "j_baseball":
+        if joker_key(j) == "j_baseball":
             from balatro_bot.joker_effects.parsers import _ability
             return _ability(j).get("extra", 1.5)
     return 0.0
@@ -111,7 +131,7 @@ def _get_baseball_xmult(ctx: ScoreContext) -> float:
 def apply_joker_effects(ctx: ScoreContext) -> None:
     """Apply all owned joker effects to the scoring context, in order.
 
-    Per joker, the game applies: pre-edition → joker effect → post-edition.
+    Per joker, the game applies: pre-edition -> joker effect -> post-edition.
     Baseball Card: after each Uncommon joker fires, apply an additional xMult.
     """
     baseball_xm = _get_baseball_xmult(ctx)
@@ -120,7 +140,7 @@ def apply_joker_effects(ctx: ScoreContext) -> None:
         if is_joker_debuffed(joker):
             continue
         _apply_joker_edition_pre(ctx, joker)
-        key = joker.get("key", "")
+        key = joker_key(joker)
         effect = JOKER_EFFECTS.get(key)
         if effect is not None:
             effect(ctx, joker)
@@ -141,8 +161,8 @@ def apply_joker_effects_detailed(ctx: ScoreContext) -> list[tuple[str, float, fl
     for joker in ctx.jokers:
         if is_joker_debuffed(joker):
             continue
-        key = joker.get("key", "")
-        label = joker.get("label", key)
+        key = joker_key(joker)
+        label = joker.label if isinstance(joker, Joker) else joker.get("label", key)
         pre_chips, pre_mult = ctx.chips, ctx.mult
         _apply_joker_edition_pre(ctx, joker)
         effect = JOKER_EFFECTS.get(key)

@@ -4,6 +4,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import UseConsumable, SellConsumable, SellJoker, RearrangeHand, Action
+from balatro_bot.cards import joker_key
 from balatro_bot.constants import (
     PLANET_KEYS, SAFE_CONSUMABLE_TAROTS, TARGETING_TAROTS,
     SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
@@ -239,7 +240,7 @@ class UseConsumables:
 
         # Verify target joker is still owned
         target_idx = next(
-            (i for i, j in enumerate(jokers) if j.get("key") == self._hex_target_key), None
+            (i for i, j in enumerate(jokers) if joker_key(j) == self._hex_target_key), None
         )
         if target_idx is None:
             self._hex_selling_down = False
@@ -264,7 +265,7 @@ class UseConsumables:
         worst_idx = None
         worst_val = float("inf")
         for i, j in enumerate(jokers):
-            if j.get("key") == self._hex_target_key:
+            if joker_key(j) == self._hex_target_key:
                 continue
             val = evaluate_joker_value(j, jokers, hand_levels, ante, strat)
             if val < worst_val:

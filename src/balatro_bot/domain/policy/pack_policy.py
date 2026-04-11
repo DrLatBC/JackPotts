@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from balatro_bot.cards import joker_key
 from balatro_bot.constants import (
     NO_TARGET_TAROTS, TARGETING_TAROTS, PLANET_HAND_MAP, PLANET_KEYS,
     SCALING_JOKERS, SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
@@ -150,7 +151,7 @@ def choose_from_buffoon_pack(
 
     from balatro_bot.domain.policy.shop import _is_negative
 
-    owned_keys = {j.get("key") for j in owned_jokers}
+    owned_keys = {joker_key(j) for j in owned_jokers}
     has_madness = "j_madness" in owned_keys
     slots_full = len(owned_jokers) >= joker_limit
 
@@ -240,7 +241,7 @@ def score_spectral_card(
     if score == 0.0:
         return 0.0
 
-    joker_keys = {j.get("key") for j in jokers}
+    joker_keys = {joker_key(j) for j in jokers}
 
     # Apply runtime conditions
     if key in ("c_ankh", "c_hex") and not jokers:

@@ -8,7 +8,7 @@ from __future__ import annotations
 from itertools import combinations
 from typing import NamedTuple
 
-from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, is_joker_debuffed, is_stone, rank_value
+from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, is_joker_debuffed, is_stone, joker_key, rank_value
 from balatro_bot.constants import HAND_INFO
 
 from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
@@ -88,7 +88,7 @@ def enumerate_hands(
     n = len(hand_cards)
     indices_set = set(range(n))
 
-    joker_keys = {j.get("key") for j in (jokers or []) if not is_joker_debuffed(j)}
+    joker_keys = {joker_key(j) for j in (jokers or []) if not is_joker_debuffed(j)}
     four_fingers = "j_four_fingers" in joker_keys
     has_splash   = "j_splash" in joker_keys
     shortcut     = "j_shortcut" in joker_keys
@@ -224,7 +224,7 @@ def discard_candidates(
     if not bh:
         return [(list(range(min(max_discard, len(hand_cards)))), "no hand found")]
 
-    joker_keys = {j.get("key") for j in (jokers or [])}
+    joker_keys = {joker_key(j) for j in (jokers or [])}
     shortcut = "j_shortcut" in joker_keys
     smeared = "j_smeared" in joker_keys
 
@@ -343,7 +343,7 @@ def discard_candidates(
     strategies.sort(key=chase_score, reverse=True)
 
     results: list[ChaseCandidate] = []
-    has_blackboard = any(j.get("key") == "j_blackboard" for j in (jokers or []))
+    has_blackboard = any(joker_key(j) == "j_blackboard" for j in (jokers or []))
 
     for chase_name, keep, prob, reason in strategies:
         to_discard = cards_not_in(hand_cards, set(keep), blackboard=has_blackboard, rank_affinity=rank_aff)[:max_discard]

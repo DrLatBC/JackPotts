@@ -6,6 +6,7 @@ Moved from hand_evaluator.py during Phase 2 of the logic separation refactor.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import (
@@ -20,9 +21,12 @@ from balatro_bot.cards import (
     is_debuffed,
     is_joker_debuffed,
     is_stone,
+    joker_key,
     rank_value,
 )
 from balatro_bot.constants import HAND_INFO, RANK_CHIPS
+from balatro_bot.domain.models.card import Card
+from balatro_bot.joker_effects.parsers import _ability
 
 if TYPE_CHECKING:
     from typing import Any
@@ -54,7 +58,7 @@ def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
     for j in (jokers or []):
         if is_joker_debuffed(j):
             continue
-        key = j.get("key", "")
+        key = joker_key(j)
         if key in ("j_midas_mask", "j_vampire"):
             before_jokers.append((key, j))
 
@@ -73,12 +77,15 @@ def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
                 rank = card_rank(card)
                 if rank and (pareidolia or rank in FACE_RANKS):
                     mod = _modifier(card)
-                    if not isinstance(mod, dict) or mod.get("enhancement") == "GOLD":
+                    if mod.get("enhancement") == "GOLD":
                         continue
-                    card_copy = dict(card)
-                    mod_copy = dict(mod) if isinstance(mod, dict) else {}
-                    mod_copy["enhancement"] = "GOLD"
-                    card_copy["modifier"] = mod_copy
+                    if isinstance(card, Card):
+                        card_copy = replace(card, modifier=replace(card.modifier, enhancement="GOLD"))
+                    else:
+                        card_copy = dict(card)
+                        mod_copy = dict(mod) if isinstance(mod, dict) else {}
+                        mod_copy["enhancement"] = "GOLD"
+                        card_copy["modifier"] = mod_copy
                     remap[id(effective[i])] = (effective[i], card_copy)
                     effective[i] = card_copy
 
@@ -94,10 +101,13 @@ def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
                 enhancement = mod.get("enhancement", "")
                 if enhancement and enhancement != "BASE" and not is_debuffed(card):
                     enhanced_count += 1
-                    card_copy = dict(card)
-                    mod_copy = dict(mod)
-                    mod_copy.pop("enhancement", None)
-                    card_copy["modifier"] = mod_copy
+                    if isinstance(card, Card):
+                        card_copy = replace(card, modifier=replace(card.modifier, enhancement=None))
+                    else:
+                        card_copy = dict(card)
+                        mod_copy = dict(mod)
+                        mod_copy.pop("enhancement", None)
+                        card_copy["modifier"] = mod_copy
                     remap[id(effective[i])] = (effective[i], card_copy)
                     effective[i] = card_copy
 
@@ -137,7 +147,7 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
 
     def _add_per_card_effect(key: str, joker: dict) -> None:
         """Add per-card scoring effects for a joker key, using joker's ability data."""
-        ab = joker.get("value", {}).get("ability", {})
+        ab = _ability(joker)
         if key == "j_greedy_joker":
             _per_card.append(("suit_mult", "D", ab.get("s_mult", 3)))
         elif key == "j_lusty_joker":
@@ -181,19 +191,19 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     for i, j in enumerate(joker_list):
         if is_joker_debuffed(j):
             continue
-        k = j.get("key", "")
+        k = joker_key(j)
         if k == "j_blueprint":
             # Blueprint copies the joker to its right
             if i + 1 < len(joker_list):
                 target = joker_list[i + 1]
                 if not is_joker_debuffed(target):
-                    _add_per_card_effect(target.get("key", ""), target)
+                    _add_per_card_effect(joker_key(target), target)
         elif k == "j_brainstorm":
             # Brainstorm copies the leftmost joker
             if joker_list and joker_list[0] is not j:
                 target = joker_list[0]
                 if not is_joker_debuffed(target):
-                    _add_per_card_effect(target.get("key", ""), target)
+                    _add_per_card_effect(joker_key(target), target)
         else:
             _add_per_card_effect(k, j)
 
@@ -283,17 +293,17 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     for i, j in enumerate(joker_list):
         if is_joker_debuffed(j):
             continue
-        k = j.get("key", "")
+        k = joker_key(j)
         if k == "j_blueprint":
             if i + 1 < len(joker_list):
                 target = joker_list[i + 1]
                 if not is_joker_debuffed(target):
-                    _count_held_phase(target.get("key", ""), target)
+                    _count_held_phase(joker_key(target), target)
         elif k == "j_brainstorm":
             if joker_list and joker_list[0] is not j:
                 target = joker_list[0]
                 if not is_joker_debuffed(target):
-                    _count_held_phase(target.get("key", ""), target)
+                    _count_held_phase(joker_key(target), target)
         else:
             _count_held_phase(k, j)
 
@@ -401,7 +411,7 @@ def score_hand(
         if _ox_locked and hand_name == _ox_locked:
             money = 0
 
-    joker_keys_set = {j.get("key") for j in jokers if not is_joker_debuffed(j)}
+    joker_keys_set = {joker_key(j) for j in jokers if not is_joker_debuffed(j)}
     ctx = ScoreContext(
         chips=base_chips,
         mult=float(base_mult),
@@ -475,13 +485,22 @@ def score_hand_detailed(
 
     card_details = []
     for c in scoring_cards:
-        label = c.get("label", "?")
-        chips = card_chip_value(c)
-        mult = card_mult_value(c)
-        xmult = card_xmult_value(c)
-        mod = c.get("modifier", {})
-        if isinstance(mod, dict) and (mod.get("edition") or mod.get("enhancement")):
-            label += f"[{mod.get('edition','')}/{mod.get('enhancement','')}]"
+        if isinstance(c, Card):
+            label = c.label or "?"
+            chips = card_chip_value(c)
+            mult = card_mult_value(c)
+            xmult = card_xmult_value(c)
+            mod = c.modifier
+            if mod.edition or mod.enhancement:
+                label += f"[{mod.edition or ''}/{mod.enhancement or ''}]"
+        else:
+            label = c.get("label", "?")
+            chips = card_chip_value(c)
+            mult = card_mult_value(c)
+            xmult = card_xmult_value(c)
+            mod = c.get("modifier", {})
+            if isinstance(mod, dict) and (mod.get("edition") or mod.get("enhancement")):
+                label += f"[{mod.get('edition','')}/{mod.get('enhancement','')}]"
         card_details.append((label, chips, mult, xmult))
 
     if not jokers:
@@ -509,7 +528,7 @@ def score_hand_detailed(
             "total": math.floor(total_chips * total_mult),
         }
 
-    joker_keys_set = {j.get("key") for j in jokers if not is_joker_debuffed(j)}
+    joker_keys_set = {joker_key(j) for j in jokers if not is_joker_debuffed(j)}
     ctx = ScoreContext(
         chips=base_chips,
         mult=float(base_mult),

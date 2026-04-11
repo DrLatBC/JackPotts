@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
+
+from balatro_bot.domain.models.joker import Joker
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    JokerLike = Joker | dict[str, Any]
 
 _CHIPS_PATTERN = re.compile(r'\+(\d+(?:\.\d+)?)\s+Chips')
 _MULT_PATTERN = re.compile(r'\+(\d+(?:\.\d+)?)\s+Mult')
@@ -80,13 +88,20 @@ def parse_effect_value(effect_text: str) -> dict[str, float | None]:
     return result
 
 
-def _get_parsed_value(joker: dict, key: str, fallback: float) -> float:
+def _joker_effect_text(joker: JokerLike) -> str:
+    """Extract effect text from a joker, handling both Joker and dict."""
+    if isinstance(joker, Joker):
+        return joker.value.effect
+    return joker.get("value", {}).get("effect", "")
+
+
+def _get_parsed_value(joker: JokerLike, key: str, fallback: float) -> float:
     """Get a parsed value from joker effect text, falling back to estimate.
 
     key: one of 'chips', 'mult', 'xmult'
     fallback: the hardcoded estimate to use if parsing fails
     """
-    effect_text = joker.get("value", {}).get("effect", "")
+    effect_text = _joker_effect_text(joker)
     if not effect_text:
         return fallback
     parsed = parse_effect_value(effect_text)
@@ -94,21 +109,33 @@ def _get_parsed_value(joker: dict, key: str, fallback: float) -> float:
     return value if value is not None else fallback
 
 
-def _parse_bracket_counter(joker: dict) -> int | None:
+def _parse_bracket_counter(joker: JokerLike) -> int | None:
     """Extract a bracketed counter [N] from effect text (e.g. Yorick's remaining discards)."""
-    effect_text = joker.get("value", {}).get("effect", "")
+    effect_text = _joker_effect_text(joker)
     if not effect_text:
         return None
     m = _BRACKET_COUNTER_PATTERN.search(effect_text)
     return int(m.group(1)) if m else None
 
 
-def _ability(joker: dict) -> dict:
-    """Return the joker's ability dict from the API (empty dict if absent)."""
+def _ability(joker: JokerLike) -> dict:
+    """Return the joker's ability as a dict (for backward compat with .get() callers)."""
+    if isinstance(joker, Joker):
+        ab = joker.value.ability
+        d: dict[str, Any] = {}
+        for field_name in (
+            "chips", "mult", "t_mult", "t_chips", "Xmult", "x_mult", "s_mult",
+            "extra", "size", "d_remaining", "loyalty_remaining", "min", "max",
+            "hand_add", "chip_mod", "dollars", "driver_tally", "odds",
+        ):
+            val = getattr(ab, field_name, None)
+            if val is not None:
+                d[field_name] = val
+        return d
     return joker.get("value", {}).get("ability", {})
 
 
-def _ab_chips(joker: dict, fallback: float = 0) -> float:
+def _ab_chips(joker: JokerLike, fallback: float = 0) -> float:
     """Get chip value from ability data, then text parsing, then fallback."""
     ab = _ability(joker)
     v = ab.get("chips")
@@ -117,7 +144,7 @@ def _ab_chips(joker: dict, fallback: float = 0) -> float:
     return _get_parsed_value(joker, "chips", fallback)
 
 
-def _ab_mult(joker: dict, fallback: float = 0) -> float:
+def _ab_mult(joker: JokerLike, fallback: float = 0) -> float:
     """Get mult value from ability data, then text parsing, then fallback."""
     ab = _ability(joker)
     v = ab.get("mult")
@@ -128,7 +155,7 @@ def _ab_mult(joker: dict, fallback: float = 0) -> float:
     return _get_parsed_value(joker, "mult", fallback)
 
 
-def _ab_xmult(joker: dict, fallback: float = 1.0) -> float:
+def _ab_xmult(joker: JokerLike, fallback: float = 1.0) -> float:
     """Get xmult value from ability data, then text parsing, then fallback."""
     ab = _ability(joker)
     v = ab.get("Xmult")

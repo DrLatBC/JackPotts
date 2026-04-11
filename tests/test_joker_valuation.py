@@ -26,25 +26,25 @@ class TestSyntheticHand:
         assert len(scoring) == 2
         assert len(played) == 5
         # Both scoring cards should have the same rank
-        assert scoring[0]["value"]["rank"] == scoring[1]["value"]["rank"]
+        assert scoring[0].value.rank == scoring[1].value.rank
 
     def test_flush_produces_flush(self):
         scoring, played = _synthetic_hand("Flush")
         assert len(scoring) == 5
-        suits = {c["value"]["suit"] for c in scoring}
+        suits = {c.value.suit for c in scoring}
         assert len(suits) == 1
 
     def test_straight_produces_straight(self):
         scoring, played = _synthetic_hand("Straight")
         assert len(scoring) == 5
-        ranks = [c["value"]["rank"] for c in scoring]
+        ranks = [c.value.rank for c in scoring]
         assert len(set(ranks)) == 5  # all different ranks
 
     def test_three_of_a_kind(self):
         scoring, played = _synthetic_hand("Three of a Kind")
         assert len(scoring) == 3
         assert len(played) == 5
-        ranks = [c["value"]["rank"] for c in scoring]
+        ranks = [c.value.rank for c in scoring]
         assert len(set(ranks)) == 1
 
     def test_full_house(self):
@@ -56,7 +56,7 @@ class TestSyntheticHand:
         scoring, played = _synthetic_hand("Four of a Kind")
         assert len(scoring) == 4
         assert len(played) == 5
-        ranks = [c["value"]["rank"] for c in scoring]
+        ranks = [c.value.rank for c in scoring]
         assert len(set(ranks)) == 1
 
     def test_high_card(self):
@@ -78,7 +78,7 @@ class TestSyntheticHand:
             active_archetypes=[],
         )
         scoring, played = _synthetic_hand("Flush", strategy=strat)
-        suits = {c["value"]["suit"] for c in scoring}
+        suits = {c.value.suit for c in scoring}
         assert "S" in suits
 
 

@@ -13,6 +13,7 @@ from balatro_bot.constants import (
     PLANET_KEYS, SAFE_CONSUMABLE_TAROTS, SAFE_SPECTRAL_CONSUMABLES,
     SCALING_JOKERS, SCALING_XMULT, SPECTRAL_TARGETING, TARGETING_TAROTS,
 )
+from balatro_bot.cards import joker_key
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
 from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
 from balatro_bot.rules._helpers import evaluate_hex
@@ -127,7 +128,7 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
 
     # Proactive sell: Popcorn decayed to ≤4 mult
     for i, j in enumerate(owned):
-        if j.get("key") == "j_popcorn":
+        if joker_key(j) == "j_popcorn":
             effect_text = j.get("value", {}).get("effect", "")
             parsed = parse_effect_value(effect_text) if effect_text else {}
             current_mult = parsed.get("mult", 99)
@@ -138,7 +139,7 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
 
     # Proactive sell: Ramen decayed below X1.0
     for i, j in enumerate(owned):
-        if j.get("key") == "j_ramen":
+        if joker_key(j) == "j_ramen":
             effect_text = j.get("value", {}).get("effect", "")
             parsed = parse_effect_value(effect_text) if effect_text else {}
             current_xmult = parsed.get("xmult")
@@ -173,7 +174,7 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
         protected = always_protected | SCALING_JOKERS
 
     def _is_stale_scaler(j: dict, cur_ante: int) -> bool:
-        key = j.get("key", "")
+        key = joker_key(j)
         if key not in SCALING_JOKERS or key in always_protected:
             return False
         effect_text = j.get("value", {}).get("effect", "")
@@ -190,7 +191,7 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
         (i, evaluate_joker_value(j, owned_jokers=owned,
                                  hand_levels=hand_levels, ante=ante, strategy=strat), j)
         for i, j in enumerate(owned)
-        if (j.get("key") not in protected or _is_stale_scaler(j, ante))
+        if (joker_key(j) not in protected or _is_stale_scaler(j, ante))
         and not _is_polychrome(j)  # never sell Polychrome — ×1.5 every hand
     ]
     if not owned_values:
@@ -209,7 +210,7 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
     best_shop_label = ""
     best_threshold = 0.0
 
-    weakest_key = weakest_joker.get("key", "")
+    weakest_key = joker_key(weakest_joker)
     weakest_on_strategy = any(
         strat.hand_affinity(ht) > 0
         for ht in JOKER_HAND_AFFINITY.get(weakest_key, ([], 0))[0]
@@ -286,7 +287,7 @@ def choose_sell_diet_cola(state: dict[str, Any]) -> Action | None:
     owned = state.get("jokers", {}).get("cards", [])
 
     diet_idx = next(
-        (i for i, j in enumerate(owned) if j.get("key") == "j_diet_cola"), None
+        (i for i, j in enumerate(owned) if joker_key(j) == "j_diet_cola"), None
     )
     if diet_idx is None:
         return None
@@ -304,7 +305,7 @@ def choose_sell_diet_cola(state: dict[str, Any]) -> Action | None:
 def choose_feed_campfire(state: dict[str, Any]) -> Action | None:
     """Sell consumables to feed Campfire's X0.25 Mult per sell."""
     owned_jokers = state.get("jokers", {}).get("cards", [])
-    if not any(j.get("key") == "j_campfire" for j in owned_jokers):
+    if not any(joker_key(j) == "j_campfire" for j in owned_jokers):
         return None
 
     consumables = state.get("consumables", {}).get("cards", [])
@@ -394,7 +395,7 @@ def choose_buy_joker_in_shop(state: dict[str, Any]) -> Action | None:
 
         key = card.get("key", "")
         joker_count = joker_slots.get("count", 0)
-        owned_keys = {j.get("key") for j in joker_slots.get("cards", [])}
+        owned_keys = {joker_key(j) for j in joker_slots.get("cards", [])}
 
         from balatro_bot.scaling import check_anti_synergy
         blocker = check_anti_synergy(key, owned_keys)
@@ -437,8 +438,8 @@ def choose_buy_joker_in_shop(state: dict[str, Any]) -> Action | None:
             value = max(value, 10.0)
             force_buy = True
 
-        if not negative and any(j.get("key") == "j_stencil" for j in joker_slots.get("cards", [])):
-            stencil_count = sum(1 for j in joker_slots.get("cards", []) if j.get("key") == "j_stencil")
+        if not negative and any(joker_key(j) == "j_stencil" for j in joker_slots.get("cards", [])):
+            stencil_count = sum(1 for j in joker_slots.get("cards", []) if joker_key(j) == "j_stencil")
             stencil_mult_after = (jlimit - joker_count - 1) + stencil_count
             if stencil_mult_after <= 2 and value < 5.0:
                 passed_on.append(f"{label}(${cost}, Stencil restriction: only ×{stencil_mult_after} left)")
@@ -593,8 +594,8 @@ def choose_buy_pack_in_shop(state: dict[str, Any]) -> Action | None:
     packs = state.get("packs", {})
     joker_slots = state.get("jokers", {})
     owned_jokers = joker_slots.get("cards", [])
-    has_red_card = any(j.get("key") == "j_red_card" for j in owned_jokers)
-    has_constellation = any(j.get("key") == "j_constellation" for j in owned_jokers)
+    has_red_card = any(joker_key(j) == "j_red_card" for j in owned_jokers)
+    has_constellation = any(joker_key(j) == "j_constellation" for j in owned_jokers)
 
     best_idx = None
     best_priority = 999

@@ -58,7 +58,8 @@ def _ctx_for(hand, jokers_list=None, deck=None, discards_left=3):
     jokers_list = jokers_list or []
     if deck is None:
         # Exclude hand cards from deck to match real game state
-        hand_keys = {(c["value"]["rank"], c["value"]["suit"]) for c in hand}
+        from balatro_bot.domain.models.card import Card
+        hand_keys = {(c.value.rank, c.value.suit) if isinstance(c, Card) else (c["value"]["rank"], c["value"]["suit"]) for c in hand}
         deck = _make_deck(exclude=hand_keys)
     return RoundContext(
         blind_score=5000, blind_name="Small Blind", chips_scored=0,

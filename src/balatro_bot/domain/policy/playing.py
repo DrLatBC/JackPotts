@@ -5,8 +5,21 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import Action, SellJoker
-from balatro_bot.cards import is_debuffed
+from balatro_bot.cards import is_debuffed, joker_key
+from balatro_bot.domain.models.joker import Joker
 from balatro_bot.scaling import SELL_PROTECTED
+
+
+def _sell_cost(j: Joker | dict) -> int:
+    if isinstance(j, Joker):
+        return j.cost.get("sell", 99) if isinstance(j.cost, dict) else 99
+    return j.get("cost", {}).get("sell", 99)
+
+
+def _joker_label(j: Joker | dict) -> str:
+    if isinstance(j, Joker):
+        return j.label or "?"
+    return j.get("label", "?")
 
 if TYPE_CHECKING:
     from balatro_bot.context import RoundContext
@@ -31,14 +44,14 @@ def choose_verdant_leaf_unlock(ctx: RoundContext) -> Action | None:
         return None
     candidates = [
         (i, j) for i, j in enumerate(ctx.jokers)
-        if j.get("key") not in SELL_PROTECTED
+        if joker_key(j) not in SELL_PROTECTED
     ]
     if not candidates:
         candidates = list(enumerate(ctx.jokers))
     if not candidates:
         return None
-    sell_idx = min(candidates, key=lambda x: x[1].get("cost", {}).get("sell", 99))[0]
-    label = ctx.jokers[sell_idx].get("label", "?")
+    sell_idx = min(candidates, key=lambda x: _sell_cost(x[1]))[0]
+    label = _joker_label(ctx.jokers[sell_idx])
     return SellJoker(sell_idx, reason=f"Verdant Leaf: sell {label} to unlock debuffed cards")
 
 
@@ -48,7 +61,7 @@ def choose_sell_luchador(ctx: RoundContext) -> Action | None:
         return None
 
     luchador_idx = next(
-        (i for i, j in enumerate(ctx.jokers) if j.get("key") == "j_luchador"), None
+        (i for i, j in enumerate(ctx.jokers) if joker_key(j) == "j_luchador"), None
     )
     if luchador_idx is None:
         return None

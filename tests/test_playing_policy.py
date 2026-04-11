@@ -5,7 +5,7 @@ from balatro_bot.context import RoundContext
 from balatro_bot.domain.policy.playing import choose_sell_luchador, choose_verdant_leaf_unlock
 from balatro_bot.rules.playing import SellLuchador, VerdantLeafUnlock
 from balatro_bot.strategy import compute_strategy
-from tests.conftest import card, joker
+from tests.conftest import card, debuffed_card, joker
 
 
 def _ctx(
@@ -46,8 +46,7 @@ def _ctx(
 
 
 def test_choose_verdant_leaf_unlock_sells_cheapest_non_protected() -> None:
-    debuffed = card("A", "H")
-    debuffed["state"]["debuff"] = True
+    debuffed = debuffed_card("A", "H")
     jokers = [
         {"key": "j_ride_the_bus", "label": "Ride the Bus", "cost": {"sell": 1}},
         {"key": "j_joker", "label": "Joker", "cost": {"sell": 3}},
@@ -66,8 +65,7 @@ def test_choose_verdant_leaf_unlock_sells_cheapest_non_protected() -> None:
 
 
 def test_verdant_leaf_rule_delegates_to_policy() -> None:
-    debuffed = card("A", "H")
-    debuffed["state"]["debuff"] = True
+    debuffed = debuffed_card("A", "H")
     state = {
         "hand": {"cards": [debuffed]},
         "jokers": {"cards": [{"key": "j_joker", "label": "Joker", "cost": {"sell": 3}}], "limit": 5},

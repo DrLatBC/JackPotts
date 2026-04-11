@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suits, is_debuffed, _modifier, rank_value
+from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, _modifier, joker_key, rank_value
+from balatro_bot.domain.models.joker import Joker
 from balatro_bot.constants import FACE_RANKS, FIBONACCI_RANKS, EVEN_RANKS, ODD_RANKS, RANK_CHIPS
+from balatro_bot.domain.models.card import Card
 from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult, _get_parsed_value, _parse_bracket_counter
 from balatro_bot.joker_effects.context import ScoreContext, retrigger_count, _count_suit_in_scoring, _count_face_in_scoring, _hand_contains
 
@@ -24,7 +26,7 @@ def _stencil(ctx: ScoreContext, j: dict) -> None:
     # "X1 Mult for each empty Joker slot. Joker Stencils included."
     # Each Stencil counts all Stencils as empty, not just itself.
     empty_slots = ctx.joker_limit - len(ctx.jokers)
-    stencil_count = sum(1 for jk in ctx.jokers if jk.get("key") == "j_stencil")
+    stencil_count = sum(1 for jk in ctx.jokers if joker_key(jk) == "j_stencil")
     value = empty_slots + stencil_count
     ctx.mult *= max(1, value)
 
@@ -244,7 +246,7 @@ def _flower_pot(ctx: ScoreContext, j: dict) -> None:
             elif enhancement == "STONE":
                 pass  # Stone cards have no suit
             else:
-                suit = c.get("value", {}).get("suit")
+                suit = card_suit(c)
                 if suit in ("H", "D"):
                     red_count += 1
                 elif suit in ("C", "S"):
@@ -271,7 +273,7 @@ def _blueprint(ctx: ScoreContext, j: dict) -> None:
     for i, jk in enumerate(ctx.jokers):
         if jk is j and i + 1 < len(ctx.jokers):
             right = ctx.jokers[i + 1]
-            effect = JOKER_EFFECTS.get(right.get("key", ""))
+            effect = JOKER_EFFECTS.get(joker_key(right))
             if effect and effect is not _blueprint and effect is not _brainstorm:
                 effect(ctx, right)
             break
@@ -281,7 +283,7 @@ def _brainstorm(ctx: ScoreContext, j: dict) -> None:
     if ctx.jokers:
         left = ctx.jokers[0]
         if left is not j:
-            effect = JOKER_EFFECTS.get(left.get("key", ""))
+            effect = JOKER_EFFECTS.get(joker_key(left))
             if effect and effect is not _brainstorm and effect is not _blueprint:
                 effect(ctx, left)
 
@@ -302,7 +304,7 @@ def _bootstraps(ctx: ScoreContext, j: dict) -> None:
 
 def _swashbuckler(ctx: ScoreContext, j: dict) -> None:
     total_sell = sum(
-        other.get("cost", {}).get("sell", 0)
+        (other.cost.get("sell", 0) if isinstance(other, Joker) else other.get("cost", {}).get("sell", 0))
         for other in ctx.jokers if other is not j
     )
     ctx.mult += total_sell
@@ -359,14 +361,14 @@ def _lucky_cat(ctx: ScoreContext, j: dict) -> None:
     from balatro_bot.joker_effects import retrigger_count
     base_xmult = _ab_xmult(j, fallback=1.5)
     extra = _ability(j).get("extra", 0.25)
-    has_oops = any(jk.get("key") == "j_oops" for jk in ctx.jokers)
+    has_oops = any(joker_key(jk) == "j_oops" for jk in ctx.jokers)
     prob = 2 / 5 if has_oops else 1 / 5
     lucky_triggers = sum(
         retrigger_count(c, ctx)
         for c in ctx.scoring_cards
         if not is_debuffed(c)
-        and isinstance(c.get("modifier", {}), dict)
-        and c.get("modifier", {}).get("enhancement") == "LUCKY"
+        and (c.modifier.enhancement if isinstance(c, Card)
+             else _modifier(c).get("enhancement")) == "LUCKY"
     )
     ctx.mult *= base_xmult + extra * prob * lucky_triggers
 

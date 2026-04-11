@@ -7,6 +7,7 @@ from balatro_bot.actions import (
     BuyCard, BuyPack, BuyVoucher, SellJoker, SellConsumable,
     Reroll, NextRound, RearrangeJokers, Action,
 )
+from balatro_bot.cards import joker_key
 from balatro_bot.context import RoundContext
 from balatro_bot.constants import (
     SCALING_JOKERS, SCALING_XMULT, PLANET_KEYS, SAFE_CONSUMABLE_TAROTS,
@@ -72,7 +73,7 @@ class SellInvisible:
 
     def _score_target(self, joker: dict) -> float:
         """Score how valuable this joker is as a dupe target."""
-        key = joker.get("key", "")
+        key = joker_key(joker)
 
         if key in self.COPY_JOKERS:
             return _COPY_JOKER_DUPE_SCORE
@@ -94,7 +95,7 @@ class SellInvisible:
         for i, j in enumerate(owned):
             if i == invisible_idx:
                 continue
-            if j.get("key", "") not in self._dupe_worthy():
+            if joker_key(j) not in self._dupe_worthy():
                 continue
             score = self._score_target(j)
             if score > best_score:
@@ -122,7 +123,7 @@ class SellInvisible:
         owned = state.get("jokers", {}).get("cards", [])
 
         invisible_idx = next(
-            (i for i, j in enumerate(owned) if j.get("key") == "j_invisible"), None
+            (i for i, j in enumerate(owned) if joker_key(j) == "j_invisible"), None
         )
         if invisible_idx is None:
             self._first_seen_round = None
@@ -264,7 +265,7 @@ class ReorderJokersForScoring:
         fodder: list[int] = []  # noop jokers (candidates for Ceremonial sacrifice)
 
         for i, j in enumerate(owned):
-            key = j.get("key", "")
+            key = joker_key(j)
             phase = get_joker_phase(key)
             if key == "j_ceremonial":
                 ceremonial_idx = i
@@ -286,7 +287,7 @@ class ReorderJokersForScoring:
         for i, j in enumerate(owned):
             if i in excluded:
                 continue
-            key = j.get("key", "")
+            key = joker_key(j)
             phase = get_joker_phase(key)
             ed_phase = get_joker_edition_phase(j)
             sortable.append((i, phase, ed_phase))
@@ -302,13 +303,13 @@ class ReorderJokersForScoring:
             # Always remove Ceremonial from its sorted position first
             desired_order = [i for i in desired_order if i != ceremonial_idx]
             if available_fodder:
-                available_fodder.sort(key=lambda i: owned[i].get("key", ""))
+                available_fodder.sort(key=lambda i: joker_key(owned[i]))
                 sacrifice_idx = available_fodder[0]
                 desired_order = [i for i in desired_order if i != sacrifice_idx]
                 # Insert Ceremonial after the last +mult joker (or after chips)
                 insert_at = 0
                 for pos, idx in enumerate(desired_order):
-                    if get_joker_phase(owned[idx].get("key", "")) <= PHASE_MULT:
+                    if get_joker_phase(joker_key(owned[idx])) <= PHASE_MULT:
                         insert_at = pos + 1
                 desired_order.insert(insert_at, ceremonial_idx)
                 desired_order.insert(insert_at + 1, sacrifice_idx)
@@ -322,7 +323,7 @@ class ReorderJokersForScoring:
             best_target_pos = None
             for pos in range(len(desired_order) - 1, -1, -1):
                 idx = desired_order[pos]
-                key = owned[idx].get("key", "")
+                key = joker_key(owned[idx])
                 if key in ("j_blueprint", "j_brainstorm"):
                     continue
                 phase = get_joker_phase(key)
@@ -333,7 +334,7 @@ class ReorderJokersForScoring:
                 # No ×mult — find rightmost +mult
                 for pos in range(len(desired_order) - 1, -1, -1):
                     idx = desired_order[pos]
-                    key = owned[idx].get("key", "")
+                    key = joker_key(owned[idx])
                     if get_joker_phase(key) == PHASE_MULT:
                         best_target_pos = pos
                         break
@@ -347,11 +348,11 @@ class ReorderJokersForScoring:
             desired_order.append(brainstorm_idx)
             # Ensure position 0 is a good copyable effect (not noop/brainstorm)
             if desired_order:
-                first_key = owned[desired_order[0]].get("key", "")
+                first_key = joker_key(owned[desired_order[0]])
                 first_phase = get_joker_phase(first_key)
                 if first_phase == PHASE_NOOP and len(desired_order) > 1:
                     for swap_pos in range(1, len(desired_order)):
-                        swap_key = owned[desired_order[swap_pos]].get("key", "")
+                        swap_key = joker_key(owned[desired_order[swap_pos]])
                         if (get_joker_phase(swap_key) != PHASE_NOOP
                                 and swap_key != "j_brainstorm"):
                             desired_order[0], desired_order[swap_pos] = \

@@ -13,6 +13,7 @@ _stream_log = logging.getLogger("balatro_stream")
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import DiscardCards, Action
+from balatro_bot.cards import joker_key
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.domain.scoring.search import (
     best_hand, cards_not_in, discard_candidates, ChaseCandidate,
@@ -84,7 +85,7 @@ def choose_discard(ctx: RoundContext) -> Action | None:
                 )
         return None
 
-    joker_keys = {j.get("key") for j in ctx.jokers}
+    joker_keys = {joker_key(j) for j in ctx.jokers}
 
     # If we have jokers that reward keeping discards, be conservative
     has_keep_discard_jokers = bool(joker_keys & KEEP_DISCARDS_JOKERS)

@@ -14,6 +14,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
+from balatro_bot.cards import joker_key
+from balatro_bot.domain.models.card import Card, CardValue
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
 from balatro_bot.strategy import (
@@ -128,18 +130,15 @@ _FILLER_RANKS = ["3", "4", "5", "6", "9"]  # ranks unlikely to form pairs
 _STRAIGHT_RANKS = ["5", "6", "7", "8", "9"]
 
 
-def _make_card(rank: str, suit: str) -> dict:
-    """Build a minimal synthetic card dict for scoring simulation."""
-    return {
-        "id": 0,
-        "key": f"{suit}_{rank}",
-        "set": "DEFAULT",
-        "label": f"{rank} of {suit}",
-        "value": {"suit": suit, "rank": rank},
-        "modifier": {},
-        "state": {},
-        "cost": {},
-    }
+def _make_card(rank: str, suit: str) -> Card:
+    """Build a minimal synthetic Card for scoring simulation."""
+    return Card(
+        id=0,
+        key=f"{suit}_{rank}",
+        set_="DEFAULT",
+        label=f"{rank} of {suit}",
+        value=CardValue(rank=rank, suit=suit),
+    )
 
 
 def _preferred_suit(strategy: Strategy | None) -> str:
@@ -432,7 +431,7 @@ def _synergy_multiplier(
     if candidate_hands:
         allies = 0
         for j in owned_jokers:
-            okey = j.get("key", "")
+            okey = joker_key(j)
             if okey == candidate_key or okey not in JOKER_HAND_AFFINITY:
                 continue
             other_hands = set(JOKER_HAND_AFFINITY[okey][0])
@@ -473,7 +472,7 @@ def _context_scale(
     if cat:
         same_count = sum(
             1 for j in owned_jokers
-            if _KEY_TO_CATEGORY.get(j.get("key", "")) == cat
+            if _KEY_TO_CATEGORY.get(joker_key(j)) == cat
         )
         factor *= 1.0 / (1.0 + same_count * 0.25)
 
@@ -501,7 +500,7 @@ def evaluate_joker_value(
     if strategy is None:
         strategy = compute_strategy(owned_jokers, hand_levels)
 
-    owned_keys = {j.get("key") for j in owned_jokers}
+    owned_keys = {joker_key(j) for j in owned_jokers}
 
     # Determine hand types to simulate
     if strategy.preferred_hands:

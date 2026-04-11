@@ -11,7 +11,7 @@ import random
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import PlayCards, DiscardCards, Action
-from balatro_bot.cards import card_rank, rank_value, _modifier
+from balatro_bot.cards import card_rank, joker_key, rank_value, _modifier
 from balatro_bot.constants import FACE_RANKS_SET
 from balatro_bot.domain.scoring.classify import classify_hand
 from balatro_bot.domain.scoring.estimate import score_hand
@@ -202,7 +202,7 @@ def choose_milk_play(ctx: RoundContext) -> Action | None:
     if ctx.mouth_locked_hand is not None or ctx.blind_name == "The Mouth":
         return None
 
-    joker_keys = {j.get("key") for j in ctx.jokers}
+    joker_keys = {joker_key(j) for j in ctx.jokers}
     owned_scalers = {k: SCALING_REGISTRY[k] for k in joker_keys if k in SCALING_REGISTRY}
     active = {k: p for k, p in owned_scalers.items() if p.milk_priority > 0}
     if not active:

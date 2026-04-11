@@ -5,11 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suits, is_debuffed, _modifier
+from balatro_bot.cards import card_rank, card_suits, is_debuffed, joker_key, _modifier
 from balatro_bot.constants import FACE_RANKS
+from balatro_bot.domain.models.card import Card
+from balatro_bot.domain.models.joker import Joker
 
 if TYPE_CHECKING:
     from typing import Any
+
+    CardLike = Card | dict[str, Any]
+    JokerLike = Joker | dict[str, Any]
 
 
 @dataclass
@@ -17,17 +22,17 @@ class ScoreContext:
     chips: int
     mult: float
     hand_name: str
-    scoring_cards: list[dict]
-    played_cards: list[dict]
-    held_cards: list[dict]
+    scoring_cards: list[CardLike]
+    played_cards: list[CardLike]
+    held_cards: list[CardLike]
     hand_levels: dict
-    jokers: list[dict]
+    jokers: list[JokerLike]
     money: int
     discards_left: int
     hands_left: int
     joker_limit: int = 5
     deck_count: int = 0
-    deck_cards: list[dict] | None = None
+    deck_cards: list[CardLike] | None = None
     pareidolia: bool = False
     smeared: bool = False
     ancient_suit: str | None = None
@@ -113,12 +118,12 @@ def _noop(ctx: ScoreContext, j: dict) -> None:
     pass
 
 
-def retrigger_count(card: dict, ctx: ScoreContext) -> int:
+def retrigger_count(card: Card | dict, ctx: ScoreContext) -> int:
     if is_debuffed(card):
         return 1
     count = 1
     rank = card_rank(card)
-    joker_keys = {j.get("key") for j in ctx.jokers}
+    joker_keys = {joker_key(j) for j in ctx.jokers}
 
     if "j_hack" in joker_keys and rank in ("2", "3", "4", "5"):
         count += 1

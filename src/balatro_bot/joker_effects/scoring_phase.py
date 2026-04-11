@@ -147,16 +147,20 @@ def get_joker_phase(key: str) -> int:
     return _PHASE_MAP.get(key, PHASE_MULT)  # unknown jokers default to +mult (safe middle)
 
 
-def get_joker_edition_phase(joker: dict) -> int:
+def get_joker_edition_phase(joker) -> int:
     """Return the scoring phase implied by a joker's edition (if any).
 
     Foil → chips phase, Holo → mult phase, Polychrome → xmult phase.
     No edition → PHASE_NOOP (no secondary phase).
     """
-    mod = joker.get("modifier", joker.get("value", {}).get("modifier", {}))
-    if isinstance(mod, list):
-        return PHASE_NOOP
-    edition = mod.get("edition", "")
+    from balatro_bot.domain.models.joker import Joker
+    if isinstance(joker, Joker):
+        edition = joker.modifier.edition or ""
+    else:
+        mod = joker.get("modifier", joker.get("value", {}).get("modifier", {}))
+        if isinstance(mod, list):
+            return PHASE_NOOP
+        edition = mod.get("edition", "")
     if edition == "FOIL":
         return PHASE_CHIPS
     if edition in ("HOLO", "HOLOGRAPHIC"):
