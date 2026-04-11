@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from balatro_bot.domain.models.card import Card
+from balatro_bot.domain.models.hand_level import HandLevel
 from balatro_bot.domain.models.joker import Joker
 
 
@@ -38,7 +39,7 @@ class Snapshot:
     round: RoundSnapshot
     current_blind: BlindSnapshot
     hand_cards: list[Card]
-    hand_levels: dict[str, dict]
+    hand_levels: dict[str, HandLevel]
     jokers: list[Joker]
     deck_cards: list[Card]
     consumables: list[Card]

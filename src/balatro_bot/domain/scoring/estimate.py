@@ -349,7 +349,7 @@ def ox_most_played_hand(hand_levels: dict) -> str | None:
     best_hand = None
     best_count = 0
     for ht, info in hand_levels.items():
-        if isinstance(info, dict):
+        if hasattr(info, "get"):
             played = info.get("played", 0)
             if played > best_count:
                 best_count = played

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
+
+from balatro_bot.domain.models.hand_level import HandLevel
 
 
 # Per-level chip/mult increments for each hand type (fixed in Balatro).
@@ -22,7 +25,7 @@ _HAND_LEVEL_INCREMENTS: dict[str, tuple[int, int]] = {
 }
 
 
-def flint_halve_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
+def flint_halve_hand_levels(hand_levels: dict) -> dict:
     """Return a copy of hand_levels with chips and mult halved (The Flint).
 
     The Flint halves base chips and mult at scoring time AFTER planet level-ups:
@@ -31,19 +34,25 @@ def flint_halve_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
     """
     halved = {}
     for hand_name, data in hand_levels.items():
-        if not isinstance(data, dict):
+        if isinstance(data, HandLevel):
+            halved[hand_name] = replace(
+                data,
+                chips=max(math.floor(data.chips * 0.5 + 0.5), 0),
+                mult=max(math.floor(data.mult * 0.5 + 0.5), 1),
+            )
+        elif isinstance(data, dict):
+            d = dict(data)
+            if "chips" in d:
+                d["chips"] = max(math.floor(d["chips"] * 0.5 + 0.5), 0)
+            if "mult" in d:
+                d["mult"] = max(math.floor(d["mult"] * 0.5 + 0.5), 1)
+            halved[hand_name] = d
+        else:
             halved[hand_name] = data
-            continue
-        d = dict(data)
-        if "chips" in d:
-            d["chips"] = max(math.floor(d["chips"] * 0.5 + 0.5), 0)
-        if "mult" in d:
-            d["mult"] = max(math.floor(d["mult"] * 0.5 + 0.5), 1)
-        halved[hand_name] = d
     return halved
 
 
-def arm_reduce_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
+def arm_reduce_hand_levels(hand_levels: dict) -> dict:
     """Return a copy of hand_levels with each type reduced by 1 level (The Arm).
 
     The Arm decreases the level of the played poker hand by 1 BEFORE scoring.
@@ -54,20 +63,32 @@ def arm_reduce_hand_levels(hand_levels: dict[str, dict]) -> dict[str, dict]:
 
     reduced = {}
     for hand_name, data in hand_levels.items():
-        if not isinstance(data, dict):
-            reduced[hand_name] = data
-            continue
-        d = dict(data)
-        level = d.get("level", 1)
-        if level <= 1:
+        if isinstance(data, HandLevel):
+            if data.level <= 1:
+                reduced[hand_name] = data
+                continue
+            chip_inc, mult_inc = _HAND_LEVEL_INCREMENTS.get(hand_name, (0, 0))
+            base_chips, base_mult, _ = HAND_INFO.get(hand_name, (0, 0, 0))
+            reduced[hand_name] = replace(
+                data,
+                chips=max(data.chips - chip_inc, base_chips),
+                mult=max(data.mult - mult_inc, base_mult),
+                level=data.level - 1,
+            )
+        elif isinstance(data, dict):
+            d = dict(data)
+            level = d.get("level", 1)
+            if level <= 1:
+                reduced[hand_name] = d
+                continue
+            chip_inc, mult_inc = _HAND_LEVEL_INCREMENTS.get(hand_name, (0, 0))
+            base_chips, base_mult, _ = HAND_INFO.get(hand_name, (0, 0, 0))
+            if "chips" in d:
+                d["chips"] = max(d["chips"] - chip_inc, base_chips)
+            if "mult" in d:
+                d["mult"] = max(d["mult"] - mult_inc, base_mult)
+            d["level"] = level - 1
             reduced[hand_name] = d
-            continue
-        chip_inc, mult_inc = _HAND_LEVEL_INCREMENTS.get(hand_name, (0, 0))
-        base_chips, base_mult, _ = HAND_INFO.get(hand_name, (0, 0, 0))
-        if "chips" in d:
-            d["chips"] = max(d["chips"] - chip_inc, base_chips)
-        if "mult" in d:
-            d["mult"] = max(d["mult"] - mult_inc, base_mult)
-        d["level"] = level - 1
-        reduced[hand_name] = d
+        else:
+            reduced[hand_name] = data
     return reduced
