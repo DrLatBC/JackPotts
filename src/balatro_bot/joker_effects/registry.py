@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, TYPE_CHECKING
 
-from balatro_bot.cards import is_joker_debuffed, joker_key
+from balatro_bot.cards import _modifier, is_joker_debuffed, joker_key
 from balatro_bot.domain.models.joker import Joker
 from balatro_bot.joker_effects.context import ScoreContext, _noop
 from balatro_bot.joker_effects.simple import SIMPLE_EFFECTS
@@ -72,27 +72,9 @@ for key in (
     JOKER_EFFECTS[key] = _noop
 
 
-def _joker_modifier(joker: JokerLike) -> dict:
-    """Return the modifier dict for a joker, handling both Joker and dict."""
-    if isinstance(joker, Joker):
-        mod = joker.modifier
-        d: dict[str, Any] = {}
-        if mod.edition is not None:
-            d["edition"] = mod.edition
-        if mod.edition_chips:
-            d["edition_chips"] = mod.edition_chips
-        if mod.edition_mult:
-            d["edition_mult"] = mod.edition_mult
-        if mod.edition_x_mult:
-            d["edition_x_mult"] = mod.edition_x_mult
-        return d
-    m = joker.get("modifier", {})
-    return m if isinstance(m, dict) else {}
-
-
 def _apply_joker_edition_pre(ctx: ScoreContext, joker: JokerLike) -> None:
     """Apply pre-joker edition effects: Foil (+chips), HOLO (+mult)."""
-    mod = _joker_modifier(joker)
+    mod = _modifier(joker)
     edition = mod.get("edition", "")
     if edition == "FOIL":
         ctx.chips += mod.get("edition_chips", 50)
@@ -103,7 +85,7 @@ def _apply_joker_edition_pre(ctx: ScoreContext, joker: JokerLike) -> None:
 def _apply_joker_edition_post(ctx: ScoreContext, joker: JokerLike) -> None:
     """Apply post-joker edition effects: Polychrome (xmult).
     Negative has no scoring effect (just +1 slot, already in joker_limit)."""
-    mod = _joker_modifier(joker)
+    mod = _modifier(joker)
     edition = mod.get("edition", "")
     if edition == "POLYCHROME":
         ctx.mult *= mod.get("edition_x_mult", 1.5)

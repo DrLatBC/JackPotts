@@ -22,12 +22,12 @@ if TYPE_CHECKING:
 
 
 def _modifier(card: CardLike) -> dict[str, Any]:
-    """Return the modifier as a dict, handling both Card objects and raw dicts.
+    """Return the modifier as a dict, handling Card, Joker, and raw dicts.
 
-    For Card objects, converts CardModifier to a dict for backward compat
+    For typed objects, converts CardModifier to a dict for backward compat
     with callers that use .get() on the result.
     """
-    if isinstance(card, Card):
+    if isinstance(card, (Card, Joker)):
         mod = card.modifier
         d: dict[str, Any] = {}
         if mod.enhancement is not None:

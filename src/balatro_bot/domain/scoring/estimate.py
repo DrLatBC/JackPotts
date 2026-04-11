@@ -67,7 +67,7 @@ def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
 
     # Work on copies so we don't mutate the caller's lists
     effective = list(scoring_cards)
-    remap = {}  # original card -> modified card (for played_cards remapping)
+    remap: list[tuple] = []  # (original, replacement) for played_cards remapping
     vampire_xmult = None
 
     for key, j in before_jokers:
@@ -86,7 +86,7 @@ def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
                         mod_copy = dict(mod) if isinstance(mod, dict) else {}
                         mod_copy["enhancement"] = "GOLD"
                         card_copy["modifier"] = mod_copy
-                    remap[id(effective[i])] = (effective[i], card_copy)
+                    remap.append((effective[i], card_copy))
                     effective[i] = card_copy
 
         elif key == "j_vampire":
@@ -108,7 +108,7 @@ def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
                         mod_copy = dict(mod)
                         mod_copy.pop("enhancement", None)
                         card_copy["modifier"] = mod_copy
-                    remap[id(effective[i])] = (effective[i], card_copy)
+                    remap.append((effective[i], card_copy))
                     effective[i] = card_copy
 
             vampire_xmult = current_xmult + extra * enhanced_count if enhanced_count > 0 else current_xmult
@@ -117,7 +117,7 @@ def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
     effective_played = played_cards
     if remap and played_cards is not None:
         def _get_remapped(c):
-            for _orig_id, (orig, replacement) in remap.items():
+            for orig, replacement in remap:
                 if c is orig:
                     return replacement
             return c

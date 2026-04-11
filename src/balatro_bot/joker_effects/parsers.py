@@ -121,17 +121,9 @@ def _parse_bracket_counter(joker: JokerLike) -> int | None:
 def _ability(joker: JokerLike) -> dict:
     """Return the joker's ability as a dict (for backward compat with .get() callers)."""
     if isinstance(joker, Joker):
+        from dataclasses import fields as dc_fields
         ab = joker.value.ability
-        d: dict[str, Any] = {}
-        for field_name in (
-            "chips", "mult", "t_mult", "t_chips", "Xmult", "x_mult", "s_mult",
-            "extra", "size", "d_remaining", "loyalty_remaining", "min", "max",
-            "hand_add", "chip_mod", "dollars", "driver_tally", "odds",
-        ):
-            val = getattr(ab, field_name, None)
-            if val is not None:
-                d[field_name] = val
-        return d
+        return {f.name: v for f in dc_fields(ab) if (v := getattr(ab, f.name)) is not None}
     return joker.get("value", {}).get("ability", {})
 
 

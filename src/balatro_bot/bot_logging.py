@@ -91,7 +91,7 @@ def log_ante_transition(gs: GameLoopState, state: dict) -> None:
 
     leveled = []
     for ht, data in hand_levels.items():
-        if isinstance(data, dict) and data.get("level", 1) > 1:
+        if hasattr(data, "get") and data.get("level", 1) > 1:
             leveled.append(f"{ht}(lv{data['level']})")
     if leveled:
         log.info("[ANTE %s] Money: $%d | Levels: %s", ante_num, money, ", ".join(leveled))
@@ -190,12 +190,10 @@ def log_hand_state(gs: GameLoopState, state: dict) -> None:
     else:
         drew_str = ""
     debuffed = [fmt_card(c) for c in hand_cards
-                if (c.state.debuff if isinstance(c, Card)
-                    else (isinstance(c.get("state", {}), dict) and c["state"].get("debuff")))]
+                if isinstance(c.get("state", {}), dict) and c["state"].get("debuff")]
     debuff_str = f" | DEBUFFED: [{', '.join(debuffed)}]" if debuffed else ""
     log.info("Hand: [%s]%s%s", hand_str, drew_str, debuff_str)
-    gs.prev_hand_labels = [(c.label if isinstance(c, Card) else c.get("label", ""))
-                           for c in hand_cards]
+    gs.prev_hand_labels = [c.get("label", "") for c in hand_cards]
     gs.last_logged_hand = hand_id
 
     # First hand of a new blind — log context once
