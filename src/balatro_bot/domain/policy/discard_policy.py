@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import random
+
+_stream_log = logging.getLogger("balatro_stream")
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import DiscardCards, Action
@@ -198,6 +200,27 @@ def _best_chase(suggestions: list[ChaseCandidate], ctx: RoundContext, play_ev: f
         if ev > best_ev:
             best_ev = ev
             best = candidate
+
+    # Stream log — consolidated one-liner for all chase evaluations
+    _HAND_ABBREV = {
+        "High Card": "HC", "Pair": "Pair", "Two Pair": "TP",
+        "Three of a Kind": "3oK", "Straight": "Str", "Flush": "Flush",
+        "Full House": "FH", "Four of a Kind": "4oK", "Straight Flush": "SF",
+        "Five of a Kind": "5oK", "Flush House": "FlH", "Flush Five": "Fl5",
+    }
+    chase_parts = []
+    for candidate in suggestions:
+        if "chase" not in candidate.reason:
+            continue
+        key = tuple(sorted(candidate.keep_indices))
+        ev = _chase_ev(candidate, ctx, miss_ev_cache[key])
+        accepted = ev > play_ev
+        abbrev = _HAND_ABBREV.get(candidate.chase_hand, candidate.chase_hand)
+        chase_parts.append(
+            f"{abbrev} {candidate.hit_prob * 100:.0f}% EV {ev:.0f} {'YES' if accepted else 'no'}"
+        )
+    if chase_parts:
+        _stream_log.info("Considering chase: %s (play EV %.0f)", " | ".join(chase_parts), play_ev)
 
     if best is not None:
         margin = best_ev / play_ev if play_ev > 0 else float("inf")

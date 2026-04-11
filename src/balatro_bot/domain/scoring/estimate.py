@@ -232,49 +232,78 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     if ctx.blind_name == "The Tooth":
         ctx.money -= len(ctx.played_cards)
 
+    # Held-card-phase joker detection — resolve Blueprint/Brainstorm targets
     _baron_xm = 0.0
+    _baron_count = 0
     _shoot_moon_mult = 0.0
-    _has_mime = False
-    _has_raised_fist = False
-    for j in (jokers or []):
+    _shoot_moon_count = 0
+    _mime_count = 0
+    _raised_fist_count = 0
+
+    def _count_held_phase(hk: str, hj: dict) -> None:
+        nonlocal _baron_xm, _baron_count, _shoot_moon_mult, _shoot_moon_count
+        nonlocal _mime_count, _raised_fist_count
+        if hk == "j_baron":
+            from balatro_bot.joker_effects.parsers import _ability as _ab
+            _baron_xm = _ab(hj).get("extra", 1.5)
+            _baron_count += 1
+        elif hk == "j_shoot_the_moon":
+            from balatro_bot.joker_effects.parsers import _ability as _ab
+            _shoot_moon_mult = _ab(hj).get("extra", 13)
+            _shoot_moon_count += 1
+        elif hk == "j_mime":
+            _mime_count += 1
+        elif hk == "j_raised_fist":
+            _raised_fist_count += 1
+
+    for i, j in enumerate(joker_list):
+        if is_joker_debuffed(j):
+            continue
         k = j.get("key", "")
-        if k == "j_baron":
-            from balatro_bot.joker_effects.parsers import _ability as _ab
-            _baron_xm = _ab(j).get("extra", 1.5)
-        elif k == "j_shoot_the_moon":
-            from balatro_bot.joker_effects.parsers import _ability as _ab
-            _shoot_moon_mult = _ab(j).get("extra", 13)
-        elif k == "j_mime":
-            _has_mime = True
-        elif k == "j_raised_fist":
-            _has_raised_fist = True
+        if k == "j_blueprint":
+            if i + 1 < len(joker_list):
+                target = joker_list[i + 1]
+                if not is_joker_debuffed(target):
+                    _count_held_phase(target.get("key", ""), target)
+        elif k == "j_brainstorm":
+            if joker_list and joker_list[0] is not j:
+                target = joker_list[0]
+                if not is_joker_debuffed(target):
+                    _count_held_phase(target.get("key", ""), target)
+        else:
+            _count_held_phase(k, j)
 
     # Raised Fist: find the lowest-ranked held card (by chip value, matching game logic)
+    # The game considers ALL held cards (including debuffed ones) when picking
+    # the lowest.  If the chosen card is debuffed, the effect returns 0 mult.
     _raised_fist_card = None
     _raised_fist_add = 0.0
-    if _has_raised_fist and ctx.held_cards:
+    if _raised_fist_count > 0 and ctx.held_cards:
         min_id = 15
         for c in ctx.held_cards:
             r = card_rank(c)
-            if r and not is_debuffed(c):
+            if r:
                 rv = rank_value(r)
                 if rv <= min_id:
                     min_id = rv
                     _raised_fist_card = c
-                    _raised_fist_add = 2 * RANK_CHIPS.get(r, 0)
+                    _raised_fist_add = 0.0 if is_debuffed(c) else 2 * RANK_CHIPS.get(r, 0)
 
-    _held_triggers = 2 if _has_mime else 1
+    _held_triggers = 1 + _mime_count
     for card in ctx.held_cards:
         if not is_debuffed(card):
             for _ in range(_held_triggers):
                 if _modifier(card).get("enhancement") == "STEEL":
                     ctx.mult *= 1.5
                 if _baron_xm and card_rank(card) == "K":
-                    ctx.mult *= _baron_xm
+                    for _ in range(_baron_count):
+                        ctx.mult *= _baron_xm
                 if _shoot_moon_mult and card_rank(card) == "Q":
-                    ctx.mult += _shoot_moon_mult
+                    for _ in range(_shoot_moon_count):
+                        ctx.mult += _shoot_moon_mult
                 if _raised_fist_card is card:
-                    ctx.mult += _raised_fist_add
+                    for _ in range(_raised_fist_count):
+                        ctx.mult += _raised_fist_add
 
 
 def ox_most_played_hand(hand_levels: dict) -> str | None:

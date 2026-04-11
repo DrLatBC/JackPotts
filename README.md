@@ -11,7 +11,7 @@ Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/B
 
 The bot fully simulates Balatro's scoring pipeline — joker effects, card enhancements, editions, seals, retriggers, and boss blind modifiers — to predict exact chip totals for every candidate hand before choosing what to play.
 
-**Current peak: Ante 11 | Scoring accuracy: 99.9% | 3.7% win rate** — [full stats](STATS.md)
+**Current peak: Ante 11 | Scoring accuracy: 99.89% | 3.7% win rate** — [full stats](STATS.md)
 
 ## Prerequisites
 
@@ -123,7 +123,7 @@ pytest
 
 ### Integration Test Harness
 
-The `tests/integration/` directory contains a full in-game test harness that launches Balatro, injects specific game states, plays hands, and compares the bot's predicted score against the game's actual score. This is how we verify scoring accuracy at 99.5%.
+The `tests/integration/` directory contains a full in-game test harness that launches Balatro, injects specific game states, plays hands, and compares the bot's predicted score against the game's actual score. This is how we verify scoring accuracy at 99.89%.
 
 **Quick start** — run any test with `--start-server` to auto-launch a headless Balatro instance:
 

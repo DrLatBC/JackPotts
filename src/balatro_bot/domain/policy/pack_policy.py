@@ -20,6 +20,28 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("balatro_bot")
 
+# ---------------------------------------------------------------------------
+# Pack-pick tuning constants
+# ---------------------------------------------------------------------------
+
+# Planet cards
+_BLACK_HOLE_PACK_PRIORITY = 999.0  # Black Hole always picked first
+_AFFINITY_MULTIPLIER = 10          # weight of strategy affinity in planet score
+_CONSTELLATION_GUARANTEE = 8.0     # min score when Constellation is owned (always pick)
+_LEVEL_BONUS_BASE = 1.2            # compound bonus exponent per existing level
+
+# Buffoon (joker) packs
+_S_TIER_MIN_SCORE = 10.0           # floor score for ALWAYS_BUY jokers in packs
+_NEGATIVE_MIN_SCORE = 10.0         # floor score for Negative edition (free slot)
+
+# Spectral synergy bonuses
+_ECTOPLASM_SCALING_BONUS = 1.5     # bonus when scaling jokers owned
+_FAMILIAR_FACE_BONUS = 1.5         # bonus when face-card archetype active
+_GRIM_ACE_BONUS = 1.0              # bonus when ace affinity > 0
+_INCANTATION_NUMBER_BONUS = 1.0    # bonus when any number-rank affinity > 0
+_AURA_EDITION_BONUS = 1.0          # bonus when 3+ uneditioned jokers
+_AURA_MIN_UNEDITIONED = 3          # threshold for Aura bonus
+
 
 # ---------------------------------------------------------------------------
 # Planet pack scoring (extracted from PickFromPlanetPack)
@@ -51,7 +73,7 @@ def score_planet_card(
 
     # Black Hole — always top priority
     if card.get("key", "") == "c_black_hole" or label == "Black Hole":
-        return 999.0
+        return _BLACK_HOLE_PACK_PRIORITY
 
     hand_type = PLANET_HAND_MAP.get(label)
     if not hand_type:
@@ -63,18 +85,18 @@ def score_planet_card(
     # Strategy is the dominant factor — affinity from jokers
     affinity = strat.hand_affinity(hand_type)
     if affinity > 0:
-        score += affinity * 10
+        score += affinity * _AFFINITY_MULTIPLIER
 
     # Constellation: every planet used = +0.1 xmult, even off-strategy
     has_constellation = "j_constellation" in joker_keys
     if has_constellation and affinity == 0:
-        score = max(score, 8.0)  # guarantee pick over skip
+        score = max(score, _CONSTELLATION_GUARANTEE)  # guarantee pick over skip
 
     # Level bonus: compound growth on already-leveled types
     level_info = hand_levels.get(hand_type, {})
     current_level = level_info.get("level", 1)
     if current_level > 1:
-        score *= 1.2 ** (current_level - 1)
+        score *= _LEVEL_BONUS_BASE ** (current_level - 1)
 
     return score
 
@@ -159,11 +181,11 @@ def choose_from_buffoon_pack(
         )
         # S-tier jokers get a massive boost
         if key in always_buy_keys:
-            score = max(score, 10.0)
+            score = max(score, _S_TIER_MIN_SCORE)
 
         # Negative jokers in packs are free — always take them
         if _is_negative(card):
-            score = max(score, 10.0)
+            score = max(score, _NEGATIVE_MIN_SCORE)
 
         if score > best_score:
             best_score = score
@@ -236,19 +258,19 @@ def score_spectral_card(
         if not jokers or ante < 3:
             score = 0.0
         elif joker_keys & SCALING_JOKERS:
-            score += 1.5  # xmult stacks multiplicatively with scaling jokers
+            score += _ECTOPLASM_SCALING_BONUS
 
     # Joker-aware bonuses for deck-manipulating spectrals
     if score > 0.0 and strat:
         if key == "c_familiar" and strat.has_archetype("face_card"):
-            score += 1.5  # adds face cards to deck
+            score += _FAMILIAR_FACE_BONUS
         if key == "c_grim" and strat.rank_affinity("A") > 0:
-            score += 1.0  # adds aces
+            score += _GRIM_ACE_BONUS
         if key == "c_incantation":
             # adds number cards — check if any number ranks have affinity
             for r in ("2", "3", "4", "5", "6", "7", "8", "9"):
                 if strat.rank_affinity(r) > 0:
-                    score += 1.0
+                    score += _INCANTATION_NUMBER_BONUS
                     break
         if key == "c_aura":
             # random edition — more valuable with uneditioned jokers
@@ -256,8 +278,8 @@ def score_spectral_card(
                 1 for j in jokers
                 if not (isinstance(j.get("modifier"), dict) and j["modifier"].get("edition"))
             )
-            if uneditioned >= 3:
-                score += 1.0
+            if uneditioned >= _AURA_MIN_UNEDITIONED:
+                score += _AURA_EDITION_BONUS
 
     return score
 

@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("balatro_bot")
 
+# ---------------------------------------------------------------------------
+# Staleness penalty — held consumables lose value over rounds
+# ---------------------------------------------------------------------------
+_STALENESS_THRESHOLD = 2          # rounds held before penalty kicks in
+_STALENESS_PENALTY_PER_ROUND = 0.5  # hold_value penalty per extra round
+
 
 class UseConsumables:
     """Unified consumable usage: scores use_now vs hold_value for each consumable.
@@ -138,8 +144,8 @@ class UseConsumables:
 
             # Staleness penalty
             rounds_held = self._held_rounds.get(key, 0)
-            if rounds_held >= 2:
-                hold_value -= (rounds_held - 1) * 0.5
+            if rounds_held >= _STALENESS_THRESHOLD:
+                hold_value -= (rounds_held - 1) * _STALENESS_PENALTY_PER_ROUND
 
             if use_value > hold_value and action_args is not None:
                 action = self._action_from_args(action_args)

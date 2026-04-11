@@ -65,6 +65,12 @@ _OUTLOOK_THRESHOLDS = {
 }
 
 _HAND_SAVE_ANTE_THRESHOLD = 5
+_HAND_SAVE_BUMP = 0.20  # min threshold when saving hands for $1 each
+
+# Safety margins for milk plays — how far ahead we must be to spend a hand
+_MILK_MARGIN_WALL = 2.0    # The Wall doubles blind score, need extra margin
+_MILK_MARGIN_MANY = 1.25   # 3+ free hands: comfortable margin
+_MILK_MARGIN_FEW = 1.5     # <3 free hands: tighter margin
 
 
 def choose_high_value_play(ctx: RoundContext) -> Action | None:
@@ -92,7 +98,7 @@ def choose_high_value_play(ctx: RoundContext) -> Action | None:
     # Hand-saving economy: at lower antes when comfortable, raise the bar
     if outlook == "comfortable" and ctx.ante <= _HAND_SAVE_ANTE_THRESHOLD:
         old_threshold = threshold
-        threshold = max(threshold, 0.20)
+        threshold = max(threshold, _HAND_SAVE_BUMP)
         if threshold > old_threshold:
             log.info("PlayHighValueHand: hand-save bump %.0f%%->%.0f%% (ante %d)", old_threshold * 100, threshold * 100, ctx.ante)
 
@@ -211,9 +217,9 @@ def choose_milk_play(ctx: RoundContext) -> Action | None:
 
     # Comfort check
     if ctx.blind_name == "The Wall":
-        margin = 2.0
+        margin = _MILK_MARGIN_WALL
     else:
-        margin = 1.25 if free_hands >= 3 else 1.5
+        margin = _MILK_MARGIN_MANY if free_hands >= 3 else _MILK_MARGIN_FEW
     if effective < ctx.chips_remaining * margin:
         return None
 

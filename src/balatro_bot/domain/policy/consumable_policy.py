@@ -26,6 +26,100 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("balatro_bot")
 
+# ---------------------------------------------------------------------------
+# Consumable value scoring constants
+# ---------------------------------------------------------------------------
+
+# Planet cards
+_BLACK_HOLE_VALUE = 8.0            # Black Hole levels every hand — top priority
+_PLANET_BASE_VALUE = 5.0           # base score for on-strategy planet
+_CONSTELLATION_BONUS = 2.0         # extra value when Constellation owned
+_CONSTELLATION_ONLY_VALUE = 3.0    # off-strategy planet with Constellation (+0.1 xmult)
+
+# No-target tarot values
+_JUDGEMENT_VALUE = 6.0             # creates a random joker
+_HIGH_PRIESTESS_VALUE = 5.0        # creates up to 2 random planet cards
+_HERMIT_MONEY_CAP = 20             # Hermit caps at doubling $20
+_HERMIT_DIVISOR = 4.0              # converts capped money to value
+_EMPEROR_OPEN_VALUE = 3.0          # Emperor with open consumable slot
+_EMPEROR_FULL_VALUE = 1.0          # Emperor when slots are full
+_TEMPERANCE_CAP = 20               # Temperance caps at $20 sell value
+_TEMPERANCE_DIVISOR = 4.0          # converts capped sell value to score
+_WHEEL_HIGH_VALUE = 3.0            # Wheel of Fortune with 3+ eligible jokers
+_WHEEL_LOW_VALUE = 1.5             # Wheel of Fortune with 1-2 eligible jokers
+_WHEEL_MIN_ELIGIBLE = 3            # threshold for high vs low Wheel value
+_FOOL_VALUE = 1.5                  # Fool base buy/pick value (copies last used)
+
+# Targeting tarot values
+_DEATH_VALUE = 4.0                 # Death: clone best card onto worst
+_HANGED_MAN_EARLY = 3.0            # Hanged Man deck thinning (ante <= cutoff)
+_HANGED_MAN_LATE = 2.0             # Hanged Man late game
+_HANGED_MAN_ANTE_CUTOFF = 4        # ante boundary for early/late
+_JUSTICE_VALUE = 4.5               # Justice: x2 mult on scoring card
+_SUIT_CONVERT_NO_AFFINITY = 0.5    # suit conversion with no suit strategy
+_STONE_WITH_JOKER = 3.0            # Tower with Stone Joker
+_STONE_WITHOUT_JOKER = 1.0         # Tower without Stone Joker
+_RANK_UP_VALUE = 1.0               # Strength: situational rank-up
+_TARGETING_FALLBACK = 1.5          # fallback for other targeting types
+
+# Enhancement scoring
+_ENHANCE_SCORES: dict[str, float] = {
+    "Lucky": 3.5, "Steel": 3.0, "Mult": 2.5,
+    "Bonus": 2.0, "Wild": 2.5, "Gold": 0.0,
+}
+_LUCKY_CAT_BONUS = 2.0             # Lucky synergy with Lucky Cat
+_OOPS_BONUS = 1.5                  # Lucky synergy with Oops! All 6s
+_STEEL_JOKER_BONUS = 2.0           # Steel synergy with Steel Joker
+_EARLY_ANTE_ENHANCE_BONUS = 1.3    # enhancement compound bonus early game
+_EARLY_ANTE_CUTOFF = 3             # ante threshold for early-game bonus
+
+# Devil (Gold enhancement)
+_DEVIL_INCOME_PER_ROUND = 3        # $3 per round remaining
+_DEVIL_DIVISOR = 4.0               # converts income to value
+
+# Remaining rounds estimate
+_TOTAL_ANTES = 8
+_ROUNDS_PER_ANTE = 3
+
+# Hex evaluation
+_HEX_SOLO_VALUE = 3.5              # Hex with only 1 joker (free Polychrome)
+_HEX_POLYCHROME_VALUE = 4.0        # estimated value of Polychrome upgrade
+_HEX_MIN_BEST_VAL = 5.0            # best joker must be at least this to solo
+_HEX_MARGIN = 2.0                  # rest must not exceed polychrome + this
+_HEX_BASE_SCORE = 3.5              # base score before dominance scaling
+_HEX_MAX_SCORE = 8.0               # cap on Hex score
+_HEX_ANTE_PENALTIES: dict[int, float] = {  # late-game score multipliers
+    7: 0.4, 6: 0.5, 5: 0.75,
+}
+
+# Use-now scoring
+_PLANET_USE_VALUE = 10.0            # planets are always used immediately
+_SAFE_SPECTRAL_USE_VALUE = 5.0      # base use-now value for safe spectrals
+
+# Tactical use thresholds
+_SUIT_CONVERT_IMPROVEMENT = 1.2     # 20% improvement threshold for suit convert
+_TACTICAL_USE_MULTIPLIER = 3.0      # improvement × this = use value
+_GLASS_ANTE_THRESHOLDS: dict[str, float] = {  # enhancement timing thresholds
+    "early": 1.0,   # ante <= 3: use freely
+    "mid": 1.2,     # ante 4-5: need 20% improvement
+    "late": 1.0,    # ante 6+: only when desperate
+}
+
+# Hold-value scoring
+_HOLD_SUIT_CONVERT_WITH_DISCARDS = 2.0
+_HOLD_SUIT_CONVERT_NO_DISCARDS = 0.5
+_HOLD_ENHANCE_EARLY = 1.0          # ante <= 3
+_HOLD_ENHANCE_MID = 2.0            # ante 4-5
+_HOLD_ENHANCE_LATE = 3.0           # ante 6+
+_HOLD_GOLD = 2.0                   # hold gold until winning
+_HOLD_SLOT_PRESSURE = 2.0          # penalty when consumable slots full
+
+# Glass/enhancement estimation multipliers
+_GLASS_MULTIPLIER_FACE = 1.8       # Glass on face card: estimated score boost
+_GLASS_MULTIPLIER_OTHER = 1.6      # Glass on non-face card
+_WILD_STEEL_MULTIPLIER = 1.5       # Wild/Steel enhancement score estimate
+_GENERIC_ENHANCE_MULTIPLIER = 1.2   # other enhancements score estimate
+
 
 # ---------------------------------------------------------------------------
 # Dynamic consumable value scoring (moved from _helpers.py)
@@ -51,47 +145,47 @@ def score_consumable(
     if key in PLANET_KEYS:
         hand_type = PLANET_KEYS[key]
         if hand_type == "ALL":
-            return 8.0  # Black Hole — always top priority
+            return _BLACK_HOLE_VALUE  # Black Hole — always top priority
         hand_levels = state.get("hands", {})
         has_constellation = any(j.get("key") == "j_constellation" for j in jokers)
         affinity = strat.hand_affinity(hand_type) if strat else 0.0
         if affinity > 0:
-            score = 5.0 + affinity
+            score = _PLANET_BASE_VALUE + affinity
             if has_constellation:
-                score += 2.0
+                score += _CONSTELLATION_BONUS
             return score
         if has_constellation:
-            return 3.0  # every planet = +0.1 xmult
+            return _CONSTELLATION_ONLY_VALUE
         return 0.0  # off-strategy, no constellation
 
     # --- No-target tarots ---
     if key == "c_judgement":
         slots_open = joker_slots.get("count", 0) < joker_slots.get("limit", 5)
-        return 6.0 if slots_open else 0.0
+        return _JUDGEMENT_VALUE if slots_open else 0.0
     if key == "c_high_priestess":
-        return 5.0
+        return _HIGH_PRIESTESS_VALUE
     if key == "c_hermit":
-        return min(money, 20) / 4.0
+        return min(money, _HERMIT_MONEY_CAP) / _HERMIT_DIVISOR
     if key == "c_emperor":
         cons = state.get("consumables", {})
         slots_open = cons.get("count", 0) < cons.get("limit", 2)
-        return 3.0 if slots_open else 1.0
+        return _EMPEROR_OPEN_VALUE if slots_open else _EMPEROR_FULL_VALUE
     if key == "c_temperance":
         total_sell = sum(
             j.get("cost", {}).get("sell", 0) if isinstance(j.get("cost"), dict) else 0
             for j in jokers
         )
-        return min(total_sell, 20) / 4.0
+        return min(total_sell, _TEMPERANCE_CAP) / _TEMPERANCE_DIVISOR
     if key == "c_wheel_of_fortune":
         eligible = [j for j in jokers if not (isinstance(j.get("modifier"), dict) and j["modifier"].get("edition"))]
         n = len(eligible)
-        return 3.0 if n >= 3 else (1.5 if n >= 1 else 0.0)
+        return _WHEEL_HIGH_VALUE if n >= _WHEEL_MIN_ELIGIBLE else (_WHEEL_LOW_VALUE if n >= 1 else 0.0)
     if key == "c_fool":
         # Fool copies the last tarot/planet used. For buy/pack decisions we
         # don't know what it'll copy — give it a modest base value since it
         # has potential. Actual use decisions are handled in UseConsumables
         # which tracks _last_used_consumable and scores Fool dynamically.
-        return 1.5
+        return _FOOL_VALUE
 
     # --- Targeting tarots ---
     if key in TARGETING_TAROTS:
@@ -111,66 +205,52 @@ def _score_targeting_tarot(
 ) -> float:
     """Score a targeting tarot based on effect type and game state."""
     ante = state.get("ante_num", 1)
-    # Estimate remaining rounds: (8 - ante) * 3 rounds per ante (rough)
-    remaining_rounds = max(1, (8 - ante) * 3)
+    # Estimate remaining rounds
+    remaining_rounds = max(1, (_TOTAL_ANTES - ante) * _ROUNDS_PER_ANTE)
 
     if effect_type == "clone":
-        # Death: score gap between best and worst card — higher gap = more value
-        return 4.0
+        return _DEATH_VALUE
 
     if effect_type == "destroy":
-        # Hanged Man: deck thinning — more valuable early (more draws to benefit)
-        return 3.0 if ante <= 4 else 2.0
+        return _HANGED_MAN_EARLY if ante <= _HANGED_MAN_ANTE_CUTOFF else _HANGED_MAN_LATE
 
     if effect_type == "glass":
-        # Justice: x2 mult on scoring card — always strong
-        return 4.5
+        return _JUSTICE_VALUE
 
     if effect_type == "suit_convert":
-        # Suit conversions: value depends on suit affinity
         suit_aff = strat.suit_affinity(extra) if strat and extra else 0.0
         if suit_aff <= 0:
-            return 0.5  # no suit strategy — low value
+            return _SUIT_CONVERT_NO_AFFINITY
         return 2.0 + suit_aff
 
     if effect_type == "enhance":
-        # Enhancements by type
-        enhance_scores = {
-            "Lucky": 3.5, "Steel": 3.0, "Mult": 2.5,
-            "Bonus": 2.0, "Wild": 2.5, "Gold": 0.0,  # Gold scored separately
-        }
-        base = enhance_scores.get(extra, 2.0)
-        # Synergy bonuses for enhancement-caring jokers
+        base = _ENHANCE_SCORES.get(extra, 2.0)
         jokers = state.get("jokers", {}).get("cards", [])
         joker_keys = {j.get("key") for j in jokers}
         if extra == "Lucky":
             if "j_lucky_cat" in joker_keys:
-                base += 2.0
+                base += _LUCKY_CAT_BONUS
             if "j_oops" in joker_keys:
-                base += 1.5
+                base += _OOPS_BONUS
         elif extra == "Steel":
             if "j_steel_joker" in joker_keys:
-                base += 2.0
-        # Enhancements compound — more valuable early
-        if ante <= 3:
-            base *= 1.3
+                base += _STEEL_JOKER_BONUS
+        if ante <= _EARLY_ANTE_CUTOFF:
+            base *= _EARLY_ANTE_ENHANCE_BONUS
         return base
 
     if effect_type == "gold":
-        # Devil: $3 per round remaining on a held card
-        return remaining_rounds * 3 / 4.0
+        return remaining_rounds * _DEVIL_INCOME_PER_ROUND / _DEVIL_DIVISOR
 
     if effect_type == "stone":
-        # Tower: niche — only good with Stone Joker
         has_stone_joker = any(j.get("key") == "j_stone"
                              for j in state.get("jokers", {}).get("cards", []))
-        return 3.0 if has_stone_joker else 1.0
+        return _STONE_WITH_JOKER if has_stone_joker else _STONE_WITHOUT_JOKER
 
     if effect_type == "rank_up":
-        # Strength: situational, can damage rank affinity
-        return 1.0
+        return _RANK_UP_VALUE
 
-    return 1.5  # fallback for other effect types
+    return _TARGETING_FALLBACK
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +270,7 @@ def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict) -> float:
     if not jokers:
         return 0.0
     if len(jokers) <= 1:
-        return 3.5  # 1 joker: free Polychrome, great
+        return _HEX_SOLO_VALUE  # 1 joker: free Polychrome
 
     owned_keys = {j.get("key") for j in jokers}
     # Never use with multiple scaling jokers — losing any is unacceptable
@@ -213,25 +293,22 @@ def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict) -> float:
     # - Best joker is strong enough to carry (>= 5.0 value)
     # - AND the rest aren't worth more than the Polychrome upgrade
     # Polychrome adds x1.5 permanently — roughly worth 4 value points
-    polychrome_value = 4.0
-    if best_val < 5.0:
+    if best_val < _HEX_MIN_BEST_VAL:
         return 0.0  # best joker not strong enough to solo
-    if rest_total > polychrome_value + 2.0:
+    if rest_total > _HEX_POLYCHROME_VALUE + _HEX_MARGIN:
         return 0.0  # sacrificing too much
 
     # Scale score by how dominant the best joker is
     dominance = best_val / max(rest_total, 1.0)
-    score = 3.5 + dominance
+    score = _HEX_BASE_SCORE + dominance
 
     # Late-game soft penalty: harder to rebuild, need a truly dominant joker
-    if ante >= 7:
-        score *= 0.4
-    elif ante >= 6:
-        score *= 0.5
-    elif ante >= 5:
-        score *= 0.75
+    for min_ante, penalty in sorted(_HEX_ANTE_PENALTIES.items(), reverse=True):
+        if ante >= min_ante:
+            score *= penalty
+            break
 
-    return min(score, 8.0)
+    return min(score, _HEX_MAX_SCORE)
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +347,7 @@ def score_use_now(
         hand_type = PLANET_KEYS[key]
         affinity = strat.hand_affinity(hand_type) if hand_type != "ALL" else 99
         cur_level = hand_levels.get(hand_type, {}).get("level", 1) if hand_type != "ALL" else 0
-        return (10.0, ("use", idx,
+        return (_PLANET_USE_VALUE, ("use", idx,
             f"[PLANET] {label}: {hand_type} lv{cur_level}→lv{cur_level+1} (affinity={affinity:.0f})"))
 
     # --- Safe no-target tarots: use immediately ---
@@ -309,7 +386,7 @@ def score_use_now(
             return (0.0, None)
         if key == "c_ectoplasm" and ante < 3:
             return (0.0, None)
-        return (5.0, ("use", idx, f"use spectral: {label}"))
+        return (_SAFE_SPECTRAL_USE_VALUE, ("use", idx, f"use spectral: {label}"))
 
     # --- Targeting tarots/spectrals ---
     if not hand_cards:
@@ -403,22 +480,21 @@ def _score_targeting_use(
         if result:
             new_score, targets = result
             improvement = new_score / max(current_score, 1)
-            if improvement > 1.2 or desperate:
-                return (improvement * 3.0, ("use_target", idx, targets,
+            if improvement > _SUIT_CONVERT_IMPROVEMENT or desperate:
+                return (improvement * _TACTICAL_USE_MULTIPLIER, ("use_target", idx, targets,
                     f"tactical: {label} -> Flush ({new_score} vs {current_score}, {hands_left}h left)"))
         return (0.0, None)
 
     # Enhancements and Glass: use based on ante timing
     if effect_type in ("glass", "enhance"):
-        # Ante-based timing
-        if ante <= 3:
-            threshold = 1.0
+        if ante <= _EARLY_ANTE_CUTOFF:
+            threshold = _GLASS_ANTE_THRESHOLDS["early"]
         elif ante <= 5:
-            threshold = 1.2
+            threshold = _GLASS_ANTE_THRESHOLDS["mid"]
         else:
             if not desperate:
                 return (0.0, None)
-            threshold = 1.0
+            threshold = _GLASS_ANTE_THRESHOLDS["late"]
 
         if effect_type == "glass":
             result = eval_glass(hand_cards, hand_levels, jokers, current_best, current_score, strat=strat)
@@ -426,7 +502,7 @@ def _score_targeting_use(
                 new_score, targets = result
                 improvement = new_score / max(current_score, 1)
                 if improvement >= threshold or desperate:
-                    return (improvement * 3.0, ("use_target", idx, targets,
+                    return (improvement * _TACTICAL_USE_MULTIPLIER, ("use_target", idx, targets,
                         f"{'desperate' if desperate else 'tactical'}: Glass (×{improvement:.1f}, {hands_left}h left)"))
         else:
             result = eval_enhancement(
@@ -437,7 +513,7 @@ def _score_targeting_use(
                 new_score, targets = result
                 improvement = new_score / max(current_score, 1)
                 if improvement >= threshold or desperate:
-                    return (improvement * 3.0, ("use_target", idx, targets,
+                    return (improvement * _TACTICAL_USE_MULTIPLIER, ("use_target", idx, targets,
                         f"{'desperate' if desperate else 'tactical'}: {label} ({extra}) (×{improvement:.1f}, {hands_left}h left)"))
 
     return (0.0, None)
@@ -471,21 +547,20 @@ def score_hold(
 
         if effect_type == "suit_convert":
             # Worth holding if we have discards (might draw into flush)
-            hold = 2.0 if discards_left > 0 else 0.5
+            hold = _HOLD_SUIT_CONVERT_WITH_DISCARDS if discards_left > 0 else _HOLD_SUIT_CONVERT_NO_DISCARDS
 
         elif effect_type in ("glass", "enhance"):
             # Early: low hold value (use freely, compound)
             # Late: high hold value (wait for best target)
-            if ante <= 3:
-                hold = 1.0
+            if ante <= _EARLY_ANTE_CUTOFF:
+                hold = _HOLD_ENHANCE_EARLY
             elif ante <= 5:
-                hold = 2.0
+                hold = _HOLD_ENHANCE_MID
             else:
-                hold = 3.0
+                hold = _HOLD_ENHANCE_LATE
 
         elif effect_type == "gold":
-            # Hold until winning
-            hold = 2.0
+            hold = _HOLD_GOLD
 
         else:
             # Immediate-use tarots (destroy, clone, etc)
@@ -493,7 +568,7 @@ def score_hold(
 
     # Slot pressure: holding a mediocre card blocks better purchases
     if slots_full:
-        hold -= 2.0
+        hold -= _HOLD_SLOT_PRESSURE
 
     return hold
 
@@ -573,7 +648,7 @@ def eval_glass(
     candidates.sort(key=lambda x: (x[1], x[2], x[3]))
     best_idx = candidates[0][0]
     is_face = candidates[0][2] == 0
-    multiplier = 1.8 if is_face else 1.6
+    multiplier = _GLASS_MULTIPLIER_FACE if is_face else _GLASS_MULTIPLIER_OTHER
     estimated_new = int(current_score * multiplier)
     return (estimated_new, [best_idx])
 
@@ -596,7 +671,7 @@ def eval_enhancement(
         if fd and len(fd) >= 4:
             for i, c in enumerate(hand_cards):
                 if i not in fd and not _modifier(c).get("enhancement"):
-                    estimated = int(current_score * 1.5)
+                    estimated = int(current_score * _WILD_STEEL_MULTIPLIER)
                     return (estimated, [i])
 
     # Steel: apply to highest-rank held (not played) card
@@ -608,7 +683,7 @@ def eval_enhancement(
             RANK_ORDER = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"]
             held.sort(key=lambda i: RANK_ORDER.index(card_rank(hand_cards[i]))
                       if card_rank(hand_cards[i]) in RANK_ORDER else -1, reverse=True)
-            estimated = int(current_score * 1.5)
+            estimated = int(current_score * _WILD_STEEL_MULTIPLIER)
             return (estimated, held[:max_count])
         return None
 
@@ -618,7 +693,7 @@ def eval_enhancement(
         scoring_set = set(current_best.card_indices)
         relevant = [t for t in targets if t in scoring_set]
         if relevant:
-            estimated = int(current_score * 1.2)
+            estimated = int(current_score * _GENERIC_ENHANCE_MULTIPLIER)
             return (estimated, relevant[:max_count])
 
     return None

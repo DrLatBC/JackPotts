@@ -391,3 +391,169 @@ class TestFlowerPotDebuffed:
         _, _, total_with = score_hand("Straight", cards, jokers=[self._flower_pot_joker()])
         _, _, total_without = score_hand("Straight", cards)
         assert total_with == total_without, "Flower Pot should NOT trigger with only 3 suits"
+
+
+# ---------------------------------------------------------------------------
+# Raised Fist with debuffed held cards
+# ---------------------------------------------------------------------------
+
+class TestRaisedFistDebuffed:
+    """Raised Fist picks the lowest-ranked held card INCLUDING debuffed ones.
+    If that card is debuffed, the effect returns 0 mult (matching game logic)."""
+
+    _HL = {"Pair": {"chips": 10, "mult": 2, "level": 1}}
+
+    def _raised_fist_joker(self):
+        return _joker_with_ability("j_raised_fist", {"x_mult": 1})
+
+    def test_no_debuff_adds_mult(self):
+        """Lowest held card (4) not debuffed → adds 2×4 = 8 mult."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("A", "D"), card("Q", "D"), card("4", "C")]
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[self._raised_fist_joker()],
+            played_cards=played, held_cards=held,
+        )
+        assert result["pre_joker_mult"] == 10.0  # 2 base + 2*4
+
+    def test_lowest_debuffed_adds_zero(self):
+        """Lowest held card (4♣) debuffed by boss → 0 mult from Raised Fist."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("A", "D"), card("Q", "D"), card("4", "C")]
+        held[2]["state"] = {"debuff": True}
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[self._raised_fist_joker()],
+            played_cards=played, held_cards=held,
+            blind_name="The Club",
+        )
+        assert result["pre_joker_mult"] == 2.0  # base only
+
+    def test_non_lowest_debuffed_still_adds(self):
+        """Higher card (K♣) debuffed, lowest (4♥) fine → adds 2×4 = 8."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("K", "C"), card("Q", "D"), card("4", "H")]
+        held[0]["state"] = {"debuff": True}
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[self._raised_fist_joker()],
+            played_cards=played, held_cards=held,
+            blind_name="The Club",
+        )
+        assert result["pre_joker_mult"] == 10.0  # 2 base + 2*4
+
+    def test_all_held_debuffed_adds_zero(self):
+        """All held cards debuffed → 0 mult from Raised Fist."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("A", "C"), card("Q", "C"), card("4", "C")]
+        for c in held:
+            c["state"] = {"debuff": True}
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[self._raised_fist_joker()],
+            played_cards=played, held_cards=held,
+            blind_name="The Club",
+        )
+        assert result["pre_joker_mult"] == 2.0  # base only
+
+
+# ---------------------------------------------------------------------------
+# Blueprint / Brainstorm + held-card-phase jokers
+# ---------------------------------------------------------------------------
+
+class TestBlueprintHeldCardPhase:
+    """Blueprint/Brainstorm should copy held-card-phase jokers (Baron,
+    Shoot the Moon, Mime, Raised Fist) just like they copy per-card jokers."""
+
+    _HL = {"Pair": {"chips": 10, "mult": 2, "level": 1}}
+
+    def test_blueprint_copies_baron(self):
+        """Blueprint to the left of Baron → x1.5 applied twice per held King.
+        Held: K♣ (one King). Base mult 2, then 2 * 1.5 * 1.5 = 4.5."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("K", "C"), card("Q", "D")]
+        baron = _joker_with_ability("j_baron", {"extra": 1.5})
+        blueprint = joker("j_blueprint")
+        # Blueprint at index 0, Baron at index 1 (to its right)
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[blueprint, baron],
+            played_cards=played, held_cards=held,
+        )
+        assert result["pre_joker_mult"] == 2.0 * 1.5 * 1.5  # 4.5
+
+    def test_brainstorm_copies_baron(self):
+        """Brainstorm copies leftmost joker (Baron). Same double-x1.5 effect."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("K", "C"), card("Q", "D")]
+        baron = _joker_with_ability("j_baron", {"extra": 1.5})
+        brainstorm = joker("j_brainstorm")
+        # Baron at index 0 (leftmost), Brainstorm at index 1
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[baron, brainstorm],
+            played_cards=played, held_cards=held,
+        )
+        assert result["pre_joker_mult"] == 2.0 * 1.5 * 1.5  # 4.5
+
+    def test_blueprint_copies_shoot_the_moon(self):
+        """Blueprint copies Shoot the Moon → +13 applied twice per held Queen.
+        Held: Q♣. Base mult 2, then 2 + 13 + 13 = 28."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("Q", "C"), card("K", "D")]
+        stm = _joker_with_ability("j_shoot_the_moon", {"extra": 13})
+        blueprint = joker("j_blueprint")
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[blueprint, stm],
+            played_cards=played, held_cards=held,
+        )
+        assert result["pre_joker_mult"] == 2.0 + 13 + 13  # 28.0
+
+    def test_blueprint_copies_mime(self):
+        """Blueprint copies Mime → held cards trigger 3x (1 base + 1 Mime + 1 Blueprint-as-Mime).
+        Held: K♣ with Baron present. Base mult 2, then 2 * 1.5^3 = 6.75."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("K", "C")]
+        baron = _joker_with_ability("j_baron", {"extra": 1.5})
+        mime = joker("j_mime")
+        blueprint = joker("j_blueprint")
+        # Order: baron, blueprint, mime — Blueprint copies Mime (to its right)
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[baron, blueprint, mime],
+            played_cards=played, held_cards=held,
+        )
+        # 3 triggers of Baron x1.5 each: 2 * 1.5^3 = 6.75
+        assert result["pre_joker_mult"] == 2.0 * 1.5 ** 3  # 6.75
+
+    def test_debuffed_blueprint_no_copy(self):
+        """Debuffed Blueprint should not copy Baron."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("K", "C")]
+        baron = _joker_with_ability("j_baron", {"extra": 1.5})
+        blueprint = joker("j_blueprint")
+        blueprint["state"] = {"debuff": True}
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[blueprint, baron],
+            played_cards=played, held_cards=held,
+        )
+        # Only Baron applies once: 2 * 1.5 = 3.0
+        assert result["pre_joker_mult"] == 2.0 * 1.5  # 3.0
+
+    def test_blueprint_debuffed_target_no_copy(self):
+        """Blueprint targeting a debuffed Baron should not copy it."""
+        played = [card("5", "H"), card("5", "D")]
+        held = [card("K", "C")]
+        baron = _joker_with_ability("j_baron", {"extra": 1.5})
+        baron["state"] = {"debuff": True}
+        blueprint = joker("j_blueprint")
+        result = score_hand_detailed(
+            "Pair", played, hand_levels=self._HL,
+            jokers=[blueprint, baron],
+            played_cards=played, held_cards=held,
+        )
+        # Neither applies: mult stays at base 2
+        assert result["pre_joker_mult"] == 2.0

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import random
+import re
 import string
 import time
 from collections import defaultdict
@@ -14,6 +15,7 @@ from balatrobot import APIError, BalatroClient
 from balatro_bot.engine import RuleEngine
 
 log = logging.getLogger("balatro_bot")
+_stream_log = logging.getLogger("balatro_stream")
 
 
 class WinCaptureHandler(logging.handlers.MemoryHandler):
@@ -48,6 +50,7 @@ def setup_logging(
     log_file: str = "growing.txt",
     wins_file: str = "wins.txt",
     scoring_file: str | None = None,
+    stream_file: str | None = None,
 ) -> None:
     global _win_handler
     level = logging.DEBUG if verbose else logging.INFO
@@ -66,7 +69,8 @@ def setup_logging(
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
-    root.addHandler(console)
+    if not stream_file:
+        root.addHandler(console)
     root.addHandler(file_handler)
     root.addHandler(_win_handler)
 
@@ -79,6 +83,19 @@ def setup_logging(
         sh = logging.FileHandler(scoring_file, mode="a", encoding="utf-8")
         sh.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
         scoring_log.addHandler(sh)
+
+    if stream_file:
+        stream_logger = logging.getLogger("balatro_stream")
+        stream_logger.setLevel(logging.INFO)
+        stream_logger.propagate = False
+        stream_fmt = logging.Formatter("%(message)s")
+        sfh = logging.FileHandler(stream_file, mode="a", encoding="utf-8")
+        sfh.setFormatter(stream_fmt)
+        stream_logger.addHandler(sfh)
+        # Also print to console for OBS window capture
+        sc = logging.StreamHandler()
+        sc.setFormatter(stream_fmt)
+        stream_logger.addHandler(sc)
 
 
 def wait_for_server(client: BalatroClient, timeout: float = 30.0) -> None:
@@ -425,6 +442,7 @@ def run_bot(
     stake: str = "WHITE",
     seed: str | None = None,
     poll_interval: float = 0.2,
+    stream_delay: float = 0.0,
 ) -> bool:
     """Main bot loop. Returns True if the game was won."""
     if start_game:
@@ -449,6 +467,7 @@ def run_bot(
         else:
             raise RuntimeError("Failed to start game after 3 attempts")
         log.info("Started new game: deck=%s stake=%s seed=%s", deck, stake, state.get("seed"))
+        _stream_log.info("New game — Seed: %s | Deck: %s", state.get("seed"), deck)
     else:
         state = client.call("gamestate")
         log.info("Joined existing game: state=%s", state.get("state"))
@@ -498,6 +517,8 @@ def run_bot(
                 cur_ante, state.get("round_num", "?"),
                 state.get("seed", "?"),
             )
+            _stream_log.info("")
+            _stream_log.info("*** VICTORY! ***")
             if current_blind_name:
                 target = current_blind_target if isinstance(current_blind_target, int) else 0
                 log.info(
@@ -566,6 +587,13 @@ def run_bot(
             else:
                 log.info("[ANTE %s] Money: $%d", ante_num, money)
 
+            # Stream log — ante summary
+            _stream_log.info("")
+            _stream_log.info("=== Ante %s / 8 ===", ante_num)
+            joker_names = [j.get("label", "?") for j in joker_cards]
+            _stream_log.info("Jokers: %s", ", ".join(joker_names) if joker_names else "(none)")
+            _stream_log.info("Money: $%d", money)
+
             last_ante = ante_num
         # Track highest chips seen during this blind (capture before round resets)
         cur_chips = state.get("round", {}).get("chips", 0)
@@ -633,7 +661,16 @@ def run_bot(
                                 total_hands_played - hands_at_blind_start,
                                 total_discards_used - discards_at_blind_start,
                             )
+                            _stream_log.info(
+                                "%s WON — %s / %s | %d hands, %d discards",
+                                current_blind_name, f"{max_chips_this_blind:,}",
+                                f"{current_blind_target:,}" if isinstance(current_blind_target, int) else current_blind_target,
+                                total_hands_played - hands_at_blind_start,
+                                total_discards_used - discards_at_blind_start,
+                            )
                         log.info("Blind: %s (need %s chips)", name, score)
+                        _stream_log.info("")
+                        _stream_log.info("--- %s — need %s chips ---", name, f"{score:,}" if isinstance(score, int) else score)
                         current_blind_name = name
                         current_blind_target = score
                         max_chips_this_blind = 0
@@ -690,6 +727,12 @@ def run_bot(
                         rnd.get("hands_left", 0),
                         "CAN WIN" if can_win else "NEED MORE",
                     )
+                    _stream_log.info(
+                        "Best: %s for %s | Hands: %d | %s",
+                        best_name, f"{best_score:,}",
+                        rnd.get("hands_left", 0),
+                        "CAN WIN" if can_win else "NEED MORE",
+                    )
                     hand_context_logged = True
 
         # Refresh state before deciding — previous action response may have
@@ -709,6 +752,23 @@ def run_bot(
 
         method, params = action.to_rpc()
 
+        # Rearrange hand cards so scoring order matches the bot's intended play order.
+        # Balatro scores left-to-right by hand position, not by click order.
+        if method == "play" and params and "cards" in params:
+            play_indices = params["cards"]
+            if play_indices != sorted(play_indices):
+                hand_size = len(state.get("hand", {}).get("cards", []))
+                non_play = [i for i in range(hand_size) if i not in set(play_indices)]
+                new_order = play_indices + non_play  # played cards first, rest after
+                try:
+                    client.call("rearrange", {"hand": new_order})
+                    # Remap: played cards are now at positions 0..len-1
+                    params["cards"] = list(range(len(play_indices)))
+                    # Refresh state so card labels reflect new order
+                    state = client.call("gamestate")
+                except Exception:
+                    log.warning("rearrange failed, playing in original order")
+
         card_detail = ""
         if method in ("play", "discard") and "cards" in (params or {}):
             hand_cards = state.get("hand", {}).get("cards", [])
@@ -725,6 +785,49 @@ def run_bot(
             card_detail,
             getattr(action, "reason", ""),
         )
+
+        # Stream log — clean action summaries
+        reason = getattr(action, "reason", "")
+        if method == "play" and card_detail:
+            if reason.startswith("milk:"):
+                _stream_log.info("Milk: %s", reason[5:].strip())
+            else:
+                # Extract score from reason like "Full House for 3232 (eff 3232) >= 300 needed"
+                score_m = re.search(r"for (\d+)", reason)
+                hand_name_str = getattr(action, "hand_name", "") or "?"
+                score_str = f"{int(score_m.group(1)):,}" if score_m else "?"
+                chips_remaining = state.get("round", {}).get("chips", 0)
+                blind_need = current_blind_target if isinstance(current_blind_target, int) else 0
+                remaining = blind_need - chips_remaining if blind_need else 0
+                _stream_log.info(
+                    "Play %s → %s / %s needed",
+                    hand_name_str, score_str,
+                    f"{remaining:,}" if remaining > 0 else "0",
+                )
+        elif method == "discard" and card_detail:
+            # Extract chase info from reason like "chase Three of a Kind (26% to hit)..."
+            chase_m = re.search(r"chase (\w[\w ]*?) \((\d+)%", reason) if reason else None
+            if chase_m:
+                _stream_log.info(
+                    "Discard — chasing %s (%s%%)",
+                    chase_m.group(1), chase_m.group(2),
+                )
+            else:
+                _stream_log.info("Discard")
+        elif method == "buy":
+            # Extract buy info from reason
+            _stream_log.info("Bought: %s", reason.split("(")[0].strip() if reason else "?")
+        elif method == "next_round":
+            _stream_log.info("")
+
+        # Stream mode: highlight cards one at a time before playing/discarding
+        if stream_delay > 0 and method in ("play", "discard") and params and "cards" in params:
+            for card_idx in params["cards"]:
+                try:
+                    client.call("highlight", {"card": card_idx})
+                except Exception:
+                    pass
+                time.sleep(0.5)
 
         pre_play_chips = 0
         play_snapshot = None
@@ -774,7 +877,6 @@ def run_bot(
         # Capture expected hand score for chip accounting on timeout
         expected_hand_score = 0
         if method == "play":
-            import re
             m = re.search(r"for (\d+)", getattr(action, "reason", ""))
             if m:
                 expected_hand_score = int(m.group(1))
@@ -821,6 +923,9 @@ def run_bot(
             prev_joker_keys = cur_joker_keys
 
             consecutive_errors = 0
+
+            if stream_delay > 0:
+                time.sleep(stream_delay)
         except httpx.TimeoutException:
             if method == "play":
                 total_hands_played += 1  # hand was played, game processed it
@@ -942,6 +1047,8 @@ def run_bot(
             "Game over: DEFEAT | seed=%s ante=%s round=%s | %d actions taken",
             seed, ante, round_num, actions_taken,
         )
+        _stream_log.info("")
+        _stream_log.info("GAME OVER at Ante %s", ante)
     joker_names = [j.get("label", "?") for j in state.get("jokers", {}).get("cards", [])]
     log.info(
         "Summary: $%d | jokers: [%s] | hands=%d discards=%d",

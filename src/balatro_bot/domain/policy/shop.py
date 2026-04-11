@@ -23,10 +23,30 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("balatro_bot")
 
-# ── Constants ────────────────────────────────────────────────────────
+# ── Tuning constants ─────────────────────────────────────────────────
 
-INTEREST_CAP = 25
-MIN_VALUE = 1.5
+INTEREST_CAP = 25       # max money that earns interest ($5/round at $25)
+MIN_VALUE = 1.5         # minimum consumable value to justify buying
+
+# Stale-scaler detection — sell flat-mult/chip scalers that haven't grown
+_STALE_MID_ANTE = 4     # ante threshold for mid-game check
+_STALE_MID_CHIPS = 20   # max chips to count as stale at mid-game
+_STALE_MID_MULT = 5     # max mult to count as stale at mid-game
+_STALE_LATE_ANTE = 6    # ante threshold for late-game check
+_STALE_LATE_CHIPS = 50  # max chips to count as stale at late-game
+_STALE_LATE_MULT = 10   # max mult to count as stale at late-game
+
+# Interest preservation — don't break interest threshold before this ante
+_INTEREST_ANTE_CUTOFF = 5
+
+# Upgrade-sell thresholds — how much better must a shop joker be?
+_SELL_THRESHOLD_HIGH_XMULT = 0.5   # high-tier xMult in shop: almost always upgrade
+_SELL_THRESHOLD_MISMATCH = 3.0     # selling on-strategy for off-strategy: needs big gap
+_SELL_THRESHOLD_BOTH_ON = 1.5      # both on-strategy: moderate gap needed
+_SELL_THRESHOLD_DEFAULT = 1.0      # default upgrade threshold
+
+# Slow scalers (non-xMult) rejected after this ante
+_SLOW_SCALER_ANTE = 6
 
 
 def _get_edition(card: dict) -> str | None:
@@ -160,9 +180,9 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
         parsed = parse_effect_value(effect_text) if effect_text else {}
         chips = parsed.get("chips") or 0
         mult = parsed.get("mult") or 0
-        if cur_ante >= 4 and chips <= 20 and mult <= 5:
+        if cur_ante >= _STALE_MID_ANTE and chips <= _STALE_MID_CHIPS and mult <= _STALE_MID_MULT:
             return True
-        if cur_ante >= 6 and chips <= 50 and mult <= 10:
+        if cur_ante >= _STALE_LATE_ANTE and chips <= _STALE_LATE_CHIPS and mult <= _STALE_LATE_MULT:
             return True
         return False
 
@@ -201,7 +221,7 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
         if cost > money_after_sell:
             continue
 
-        if ante < 5 and money_after_sell < INTEREST_CAP:
+        if ante < _INTEREST_ANTE_CUTOFF and money_after_sell < INTEREST_CAP:
             interest_after_buy = min((money_after_sell - cost) // 5, 5)
             if interest_after_buy < current_interest:
                 continue
@@ -217,13 +237,13 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
         )
 
         if is_high_tier_xmult:
-            threshold = 0.5
+            threshold = _SELL_THRESHOLD_HIGH_XMULT
         elif weakest_on_strategy and not shop_on_strategy:
-            threshold = 3.0
+            threshold = _SELL_THRESHOLD_MISMATCH
         elif weakest_on_strategy and shop_on_strategy:
-            threshold = 1.5
+            threshold = _SELL_THRESHOLD_BOTH_ON
         else:
-            threshold = 1.0
+            threshold = _SELL_THRESHOLD_DEFAULT
 
         if shop_value > weakest_value + threshold and shop_value > best_shop_value:
             best_sell_target = card
@@ -392,7 +412,7 @@ def choose_buy_joker_in_shop(state: dict[str, Any]) -> Action | None:
         negative = _is_negative(card)
 
         SLOW_SCALERS = (SCALING_JOKERS | {"j_madness", "j_ceremonial"}) - SCALING_XMULT
-        if not negative and key in SLOW_SCALERS and ante >= 6:
+        if not negative and key in SLOW_SCALERS and ante >= _SLOW_SCALER_ANTE:
             passed_on.append(f"{label}(${cost}, too late for slow scaler at ante {ante})")
             continue
 

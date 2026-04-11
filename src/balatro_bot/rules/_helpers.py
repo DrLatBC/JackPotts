@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suit, card_suits, card_xmult_value, card_chip_value, rank_value, is_debuffed, _modifier
+from balatro_bot.cards import card_rank, card_suit, card_suits, card_xmult_value, card_chip_value, card_mult_value, rank_value, is_debuffed, _modifier
 from balatro_bot.constants import (
     FEWER_CARDS_JOKERS, ALL_SCORE_JOKERS, EXACT_4_JOKERS,
-    FACE_RANKS_TAROT, PLANET_KEYS, NO_TARGET_TAROTS, TARGETING_TAROTS,
-    SCALING_JOKERS,
+    FACE_RANKS, FACE_RANKS_TAROT, PLANET_KEYS, NO_TARGET_TAROTS, TARGETING_TAROTS,
+    SCALING_JOKERS, EVEN_RANKS, ODD_RANKS, FIBONACCI_RANKS,
 )
 from balatro_bot.domain.scoring.classify import classify_hand
 
@@ -54,13 +54,23 @@ def _pad_with_junk(
     shortcut = "j_shortcut" in joker_keys
     smeared = "j_smeared" in joker_keys
 
+    # For High Card, junk must not outrank the scoring card or it becomes
+    # the new scoring card (game picks highest rank, leftmost on ties).
+    max_junk_rank: int | None = None
+    if intended_hand == "High Card" and card_indices:
+        scoring_rank = rank_value(card_rank(hand_cards[card_indices[0]]) or "2")
+        max_junk_rank = scoring_rank
+
     used = set(card_indices)
     junk = []
     for i, c in enumerate(hand_cards):
         if i not in used:
             r = card_rank(c)
+            rv = rank_value(r) if r else 0
             debuffed = is_debuffed(c)
-            junk.append((i, 0 if debuffed else 1, rank_value(r) if r else 0))
+            if max_junk_rank is not None and rv > max_junk_rank:
+                continue
+            junk.append((i, 0 if debuffed else 1, rv))
     junk.sort(key=lambda x: (x[1], x[2]))
 
     padded = list(card_indices)
@@ -121,6 +131,44 @@ def _sort_play_order(
 
     if has_hanging_chad:
         # First card gets 3 triggers — pick the card that benefits most.
+        def _per_trigger_add(idx: int) -> float:
+            """Additive chips+mult this card earns per trigger from joker effects."""
+            c = hand_cards[idx]
+            if is_debuffed(c):
+                return 0.0
+            rank = card_rank(c)
+            suits = card_suits(c)
+            add = card_chip_value(c) + card_mult_value(c)
+            for j in jokers:
+                k = j.get("key", "")
+                if k == "j_even_steven" and rank in EVEN_RANKS:
+                    add += 4
+                elif k == "j_odd_todd" and rank in ODD_RANKS:
+                    add += 31
+                elif k == "j_fibonacci" and rank in FIBONACCI_RANKS:
+                    add += 8
+                elif k == "j_smiley" and (pareidolia or rank in FACE_RANKS):
+                    add += 5
+                elif k == "j_scary_face" and (pareidolia or rank in FACE_RANKS):
+                    add += 30
+                elif k == "j_scholar" and rank == "A":
+                    add += 24  # 20 chips + 4 mult
+                elif k == "j_walkie_talkie" and rank in ("T", "4"):
+                    add += 14  # 10 chips + 4 mult
+                elif k == "j_greedy_joker" and "D" in suits:
+                    add += 3
+                elif k == "j_lusty_joker" and "H" in suits:
+                    add += 3
+                elif k == "j_wrathful_joker" and "S" in suits:
+                    add += 3
+                elif k == "j_gluttenous_joker" and "C" in suits:
+                    add += 3
+                elif k == "j_arrowhead" and "S" in suits:
+                    add += 50
+                elif k == "j_onyx_agate" and "C" in suits:
+                    add += 7
+            return add
+
         def _first_position_score(idx: int) -> float:
             c = hand_cards[idx]
             if is_debuffed(c):
@@ -128,8 +176,10 @@ def _sort_play_order(
             xm = _total_xmult(idx)
             if has_photograph and _is_face(idx):
                 xm *= 2.0  # Photograph ×2 per trigger on first face
-            # xm^3 (first) vs xm (elsewhere) — higher ratio = more benefit
-            return xm ** 3
+            add = _per_trigger_add(idx)
+            # 3 triggers in first position: xm^3 for multiplicative,
+            # 3*add vs 1*add = 2*add extra for additive
+            return xm ** 3 + 2 * add
 
         best_first = max(indices, key=_first_position_score)
         rest = [i for i in indices if i != best_first]

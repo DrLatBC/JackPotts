@@ -15,6 +15,12 @@ if TYPE_CHECKING:
 
     from balatro_bot.domain.models.snapshot import Snapshot
 
+# ---------------------------------------------------------------------------
+# Round outlook thresholds (projected score / chips remaining)
+# ---------------------------------------------------------------------------
+_COMFORTABLE_RATIO = 1.5   # >= this → comfortable, blind is well in hand
+_TIGHT_RATIO = 0.8         # >= this → tight, every hand matters
+
 __all__ = ["RoundContext"]
 
 
@@ -60,9 +66,9 @@ class RoundContext:
             return "hopeless"
         projected = effective * self.hands_left
         ratio = projected / self.chips_remaining
-        if ratio >= 1.5:
+        if ratio >= _COMFORTABLE_RATIO:
             return "comfortable"
-        elif ratio >= 0.8:
+        elif ratio >= _TIGHT_RATIO:
             return "tight"
         else:
             return "hopeless"

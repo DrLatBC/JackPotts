@@ -233,7 +233,8 @@ def compute_session_number() -> int:
 
 class Supervisor:
     def __init__(self, n: int, games: int, decks: list[str], stake: str,
-                 seed: str | None, verbose: bool = False):
+                 seed: str | None, verbose: bool = False,
+                 stream: bool = False):
         taken: set[str] = set()
         slots = []
         for i in range(n):
@@ -246,6 +247,7 @@ class Supervisor:
         self.stake = stake
         self.seed = seed
         self.verbose = verbose
+        self.stream = stream
         self.running = True
         self.session_num = 0
         self.session_start: float = 0.0
@@ -272,12 +274,16 @@ class Supervisor:
                 p.unlink()
 
     def launch_server(self, slot: Slot) -> None:
+        cmd = [
+            UVX, "balatrobot", "serve",
+            "--port", str(slot.port),
+            "--love-path", LOVE_PATH,
+            "--lovely-path", LOVELY_PATH,
+        ]
+        if not self.stream:
+            cmd.extend(["--headless", "--fast"])
         slot.server_proc = subprocess.Popen(
-            [UVX, "balatrobot", "serve",
-             "--port", str(slot.port),
-             "--headless", "--fast",
-             "--love-path", LOVE_PATH,
-             "--lovely-path", LOVELY_PATH],
+            cmd,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         slot.state = "starting"
@@ -319,6 +325,8 @@ class Supervisor:
             cmd.extend(["--seed", self.seed])
         if self.verbose:
             cmd.append("--verbose")
+        if self.stream:
+            cmd.extend(["--stream-delay", "2.0", "--stream-log"])
         slot.bot_proc = subprocess.Popen(
             cmd,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
@@ -391,7 +399,7 @@ class Supervisor:
                 self.restart_slot(slot)
             return
 
-        if slot.state == "running" and slot.log_file and slot.poll_log_for_softlock():
+        if not self.stream and slot.state == "running" and slot.log_file and slot.poll_log_for_softlock():
             log.warning("%s (port %d): soft-lock detected — restarting", slot.name, slot.port)
             self.restart_slot(slot, reason="soft-lock detected")
             return
@@ -438,7 +446,7 @@ class Supervisor:
             name_pad = f"{slot.name:<12}"
             wins_col = f"W:{slot.wins}"
             state_str = slot.state
-            if slot.last_reason and slot.state in ("cooldown", "restarting"):
+            if slot.last_reason:
                 state_str = f"{slot.state} ({slot.last_reason})"
             print(f"  [{state_icon}] {name_pad} {deck:<8} {prog:>12}  {wins_col:<6} {state_str}{restarts}")
         print()
@@ -625,7 +633,13 @@ def main() -> None:
                         help="Kill all existing bot/balatro processes and exit")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Pass --verbose to bot instances (DEBUG logging)")
+    parser.add_argument("--stream", action="store_true",
+                        help="Stream mode: single headed instance, no fast-forward, 2s action delay")
     args = parser.parse_args()
+
+    if args.stream:
+        args.instances = 1
+        os.system("mode con: cols=74 lines=13")
 
     if args.kill:
         ports = list(range(BASE_PORT, BASE_PORT + args.instances))
@@ -641,6 +655,7 @@ def main() -> None:
         stake=args.stake,
         seed=args.seed,
         verbose=args.verbose,
+        stream=args.stream,
     )
 
     def on_sigint(sig, frame):

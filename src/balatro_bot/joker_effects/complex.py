@@ -60,10 +60,20 @@ def _misprint(ctx: ScoreContext, j: dict) -> None:
 
 def _raised_fist(ctx: ScoreContext, j: dict) -> None:
     # Raised Fist uses chip values (J/Q/K=10, A=11), not rank order (J=11..A=14)
-    # Debuffed held cards contribute 0 chips (boss blinds like The Window)
-    held_chips = [0 if is_debuffed(c) else RANK_CHIPS.get(card_rank(c), 0) for c in ctx.held_cards if card_rank(c)]
-    if held_chips:
-        ctx.mult += 2 * min(held_chips)
+    # The game picks the lowest-ranked card INCLUDING debuffed ones.
+    # If that card is debuffed, the effect returns 0 mult.
+    from balatro_bot.cards import rank_value
+    best_card = None
+    best_rv = 15
+    for c in ctx.held_cards:
+        r = card_rank(c)
+        if r:
+            rv = rank_value(r)
+            if rv <= best_rv:
+                best_rv = rv
+                best_card = c
+    if best_card is not None and not is_debuffed(best_card):
+        ctx.mult += 2 * RANK_CHIPS.get(card_rank(best_card), 0)
 
 def _fibonacci(ctx: ScoreContext, j: dict) -> None:
     count = sum(retrigger_count(c, ctx) for c in ctx.scoring_cards if not is_debuffed(c) and card_rank(c) in FIBONACCI_RANKS)

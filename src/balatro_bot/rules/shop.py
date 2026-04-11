@@ -22,7 +22,17 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("balatro_bot")
 
-# --- Utility joker values (non-scoring jokers with gameplay impact) ---
+# ---------------------------------------------------------------------------
+# Invisible dupe-target scoring constants
+# ---------------------------------------------------------------------------
+_COPY_JOKER_DUPE_SCORE = 15.0  # copy jokers (Blueprint/Brainstorm) always tier-1
+_XMULT_DUPE_MULTIPLIER = 3.0   # xMult value → dupe score (X3 → 9.0, X2 → 6.0)
+_MULT_DUPE_DIVISOR = 5.0       # flat mult value → dupe score (+20 → 4.0)
+_DEFAULT_DUPE_SCORE = 2.0      # fallback for DUPE_WORTHY jokers without parsed values
+
+# Min dupe-target score that justifies selling down, scales with ante
+_MIN_TARGET_BASE = 3.0          # base threshold (ante <= 3)
+_MIN_TARGET_SCALE = 1.5         # +1.5 per ante above 3
 
 
 class SellInvisible:
@@ -65,16 +75,16 @@ class SellInvisible:
         key = joker.get("key", "")
 
         if key in self.COPY_JOKERS:
-            return 15.0  # copy jokers are always tier-1
+            return _COPY_JOKER_DUPE_SCORE
 
         effect_text = joker.get("value", {}).get("effect", "")
         parsed = parse_effect_value(effect_text) if effect_text else {}
 
         if parsed.get("xmult"):
-            return parsed["xmult"] * 3.0  # X3 → 9.0, X2 → 6.0
+            return parsed["xmult"] * _XMULT_DUPE_MULTIPLIER
         if parsed.get("mult"):
-            return parsed["mult"] / 5.0
-        return 2.0  # default for DUPE_WORTHY without parsed values
+            return parsed["mult"] / _MULT_DUPE_DIVISOR
+        return _DEFAULT_DUPE_SCORE
 
     def _best_dupe_target(self, owned: list[dict], invisible_idx: int) -> tuple[int | None, float]:
         """Return (index, score) of the best dupe target, or (None, 0)."""
@@ -97,8 +107,8 @@ class SellInvisible:
     def _min_target_score(ante: int) -> float:
         """Minimum target score to justify selling down at this ante."""
         if ante <= 3:
-            return 3.0
-        return 3.0 + (ante - 3) * 1.5
+            return _MIN_TARGET_BASE
+        return _MIN_TARGET_BASE + (ante - 3) * _MIN_TARGET_SCALE
 
     @staticmethod
     def _boss_next(round_num: int) -> bool:
