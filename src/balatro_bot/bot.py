@@ -9,6 +9,8 @@ import re
 import string
 import time
 from collections import defaultdict
+from dataclasses import dataclass, field
+
 import httpx
 from balatrobot import APIError, BalatroClient
 
@@ -16,6 +18,45 @@ from balatro_bot.engine import RuleEngine
 
 log = logging.getLogger("balatro_bot")
 _stream_log = logging.getLogger("balatro_stream")
+
+# Card formatting constants (used throughout the game loop)
+SUIT_SYM = {"H": "\u2665", "D": "\u2666", "C": "\u2663", "S": "\u2660"}
+RANK_SYM = {
+    "2": "2", "3": "3", "4": "4", "5": "5", "6": "6",
+    "7": "7", "8": "8", "9": "9", "T": "10",
+    "J": "J", "Q": "Q", "K": "K", "A": "A",
+}
+
+
+def fmt_card(c: dict) -> str:
+    """Format a card dict as a compact label like '10♥' or 'A♠'."""
+    val = c.get("value", {})
+    return RANK_SYM.get(val.get("rank", ""), "?") + SUIT_SYM.get(val.get("suit", ""), "?")
+
+
+@dataclass
+class GameLoopState:
+    """Mutable state tracked across the game loop in run_bot()."""
+
+    actions_taken: int = 0
+    consecutive_errors: int = 0
+    total_hands_played: int = 0
+    total_discards_used: int = 0
+    hands_at_blind_start: int = 0
+    discards_at_blind_start: int = 0
+    last_logged_hand: tuple | None = None
+    last_logged_shop: tuple | None = None
+    last_logged_blind: tuple | None = None
+    prev_joker_keys: set = field(default_factory=set)
+    hand_context_logged: bool = False
+    prev_hand_labels: list = field(default_factory=list)
+    last_ante: int | None = None
+    last_round: int | None = None
+    current_blind_name: str | None = None
+    current_blind_target: int | str | None = None
+    max_chips_this_blind: int = 0
+    won_logged: bool = False
+    actually_won: bool = False
 
 
 class WinCaptureHandler(logging.handlers.MemoryHandler):
@@ -433,6 +474,419 @@ def _format_deck_snapshot(deck_cards: list) -> str:
     return f"({total}): " + " ".join(parts)
 
 
+def _find_current_blind(state: dict) -> tuple[str, int | str] | None:
+    """Find the current/selected blind from game state. Returns (name, score) or None."""
+    for b in state.get("blinds", {}).values():
+        if isinstance(b, dict) and b.get("status") == "CURRENT":
+            return b.get("name", "?"), b.get("score", "?")
+    for b in state.get("blinds", {}).values():
+        if isinstance(b, dict) and b.get("status") == "SELECT":
+            return b.get("name", "?"), b.get("score", "?")
+    return None
+
+
+def _check_victory(
+    gs: GameLoopState, state: dict,
+    pre_play_chips: int = 0, expected_hand_score: int = 0,
+) -> bool:
+    """Detect ante 9+ victory. Returns True if newly detected."""
+    ante = state.get("ante_num", 0)
+    if ante < 9 or gs.actually_won:
+        return False
+
+    gs.actually_won = True
+
+    if pre_play_chips or expected_hand_score:
+        # Timeout victory — estimate final chips from pre-play + expected score
+        if gs.current_blind_name:
+            target = gs.current_blind_target if isinstance(gs.current_blind_target, int) else 0
+            final_chips = pre_play_chips + expected_hand_score
+            gs.max_chips_this_blind = max(gs.max_chips_this_blind, final_chips)
+            log.info(
+                "VICTORY at ante %s round %s (seed=%s) — scored %s / needed %s — WON | %d hands, %d discards",
+                ante, state.get("round_num", "?"), state.get("seed", "?"),
+                f"{final_chips:,}", f"{target:,}",
+                gs.total_hands_played - gs.hands_at_blind_start,
+                gs.total_discards_used - gs.discards_at_blind_start,
+            )
+        else:
+            log.info(
+                "VICTORY at ante %s round %s (seed=%s)",
+                ante, state.get("round_num", "?"), state.get("seed", "?"),
+            )
+    else:
+        # Normal victory — log to both loggers
+        log.info(
+            "VICTORY at ante %s round %s (seed=%s) — entering endless mode",
+            ante, state.get("round_num", "?"), state.get("seed", "?"),
+        )
+        _stream_log.info("")
+        _stream_log.info("*** VICTORY! ***")
+        _log_blind_result(gs, "WON")
+
+    gs.current_blind_name = None
+    return True
+
+
+def _log_blind_result(gs: GameLoopState, result: str = "WON") -> None:
+    """Log round summary for the current blind, then clear current_blind_name."""
+    if not gs.current_blind_name:
+        return
+    target_str = (
+        f"{gs.current_blind_target:,}"
+        if isinstance(gs.current_blind_target, int)
+        else gs.current_blind_target
+    )
+    hands_used = gs.total_hands_played - gs.hands_at_blind_start
+    discards_used = gs.total_discards_used - gs.discards_at_blind_start
+    log.info(
+        "[ROUND] %s: scored %s / needed %s — %s | %d hands, %d discards",
+        gs.current_blind_name, f"{gs.max_chips_this_blind:,}",
+        target_str, result, hands_used, discards_used,
+    )
+    if result == "WON":
+        _stream_log.info(
+            "%s WON — %s / %s | %d hands, %d discards",
+            gs.current_blind_name, f"{gs.max_chips_this_blind:,}",
+            target_str, hands_used, discards_used,
+        )
+
+
+def _format_card_detail(method: str, params: dict | None, state: dict) -> str:
+    """Build card detail string for action logging."""
+    if method in ("play", "discard") and "cards" in (params or {}):
+        hand_cards = state.get("hand", {}).get("cards", [])
+        indices = params["cards"]
+        labels = [fmt_card(hand_cards[i]) for i in indices if i < len(hand_cards)]
+        return f" [{', '.join(labels)}]"
+    if method == "use" and params and "cards" in params:
+        hand_cards = state.get("hand", {}).get("cards", [])
+        indices = params["cards"]
+        labels = [fmt_card(hand_cards[i]) for i in indices if i < len(hand_cards)]
+        return f" targets:[{', '.join(labels)}]"
+    if method == "pack" and params and "targets" in params:
+        hand_cards = state.get("hand", {}).get("cards", [])
+        indices = params["targets"]
+        labels = [fmt_card(hand_cards[i]) for i in indices if i < len(hand_cards)]
+        return f" targets:[{', '.join(labels)}]"
+    return ""
+
+
+def _log_action(
+    gs: GameLoopState, game_state: str, method: str, params: dict | None,
+    action: object, card_detail: str, state: dict,
+) -> None:
+    """Log action to both main and stream loggers."""
+    log.info(
+        "[#%d] %s -> %s(%s)%s | %s",
+        gs.actions_taken, game_state, method, params or "",
+        card_detail, getattr(action, "reason", ""),
+    )
+
+    reason = getattr(action, "reason", "")
+    if method == "play" and card_detail:
+        if reason.startswith("milk:"):
+            _stream_log.info("Milk: %s", reason[5:].strip())
+        else:
+            score_m = re.search(r"for (\d+)", reason)
+            hand_name_str = getattr(action, "hand_name", "") or "?"
+            score_str = f"{int(score_m.group(1)):,}" if score_m else "?"
+            chips_remaining = state.get("round", {}).get("chips", 0)
+            blind_need = gs.current_blind_target if isinstance(gs.current_blind_target, int) else 0
+            remaining = blind_need - chips_remaining if blind_need else 0
+            _stream_log.info(
+                "Play %s → %s / %s needed",
+                hand_name_str, score_str,
+                f"{remaining:,}" if remaining > 0 else "0",
+            )
+    elif method == "discard" and card_detail:
+        chase_m = re.search(r"chase (\w[\w ]*?) \((\d+)%", reason) if reason else None
+        if chase_m:
+            _stream_log.info(
+                "Discard — chasing %s (%s%%)",
+                chase_m.group(1), chase_m.group(2),
+            )
+        else:
+            _stream_log.info("Discard")
+    elif method == "buy":
+        _stream_log.info("Bought: %s", reason.split("(")[0].strip() if reason else "?")
+    elif method == "next_round":
+        _stream_log.info("")
+
+
+def _build_play_snapshot(state: dict, params: dict, action: object) -> dict:
+    """Build the pre-play snapshot dict for scoring diagnostics."""
+    hand_cards_snap = state.get("hand", {}).get("cards", [])
+    play_indices = set(params.get("cards", []))
+
+    # Detect The Flint and halve hand levels for accurate scoring
+    snap_hand_levels = state.get("hands", {})
+    if not state.get("_boss_disabled", False):
+        blind_info = _find_current_blind(state)
+        if blind_info and blind_info[0] == "The Flint":
+            from balatro_bot.domain.scoring.base import flint_halve_hand_levels
+            snap_hand_levels = flint_halve_hand_levels(snap_hand_levels)
+
+    blind_info = _find_current_blind(state)
+    snap_blind_name = blind_info[0] if blind_info else ""
+
+    return {
+        "played": [hand_cards_snap[i] for i in sorted(params.get("cards", [])) if i < len(hand_cards_snap)],
+        "held": [c for j, c in enumerate(hand_cards_snap) if j not in play_indices],
+        "jokers": state.get("jokers", {}).get("cards", []),
+        "hand_levels": snap_hand_levels,
+        "money": state.get("money", 0),
+        "discards_left": state.get("round", {}).get("discards_left", 0),
+        # Game does NOT decrement hands_left before scoring — Acrobat/Dusk
+        # check the pre-play value. Use the raw state value.
+        "hands_left": state.get("round", {}).get("hands_left", 1),
+        "joker_limit": state.get("jokers", {}).get("limit", 5),
+        "hand_name": getattr(action, "hand_name", ""),
+        "ancient_suit": state.get("round", {}).get("ancient_suit"),
+        "deck_count": state.get("cards", {}).get("count", 0),
+        "deck_cards": state.get("cards", {}).get("cards", []),
+        "blind_name": snap_blind_name,
+        "ante": state.get("ante_num", 1),
+        "_boss_disabled": state.get("_boss_disabled", False),
+        "_ox_most_played": state.get("round", {}).get("most_played_poker_hand"),
+    }
+
+
+def _detect_joker_changes(gs: GameLoopState, state: dict) -> None:
+    """Detect joker roster changes, log strategy shift, handle Luchador sell."""
+    cur_joker_keys = {j.get("key") for j in state.get("jokers", {}).get("cards", [])}
+    if cur_joker_keys != gs.prev_joker_keys and gs.prev_joker_keys:
+        from balatro_bot.strategy import compute_strategy as _cs
+        new_strat = _cs(state.get("jokers", {}).get("cards", []), state.get("hands", {}))
+        log.info("[STRAT] %s", new_strat.describes())
+        # Luchador sold during a boss blind → boss effect disabled
+        if "j_luchador" in gs.prev_joker_keys and "j_luchador" not in cur_joker_keys:
+            from balatro_bot.domain.policy.playing import BOSS_BLINDS
+            if gs.current_blind_name in BOSS_BLINDS:
+                state["_boss_disabled"] = True
+                log.info("[BOSS] Luchador sold — %s effect disabled", gs.current_blind_name)
+    gs.prev_joker_keys = cur_joker_keys
+
+
+def _log_game_over(gs: GameLoopState, state: dict) -> None:
+    """Log game over summary and handle win capture."""
+    # Capture chips from the final state
+    final_chips = state.get("round", {}).get("chips", 0)
+    if final_chips > gs.max_chips_this_blind:
+        gs.max_chips_this_blind = final_chips
+
+    # Log final round summary if died on a blind
+    _log_blind_result(gs, "LOST")
+
+    ante = state.get("ante_num", "?")
+    round_num = state.get("round_num", "?")
+    seed = state.get("seed", "?")
+    if gs.actually_won:
+        log.info(
+            "Game over: VICTORY (died in endless) | seed=%s ante=%s round=%s | %d actions taken",
+            seed, ante, round_num, gs.actions_taken,
+        )
+    elif state.get("won", False):
+        log.info(
+            "Game over: DEFEAT (state.won=true but never reached ante 9) | seed=%s ante=%s round=%s | %d actions taken",
+            seed, ante, round_num, gs.actions_taken,
+        )
+    else:
+        log.info(
+            "Game over: DEFEAT | seed=%s ante=%s round=%s | %d actions taken",
+            seed, ante, round_num, gs.actions_taken,
+        )
+        _stream_log.info("")
+        _stream_log.info("GAME OVER at Ante %s", ante)
+    joker_names = [j.get("label", "?") for j in state.get("jokers", {}).get("cards", [])]
+    log.info(
+        "Summary: $%d | jokers: [%s] | hands=%d discards=%d",
+        state.get("money", 0),
+        ", ".join(joker_names) if joker_names else "none",
+        gs.total_hands_played, gs.total_discards_used,
+    )
+
+    if _win_handler:
+        if gs.actually_won:
+            _win_handler.flush_win(seed)
+        else:
+            _win_handler.reset()
+
+
+def _log_ante_transition(gs: GameLoopState, state: dict) -> None:
+    """Log roster, strategy, hand levels when ante changes."""
+    ante_num = state.get("ante_num")
+    if ante_num is None or ante_num == gs.last_ante:
+        return
+
+    joker_cards = state.get("jokers", {}).get("cards", [])
+    hand_levels = state.get("hands", {})
+    money = state.get("money", 0)
+
+    # Roster with effect values
+    from balatro_bot.joker_effects import parse_effect_value
+    roster_parts = []
+    for j in joker_cards:
+        label = j.get("label", "?")
+        effect_text = j.get("value", {}).get("effect", "")
+        parsed = parse_effect_value(effect_text) if effect_text else {}
+        if parsed.get("xmult"):
+            roster_parts.append(f"{label}(X{parsed['xmult']:.1f})")
+        elif parsed.get("mult"):
+            roster_parts.append(f"{label}(+{parsed['mult']:.0f}mult)")
+        elif parsed.get("chips"):
+            roster_parts.append(f"{label}(+{parsed['chips']:.0f}chips)")
+        else:
+            roster_parts.append(label)
+
+    log.info(
+        "[ANTE %s] Roster (%d jokers): [%s]",
+        ante_num, len(joker_cards),
+        ", ".join(roster_parts) if roster_parts else "none",
+    )
+
+    deck_cards = state.get("cards", {}).get("cards", [])
+    log.info("[ANTE %s] Deck %s", ante_num, _format_deck_snapshot(deck_cards))
+
+    from balatro_bot.strategy import compute_strategy
+    strat = compute_strategy(joker_cards, hand_levels)
+    log.info("[ANTE %s] Strategy: %s", ante_num, strat.describes())
+
+    leveled = []
+    for ht, data in hand_levels.items():
+        if isinstance(data, dict) and data.get("level", 1) > 1:
+            leveled.append(f"{ht}(lv{data['level']})")
+    if leveled:
+        log.info("[ANTE %s] Money: $%d | Levels: %s", ante_num, money, ", ".join(leveled))
+    else:
+        log.info("[ANTE %s] Money: $%d", ante_num, money)
+
+    _stream_log.info("")
+    _stream_log.info("=== Ante %s / 8 ===", ante_num)
+    joker_names = [j.get("label", "?") for j in joker_cards]
+    _stream_log.info("Jokers: %s", ", ".join(joker_names) if joker_names else "(none)")
+    _stream_log.info("Money: $%d", money)
+
+    gs.last_ante = ante_num
+
+
+def _log_shop_state(gs: GameLoopState, state: dict) -> None:
+    """Log shop inventory when it changes."""
+    shop_cards = state.get("shop", {}).get("cards", [])
+    packs = state.get("packs", {}).get("cards", [])
+    vouchers = state.get("vouchers", {}).get("cards", [])
+    shop_id = tuple(c.get("label", "") for c in shop_cards)
+    if shop_id == gs.last_logged_shop:
+        return
+
+    jokers_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
+                    for c in shop_cards if c.get("set") == "JOKER"]
+    consumables_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
+                         for c in shop_cards if c.get("set") not in ("JOKER",)]
+    packs_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
+                   for c in packs]
+    vouchers_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
+                      for c in vouchers]
+    parts = []
+    if jokers_avail:
+        parts.append("jokers: " + ", ".join(jokers_avail))
+    if consumables_avail:
+        parts.append("consumables: " + ", ".join(consumables_avail))
+    if packs_avail:
+        parts.append("packs: " + ", ".join(packs_avail))
+    if vouchers_avail:
+        parts.append("vouchers: " + ", ".join(vouchers_avail))
+    money = state.get("money", 0)
+    log.info("Shop ($%d): %s", money, " | ".join(parts) if parts else "(empty)")
+    gs.last_logged_shop = shop_id
+
+
+def _log_blind_transition(gs: GameLoopState, state: dict) -> None:
+    """Detect blind select changes, log previous blind result, set up new blind tracking."""
+    blinds = state.get("blinds", {})
+    blind_id = tuple(
+        (k, b.get("name", ""), b.get("status", ""))
+        for k, b in blinds.items() if isinstance(b, dict)
+    )
+    if blind_id == gs.last_logged_blind:
+        return
+
+    for key, b in blinds.items():
+        if isinstance(b, dict) and b.get("status") in ("SELECT", "CURRENT"):
+            name = b.get("name", "?")
+            score = b.get("score", "?")
+            # Log previous blind summary before overwriting
+            if gs.current_blind_name and gs.max_chips_this_blind > 0:
+                _log_blind_result(gs, "WON")
+            log.info("Blind: %s (need %s chips)", name, score)
+            _stream_log.info("")
+            _stream_log.info("--- %s — need %s chips ---", name, f"{score:,}" if isinstance(score, int) else score)
+            gs.current_blind_name = name
+            gs.current_blind_target = score
+            gs.max_chips_this_blind = 0
+            state.pop("_boss_disabled", None)
+            gs.hands_at_blind_start = gs.total_hands_played
+            gs.discards_at_blind_start = gs.total_discards_used
+            gs.hand_context_logged = False
+            break
+    gs.last_logged_blind = blind_id
+
+
+def _log_hand_state(gs: GameLoopState, state: dict) -> None:
+    """Log hand composition and first-hand-of-blind context."""
+    hand_cards = state.get("hand", {}).get("cards", [])
+    hand_id = tuple(c.get("label", "") for c in hand_cards)
+    if hand_id == gs.last_logged_hand:
+        return
+
+    hand_str = ", ".join(fmt_card(c) for c in hand_cards)
+    if gs.prev_hand_labels:
+        remaining = list(gs.prev_hand_labels)
+        drew = []
+        for c in hand_cards:
+            lbl = c.get("label", "")
+            if lbl in remaining:
+                remaining.remove(lbl)
+            else:
+                drew.append(fmt_card(c))
+        drew_str = f" | drew: [{', '.join(drew)}]" if drew else ""
+    else:
+        drew_str = ""
+    debuffed = [fmt_card(c) for c in hand_cards
+                if isinstance(c.get("state", {}), dict) and c["state"].get("debuff")]
+    debuff_str = f" | DEBUFFED: [{', '.join(debuffed)}]" if debuffed else ""
+    log.info("Hand: [%s]%s%s", hand_str, drew_str, debuff_str)
+    gs.prev_hand_labels = [c.get("label", "") for c in hand_cards]
+    gs.last_logged_hand = hand_id
+
+    # First hand of a new blind — log context once
+    if not gs.hand_context_logged and gs.current_blind_name:
+        jokers_now = state.get("jokers", {}).get("cards", [])
+        hand_levels_now = state.get("hands", {})
+        rnd = state.get("round", {})
+        from balatro_bot.domain.scoring.search import best_hand as _bh
+        jlimit = state.get("jokers", {}).get("limit", 5)
+        bh = _bh(hand_cards, hand_levels_now, jokers=jokers_now, joker_limit=jlimit)
+        best_score = bh.total if bh else 0
+        best_name = bh.hand_name if bh else "?"
+        blind_need = gs.current_blind_target or 0
+        can_win = best_score >= blind_need if blind_need else False
+        log.info(
+            "[HAND] Best: %s for %s | Blind: %s needs %s | Hands: %d | %s",
+            best_name, f"{best_score:,}", gs.current_blind_name,
+            f"{blind_need:,}" if isinstance(blind_need, int) else blind_need,
+            rnd.get("hands_left", 0),
+            "CAN WIN" if can_win else "NEED MORE",
+        )
+        _stream_log.info(
+            "Best: %s for %s | Hands: %d | %s",
+            best_name, f"{best_score:,}",
+            rnd.get("hands_left", 0),
+            "CAN WIN" if can_win else "NEED MORE",
+        )
+        gs.hand_context_logged = True
+
+
 def run_bot(
     client: BalatroClient,
     engine: RuleEngine,
@@ -472,37 +926,7 @@ def run_bot(
         state = client.call("gamestate")
         log.info("Joined existing game: state=%s", state.get("state"))
 
-    actions_taken = 0
-    consecutive_errors = 0
-    total_hands_played = 0
-    total_discards_used = 0
-    hands_at_blind_start = 0
-    discards_at_blind_start = 0
-    last_logged_hand = None
-    last_logged_shop = None
-    last_logged_blind = None
-    prev_joker_keys: set[str] = set()
-    hand_context_logged = False
-    prev_hand_labels: list[str] = []
-    last_ante = None
-    last_round = None
-    current_blind_name = None
-    current_blind_target = None
-    max_chips_this_blind = 0
-
-    SUIT_SYM = {"H": "\u2665", "D": "\u2666", "C": "\u2663", "S": "\u2660"}
-    RANK_SYM = {
-        "2": "2", "3": "3", "4": "4", "5": "5", "6": "6",
-        "7": "7", "8": "8", "9": "9", "T": "10",
-        "J": "J", "Q": "Q", "K": "K", "A": "A",
-    }
-
-    def fmt_card(c: dict) -> str:
-        val = c.get("value", {})
-        return RANK_SYM.get(val.get("rank", ""), "?") + SUIT_SYM.get(val.get("suit", ""), "?")
-
-    won_logged = False
-    actually_won = False  # True only when bot reaches ante 9+ (beat the ante 8 boss)
+    gs = GameLoopState()
 
     while state.get("state") != "GAME_OVER":
         game_state = state.get("state", "")
@@ -510,230 +934,48 @@ def run_bot(
         # Detect real win: bot advanced past ante 8 (beat the boss)
         # Don't trust state.won — Hieroglyph voucher inflates ante counter
         cur_ante = state.get("ante_num", 0)
-        if cur_ante >= 9 and not actually_won:
-            actually_won = True
-            log.info(
-                "VICTORY at ante %s round %s (seed=%s) — entering endless mode",
-                cur_ante, state.get("round_num", "?"),
-                state.get("seed", "?"),
-            )
-            _stream_log.info("")
-            _stream_log.info("*** VICTORY! ***")
-            if current_blind_name:
-                target = current_blind_target if isinstance(current_blind_target, int) else 0
-                log.info(
-                    "[ROUND] %s: scored %s / needed %s — WON | %d hands, %d discards",
-                    current_blind_name, f"{max_chips_this_blind:,}",
-                    f"{target:,}",
-                    total_hands_played - hands_at_blind_start,
-                    total_discards_used - discards_at_blind_start,
-                )
-                current_blind_name = None
+        _check_victory(gs, state)
 
         # Log when state.won fires (may be premature due to Hieroglyph)
-        if state.get("won") and not won_logged:
-            if not actually_won:
+        if state.get("won") and not gs.won_logged:
+            if not gs.actually_won:
                 log.info(
                     "state.won=true at ante %s (Hieroglyph?) — not a real win until ante 9+",
                     state.get("ante_num", "?"),
                 )
-            won_logged = True
+            gs.won_logged = True
 
-        ante_num = state.get("ante_num")
-        round_num = state.get("round_num")
-        if ante_num is not None and ante_num != last_ante:
-            joker_cards = state.get("jokers", {}).get("cards", [])
-            hand_levels = state.get("hands", {})
-            money = state.get("money", 0)
-
-            # Roster with effect values
-            roster_parts = []
-            for j in joker_cards:
-                label = j.get("label", "?")
-                effect_text = j.get("value", {}).get("effect", "")
-                # Extract compact value from effect text
-                from balatro_bot.joker_effects import parse_effect_value
-                parsed = parse_effect_value(effect_text) if effect_text else {}
-                if parsed.get("xmult"):
-                    roster_parts.append(f"{label}(X{parsed['xmult']:.1f})")
-                elif parsed.get("mult"):
-                    roster_parts.append(f"{label}(+{parsed['mult']:.0f}mult)")
-                elif parsed.get("chips"):
-                    roster_parts.append(f"{label}(+{parsed['chips']:.0f}chips)")
-                else:
-                    roster_parts.append(label)
-
-            log.info(
-                "[ANTE %s] Roster (%d jokers): [%s]",
-                ante_num, len(joker_cards),
-                ", ".join(roster_parts) if roster_parts else "none",
-            )
-
-            deck_cards = state.get("cards", {}).get("cards", [])
-            log.info("[ANTE %s] Deck %s", ante_num, _format_deck_snapshot(deck_cards))
-
-            # Strategy snapshot
-            from balatro_bot.strategy import compute_strategy
-            strat = compute_strategy(joker_cards, hand_levels)
-            log.info("[ANTE %s] Strategy: %s", ante_num, strat.describes())
-
-            # Hand levels (only leveled-up hands)
-            leveled = []
-            for ht, data in hand_levels.items():
-                if isinstance(data, dict) and data.get("level", 1) > 1:
-                    leveled.append(f"{ht}(lv{data['level']})")
-            if leveled:
-                log.info("[ANTE %s] Money: $%d | Levels: %s", ante_num, money, ", ".join(leveled))
-            else:
-                log.info("[ANTE %s] Money: $%d", ante_num, money)
-
-            # Stream log — ante summary
-            _stream_log.info("")
-            _stream_log.info("=== Ante %s / 8 ===", ante_num)
-            joker_names = [j.get("label", "?") for j in joker_cards]
-            _stream_log.info("Jokers: %s", ", ".join(joker_names) if joker_names else "(none)")
-            _stream_log.info("Money: $%d", money)
-
-            last_ante = ante_num
+        _log_ante_transition(gs, state)
         # Track highest chips seen during this blind (capture before round resets)
         cur_chips = state.get("round", {}).get("chips", 0)
-        if cur_chips > max_chips_this_blind:
-            max_chips_this_blind = cur_chips
-        last_round = round_num
+        if cur_chips > gs.max_chips_this_blind:
+            gs.max_chips_this_blind = cur_chips
+        gs.last_round = state.get("round_num")
 
         if game_state in ("HAND_PLAYED", "DRAW_TO_HAND", "NEW_ROUND", "SPLASH", "TUTORIAL"):
-            last_logged_hand = None
+            gs.last_logged_hand = None
             time.sleep(poll_interval)
             state = client.call("gamestate")
             continue
 
         if game_state != "SELECTING_HAND":
-            last_logged_hand = None
-            prev_hand_labels = []
+            gs.last_logged_hand = None
+            gs.prev_hand_labels = []
 
         if game_state != "SHOP":
-            last_logged_shop = None
+            gs.last_logged_shop = None
 
         if game_state == "SHOP":
-            shop_cards = state.get("shop", {}).get("cards", [])
-            packs = state.get("packs", {}).get("cards", [])
-            vouchers = state.get("vouchers", {}).get("cards", [])
-            shop_id = tuple(c.get("label", "") for c in shop_cards)
-            if shop_id != last_logged_shop:
-                jokers_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
-                                for c in shop_cards if c.get("set") == "JOKER"]
-                consumables_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
-                                     for c in shop_cards if c.get("set") not in ("JOKER",)]
-                packs_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
-                               for c in packs]
-                vouchers_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
-                                  for c in vouchers]
-                parts = []
-                if jokers_avail:
-                    parts.append("jokers: " + ", ".join(jokers_avail))
-                if consumables_avail:
-                    parts.append("consumables: " + ", ".join(consumables_avail))
-                if packs_avail:
-                    parts.append("packs: " + ", ".join(packs_avail))
-                if vouchers_avail:
-                    parts.append("vouchers: " + ", ".join(vouchers_avail))
-                money = state.get("money", 0)
-                log.info("Shop ($%d): %s", money, " | ".join(parts) if parts else "(empty)")
-                last_logged_shop = shop_id
+            _log_shop_state(gs, state)
 
         if game_state == "BLIND_SELECT":
-            blinds = state.get("blinds", {})
-            blind_id = tuple(
-                (k, b.get("name", ""), b.get("status", ""))
-                for k, b in blinds.items() if isinstance(b, dict)
-            )
-            if blind_id != last_logged_blind:
-                for key, b in blinds.items():
-                    if isinstance(b, dict) and b.get("status") in ("SELECT", "CURRENT"):
-                        name = b.get("name", "?")
-                        score = b.get("score", "?")
-                        # Log previous blind summary before overwriting
-                        if current_blind_name and max_chips_this_blind > 0:
-                            log.info(
-                                "[ROUND] %s: scored %s / needed %s — WON | %d hands, %d discards",
-                                current_blind_name, f"{max_chips_this_blind:,}",
-                                f"{current_blind_target:,}" if isinstance(current_blind_target, int) else current_blind_target,
-                                total_hands_played - hands_at_blind_start,
-                                total_discards_used - discards_at_blind_start,
-                            )
-                            _stream_log.info(
-                                "%s WON — %s / %s | %d hands, %d discards",
-                                current_blind_name, f"{max_chips_this_blind:,}",
-                                f"{current_blind_target:,}" if isinstance(current_blind_target, int) else current_blind_target,
-                                total_hands_played - hands_at_blind_start,
-                                total_discards_used - discards_at_blind_start,
-                            )
-                        log.info("Blind: %s (need %s chips)", name, score)
-                        _stream_log.info("")
-                        _stream_log.info("--- %s — need %s chips ---", name, f"{score:,}" if isinstance(score, int) else score)
-                        current_blind_name = name
-                        current_blind_target = score
-                        max_chips_this_blind = 0
-                        state.pop("_boss_disabled", None)
-                        hands_at_blind_start = total_hands_played
-                        discards_at_blind_start = total_discards_used
-                        hand_context_logged = False
-                        break
-                last_logged_blind = blind_id
+            _log_blind_transition(gs, state)
 
         if game_state != "BLIND_SELECT":
-            last_logged_blind = None
+            gs.last_logged_blind = None
 
         if game_state == "SELECTING_HAND":
-            hand_cards = state.get("hand", {}).get("cards", [])
-            hand_id = tuple(c.get("label", "") for c in hand_cards)
-            if hand_id != last_logged_hand:
-                hand_str = ", ".join(fmt_card(c) for c in hand_cards)
-                if prev_hand_labels:
-                    remaining = list(prev_hand_labels)
-                    drew = []
-                    for c in hand_cards:
-                        lbl = c.get("label", "")
-                        if lbl in remaining:
-                            remaining.remove(lbl)
-                        else:
-                            drew.append(fmt_card(c))
-                    drew_str = f" | drew: [{', '.join(drew)}]" if drew else ""
-                else:
-                    drew_str = ""
-                debuffed = [fmt_card(c) for c in hand_cards
-                            if isinstance(c.get("state", {}), dict) and c["state"].get("debuff")]
-                debuff_str = f" | DEBUFFED: [{', '.join(debuffed)}]" if debuffed else ""
-                log.info("Hand: [%s]%s%s", hand_str, drew_str, debuff_str)
-                prev_hand_labels = [c.get("label", "") for c in hand_cards]
-                last_logged_hand = hand_id
-
-                # First hand of a new blind — log context once
-                if not hand_context_logged and current_blind_name:
-                    jokers_now = state.get("jokers", {}).get("cards", [])
-                    hand_levels_now = state.get("hands", {})
-                    rnd = state.get("round", {})
-                    from balatro_bot.domain.scoring.search import best_hand as _bh
-                    jlimit = state.get("jokers", {}).get("limit", 5)
-                    bh = _bh(hand_cards, hand_levels_now, jokers=jokers_now, joker_limit=jlimit)
-                    best_score = bh.total if bh else 0
-                    best_name = bh.hand_name if bh else "?"
-                    blind_need = current_blind_target or 0
-                    can_win = best_score >= blind_need if blind_need else False
-                    log.info(
-                        "[HAND] Best: %s for %s | Blind: %s needs %s | Hands: %d | %s",
-                        best_name, f"{best_score:,}", current_blind_name,
-                        f"{blind_need:,}" if isinstance(blind_need, int) else blind_need,
-                        rnd.get("hands_left", 0),
-                        "CAN WIN" if can_win else "NEED MORE",
-                    )
-                    _stream_log.info(
-                        "Best: %s for %s | Hands: %d | %s",
-                        best_name, f"{best_score:,}",
-                        rnd.get("hands_left", 0),
-                        "CAN WIN" if can_win else "NEED MORE",
-                    )
-                    hand_context_logged = True
+            _log_hand_state(gs, state)
 
         # Refresh state before deciding — previous action response may have
         # stale money, joker counters, or debuff flags.
@@ -769,66 +1011,8 @@ def run_bot(
                 except Exception:
                     log.warning("rearrange failed, playing in original order")
 
-        card_detail = ""
-        if method in ("play", "discard") and "cards" in (params or {}):
-            hand_cards = state.get("hand", {}).get("cards", [])
-            indices = params["cards"]
-            labels = [fmt_card(hand_cards[i]) for i in indices if i < len(hand_cards)]
-            card_detail = f" [{', '.join(labels)}]"
-        elif method == "use" and params and "cards" in params:
-            hand_cards = state.get("hand", {}).get("cards", [])
-            indices = params["cards"]
-            labels = [fmt_card(hand_cards[i]) for i in indices if i < len(hand_cards)]
-            card_detail = f" targets:[{', '.join(labels)}]"
-        elif method == "pack" and params and "targets" in params:
-            hand_cards = state.get("hand", {}).get("cards", [])
-            indices = params["targets"]
-            labels = [fmt_card(hand_cards[i]) for i in indices if i < len(hand_cards)]
-            card_detail = f" targets:[{', '.join(labels)}]"
-
-        log.info(
-            "[#%d] %s -> %s(%s)%s | %s",
-            actions_taken,
-            game_state,
-            method,
-            params or "",
-            card_detail,
-            getattr(action, "reason", ""),
-        )
-
-        # Stream log — clean action summaries
-        reason = getattr(action, "reason", "")
-        if method == "play" and card_detail:
-            if reason.startswith("milk:"):
-                _stream_log.info("Milk: %s", reason[5:].strip())
-            else:
-                # Extract score from reason like "Full House for 3232 (eff 3232) >= 300 needed"
-                score_m = re.search(r"for (\d+)", reason)
-                hand_name_str = getattr(action, "hand_name", "") or "?"
-                score_str = f"{int(score_m.group(1)):,}" if score_m else "?"
-                chips_remaining = state.get("round", {}).get("chips", 0)
-                blind_need = current_blind_target if isinstance(current_blind_target, int) else 0
-                remaining = blind_need - chips_remaining if blind_need else 0
-                _stream_log.info(
-                    "Play %s → %s / %s needed",
-                    hand_name_str, score_str,
-                    f"{remaining:,}" if remaining > 0 else "0",
-                )
-        elif method == "discard" and card_detail:
-            # Extract chase info from reason like "chase Three of a Kind (26% to hit)..."
-            chase_m = re.search(r"chase (\w[\w ]*?) \((\d+)%", reason) if reason else None
-            if chase_m:
-                _stream_log.info(
-                    "Discard — chasing %s (%s%%)",
-                    chase_m.group(1), chase_m.group(2),
-                )
-            else:
-                _stream_log.info("Discard")
-        elif method == "buy":
-            # Extract buy info from reason
-            _stream_log.info("Bought: %s", reason.split("(")[0].strip() if reason else "?")
-        elif method == "next_round":
-            _stream_log.info("")
+        card_detail = _format_card_detail(method, params, state)
+        _log_action(gs, game_state, method, params, action, card_detail, state)
 
         # Stream mode: highlight cards one at a time before playing/discarding
         if stream_delay > 0 and method in ("play", "discard") and params and "cards" in params:
@@ -844,45 +1028,7 @@ def run_bot(
         if method == "play":
             pre_play_chips = state.get("round", {}).get("chips", 0)
             _scoring_log.info("  PRE_PLAY chips_in_round=%d", pre_play_chips)
-            hand_cards_snap = state.get("hand", {}).get("cards", [])
-            play_indices = set(params.get("cards", []))
-            # Detect The Flint and halve hand levels for accurate scoring
-            # Skip halving if Luchador was sold to disable the boss effect
-            snap_hand_levels = state.get("hands", {})
-            if not state.get("_boss_disabled", False):
-                for b in state.get("blinds", {}).values():
-                    if isinstance(b, dict) and b.get("status") == "CURRENT" and b.get("name") == "The Flint":
-                        from balatro_bot.domain.scoring.base import flint_halve_hand_levels
-                        snap_hand_levels = flint_halve_hand_levels(snap_hand_levels)
-                        break
-
-            # Detect current blind name for snapshot
-            snap_blind_name = ""
-            for b in state.get("blinds", {}).values():
-                if isinstance(b, dict) and b.get("status") == "CURRENT":
-                    snap_blind_name = b.get("name", "")
-                    break
-
-            play_snapshot = {
-                "played": [hand_cards_snap[i] for i in sorted(params.get("cards", [])) if i < len(hand_cards_snap)],
-                "held": [c for j, c in enumerate(hand_cards_snap) if j not in play_indices],
-                "jokers": state.get("jokers", {}).get("cards", []),
-                "hand_levels": snap_hand_levels,
-                "money": state.get("money", 0),
-                "discards_left": state.get("round", {}).get("discards_left", 0),
-                # Game does NOT decrement hands_left before scoring — Acrobat/Dusk
-                # check the pre-play value. Use the raw state value.
-                "hands_left": state.get("round", {}).get("hands_left", 1),
-                "joker_limit": state.get("jokers", {}).get("limit", 5),
-                "hand_name": getattr(action, "hand_name", ""),
-                "ancient_suit": state.get("round", {}).get("ancient_suit"),
-                "deck_count": state.get("cards", {}).get("count", 0),
-                "deck_cards": state.get("cards", {}).get("cards", []),
-                "blind_name": snap_blind_name,
-                "ante": state.get("ante_num", 1),
-                "_boss_disabled": state.get("_boss_disabled", False),
-                "_ox_most_played": state.get("round", {}).get("most_played_poker_hand"),
-            }
+            play_snapshot = _build_play_snapshot(state, params, action)
 
         # Capture expected hand score for chip accounting on timeout
         expected_hand_score = 0
@@ -905,9 +1051,9 @@ def run_bot(
             # (set when Luchador is sold) would otherwise be lost.
             if _boss_disabled_before:
                 state["_boss_disabled"] = True
-            actions_taken += 1
+            gs.actions_taken += 1
             if method == "play":
-                total_hands_played += 1
+                gs.total_hands_played += 1
                 post_chips = state.get("round", {}).get("chips", 0)
                 _scoring_log.info("  POST_PLAY chips_in_round=%d, delta=%d", post_chips, post_chips - pre_play_chips)
                 # The Hook discards 2 held cards BEFORE scoring (before
@@ -916,29 +1062,17 @@ def run_bot(
                 # are applied in joker_effects/complex.py.
                 _log_played_hand(play_snapshot, pre_play_chips, state, fmt_card)
             elif method == "discard":
-                total_discards_used += 1
+                gs.total_discards_used += 1
 
-            # Detect joker roster changes and log strategy shift
-            cur_joker_keys = {j.get("key") for j in state.get("jokers", {}).get("cards", [])}
-            if cur_joker_keys != prev_joker_keys and prev_joker_keys:
-                from balatro_bot.strategy import compute_strategy as _cs
-                new_strat = _cs(state.get("jokers", {}).get("cards", []), state.get("hands", {}))
-                log.info("[STRAT] %s", new_strat.describes())
-                # Luchador sold during a boss blind → boss effect disabled
-                if "j_luchador" in prev_joker_keys and "j_luchador" not in cur_joker_keys:
-                    from balatro_bot.domain.policy.playing import BOSS_BLINDS
-                    if current_blind_name in BOSS_BLINDS:
-                        state["_boss_disabled"] = True
-                        log.info("[BOSS] Luchador sold — %s effect disabled", current_blind_name)
-            prev_joker_keys = cur_joker_keys
+            _detect_joker_changes(gs, state)
 
-            consecutive_errors = 0
+            gs.consecutive_errors = 0
 
             if stream_delay > 0:
                 time.sleep(stream_delay)
         except httpx.TimeoutException:
             if method == "play":
-                total_hands_played += 1  # hand was played, game processed it
+                gs.total_hands_played += 1  # hand was played, game processed it
             log.warning("Timeout on %s(%s) — re-polling gamestate", method, params)
             try:
                 state = client.call("gamestate")
@@ -949,35 +1083,14 @@ def run_bot(
                     break
                 # Victory detection: if ante advanced to 9+ during a play
                 # timeout, the win screen caused the hang — handle it here
-                post_ante = state.get("ante_num", 0)
-                if post_ante >= 9 and not actually_won:
-                    actually_won = True
-                    if current_blind_name:
-                        target = current_blind_target if isinstance(current_blind_target, int) else 0
-                        final_chips = pre_play_chips + expected_hand_score
-                        max_chips_this_blind = max(max_chips_this_blind, final_chips)
-                        log.info(
-                            "VICTORY at ante %s round %s (seed=%s) — scored %s / needed %s — WON | %d hands, %d discards",
-                            post_ante, state.get("round_num", "?"),
-                            state.get("seed", "?"),
-                            f"{final_chips:,}", f"{target:,}",
-                            total_hands_played - hands_at_blind_start,
-                            total_discards_used - discards_at_blind_start,
-                        )
-                        current_blind_name = None
-                    else:
-                        log.info(
-                            "VICTORY at ante %s round %s (seed=%s)",
-                            post_ante, state.get("round_num", "?"),
-                            state.get("seed", "?"),
-                        )
+                _check_victory(gs, state, pre_play_chips, expected_hand_score)
                 # Diagnostic dump on timeout
-                gs = state.get("state", "?")
+                post_state = state.get("state", "?")
                 pack_cards = state.get("pack", {}).get("cards", [])
                 pack_labels = [c.get("label", "?") for c in pack_cards]
                 log.warning(
                     "  post-timeout state=%s pack=%s money=%s ante=%s round=%s",
-                    gs, pack_labels or "none", state.get("money"),
+                    post_state, pack_labels or "none", state.get("money"),
                     state.get("ante_num"), state.get("round_num"),
                 )
                 if pack_cards:
@@ -991,8 +1104,8 @@ def run_bot(
                 log.error("Double timeout — server unresponsive, aborting")
                 raise
         except APIError as e:
-            consecutive_errors += 1
-            log.warning("API error: %s (%s) — retry %d", e.message, e.name, consecutive_errors)
+            gs.consecutive_errors += 1
+            log.warning("API error: %s (%s) — retry %d", e.message, e.name, gs.consecutive_errors)
 
             # If a consumable use was rejected, clear Fool tracking so
             # the rule engine doesn't keep trying the same consumable.
@@ -1002,7 +1115,7 @@ def run_bot(
                         rule._last_used_consumable = None
                         break
 
-            if consecutive_errors >= 5:
+            if gs.consecutive_errors >= 5:
                 log.error("Too many consecutive errors, forcing skip")
                 if game_state in ("TAROT_PACK", "PLANET_PACK", "SPECTRAL_PACK",
                                   "STANDARD_PACK", "BUFFOON_PACK", "SMODS_BOOSTER_OPENED"):
@@ -1013,7 +1126,7 @@ def run_bot(
                 state = client.call("gamestate")
                 if _boss_disabled_before:
                     state["_boss_disabled"] = True
-                consecutive_errors = 0
+                gs.consecutive_errors = 0
             else:
                 time.sleep(poll_interval)
                 state = client.call("gamestate")
@@ -1023,54 +1136,5 @@ def run_bot(
             if saved_timeout is not None:
                 client.timeout = saved_timeout
 
-    # Capture chips from the final state — the loop exits before the top-of-loop
-    # chips tracking can run, so the last play/discard response's chips are missed.
-    final_chips = state.get("round", {}).get("chips", 0)
-    if final_chips > max_chips_this_blind:
-        max_chips_this_blind = final_chips
-
-    # Log final round summary if died on a blind
-    if current_blind_name:
-        log.info(
-            "[ROUND] %s: scored %s / needed %s — LOST | %d hands, %d discards",
-            current_blind_name, f"{max_chips_this_blind:,}",
-            f"{current_blind_target:,}" if isinstance(current_blind_target, int) else current_blind_target,
-            total_hands_played - hands_at_blind_start,
-            total_discards_used - discards_at_blind_start,
-        )
-
-    ante = state.get("ante_num", "?")
-    round_num = state.get("round_num", "?")
-    seed = state.get("seed", "?")
-    if actually_won:
-        log.info(
-            "Game over: VICTORY (died in endless) | seed=%s ante=%s round=%s | %d actions taken",
-            seed, ante, round_num, actions_taken,
-        )
-    elif state.get("won", False):
-        log.info(
-            "Game over: DEFEAT (state.won=true but never reached ante 9) | seed=%s ante=%s round=%s | %d actions taken",
-            seed, ante, round_num, actions_taken,
-        )
-    else:
-        log.info(
-            "Game over: DEFEAT | seed=%s ante=%s round=%s | %d actions taken",
-            seed, ante, round_num, actions_taken,
-        )
-        _stream_log.info("")
-        _stream_log.info("GAME OVER at Ante %s", ante)
-    joker_names = [j.get("label", "?") for j in state.get("jokers", {}).get("cards", [])]
-    log.info(
-        "Summary: $%d | jokers: [%s] | hands=%d discards=%d",
-        state.get("money", 0),
-        ", ".join(joker_names) if joker_names else "none",
-        total_hands_played, total_discards_used,
-    )
-
-    if _win_handler:
-        if actually_won:
-            _win_handler.flush_win(seed)
-        else:
-            _win_handler.reset()
-
-    return actually_won
+    _log_game_over(gs, state)
+    return gs.actually_won
