@@ -52,7 +52,7 @@ def _apply_before_phase(scoring_cards, played_cards, jokers):
     current_xmult = _ab_xmult(vampire, fallback=1.0)
 
     enhanced_count = 0
-    orig_to_stripped = {}
+    stripped_pairs = []  # (original_card, stripped_card) for remapping played_cards
     stripped_scoring = []
     for card in scoring_cards:
         mod = _modifier(card)
@@ -63,16 +63,19 @@ def _apply_before_phase(scoring_cards, played_cards, jokers):
             mod_copy = dict(mod)
             mod_copy.pop("enhancement", None)
             card_copy["modifier"] = mod_copy
-            orig_to_stripped[id(card)] = card_copy
+            stripped_pairs.append((card, card_copy))
             stripped_scoring.append(card_copy)
         else:
             stripped_scoring.append(card)
 
     stripped_played = played_cards
     if enhanced_count > 0 and played_cards is not None:
-        stripped_played = [
-            orig_to_stripped.get(id(c), c) for c in played_cards
-        ]
+        def _get_stripped(c):
+            for orig, stripped in stripped_pairs:
+                if c is orig:
+                    return stripped
+            return c
+        stripped_played = [_get_stripped(c) for c in played_cards]
 
     vampire_xmult = current_xmult + extra * enhanced_count if enhanced_count > 0 else current_xmult
     return stripped_scoring, stripped_played, vampire_xmult
@@ -88,11 +91,10 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     from balatro_bot.joker_effects import retrigger_count
     from balatro_bot.constants import FACE_RANKS, FIBONACCI_RANKS, EVEN_RANKS, ODD_RANKS
 
-    scoring_id_set = set(id(c) for c in scoring_cards)
-    scored_in_play_order = [c for c in (played_cards or scoring_cards) if id(c) in scoring_id_set]
-    played_id_set = set(id(c) for c in scored_in_play_order)
+    scored_in_play_order = [c for c in (played_cards or scoring_cards)
+                            if any(c is s for s in scoring_cards)]
     for c in scoring_cards:
-        if id(c) not in played_id_set:
+        if not any(c is p for p in scored_in_play_order):
             scored_in_play_order.append(c)
 
     _per_card = []

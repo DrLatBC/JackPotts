@@ -130,9 +130,9 @@ def retrigger_count(card: dict, ctx: ScoreContext) -> int:
         # Hanging Chad retriggers the first PLAYED card that is used in scoring.
         # The game uses played order, not the bot's internal scoring order
         # (which reorders e.g. trips before pairs in Full House).
-        scoring_ids = set(id(c) for c in ctx.scoring_cards)
         first_played_scoring = next(
-            (c for c in ctx.played_cards if id(c) in scoring_ids), None
+            (c for c in ctx.played_cards
+             if any(c is s for s in ctx.scoring_cards)), None
         )
         if first_played_scoring is not None and card is first_played_scoring:
             count += 2
