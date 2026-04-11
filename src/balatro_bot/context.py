@@ -33,7 +33,7 @@ class RoundContext:
     hands_left: int
     discards_left: int
     hand_cards: list[dict]
-    hand_levels: dict[str, dict]
+    hand_levels: dict
     jokers: list[dict]
     best: HandCandidate | None
     money: int
@@ -117,7 +117,7 @@ class RoundContext:
         mouth_locked_hand = None
         if blind_name == "The Mouth" and not boss_disabled:
             for hand_name, hand_data in hand_levels.items():
-                if isinstance(hand_data, dict) and hand_data.get("played_this_round", 0) > 0:
+                if hasattr(hand_data, "get") and hand_data.get("played_this_round", 0) > 0:
                     mouth_locked_hand = hand_name
                     break
 
@@ -125,7 +125,7 @@ class RoundContext:
         if blind_name == "The Eye" and not boss_disabled:
             eye_used_hands = {
                 ht for ht, data in hand_levels.items()
-                if isinstance(data, dict) and data.get("played_this_round", 0) > 0
+                if hasattr(data, "get") and data.get("played_this_round", 0) > 0
             }
 
         scoring_suit = None

@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from balatro_bot.cards import joker_key
+
 if TYPE_CHECKING:
     from typing import Any
 
@@ -293,7 +295,7 @@ def compute_strategy(
     rank_scores: dict[str, float] = {}
 
     for joker in jokers:
-        key = joker.get("key", "")
+        key = joker_key(joker)
 
         if key in JOKER_HAND_AFFINITY:
             hand_types, weight = JOKER_HAND_AFFINITY[key]
@@ -310,7 +312,7 @@ def compute_strategy(
                 rank_scores[r] = rank_scores.get(r, 0) + weight
 
     # Detect active archetypes and inject their contributions
-    joker_keys = {j.get("key", "") for j in jokers}
+    joker_keys = {joker_key(j) for j in jokers}
     active_archs: list[tuple[str, float]] = []
     for arch in ARCHETYPE_REGISTRY.values():
         members = {k for k in arch.joker_weights if k in joker_keys}

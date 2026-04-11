@@ -24,81 +24,14 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "support"))
 
 from balatrobot.cli.client import BalatroClient, APIError
 from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
 from balatro_bot.domain.scoring.estimate import score_hand_detailed
 from balatro_bot.cards import card_chip_value, _modifier
 from balatro_bot.joker_effects.parsers import parse_effect_value, _ability, _ab_xmult
-
-
-def wait_for_state(client, target_states, max_tries=30):
-    for _ in range(max_tries):
-        state = client.call("gamestate")
-        gs = state.get("state", "")
-        if gs in target_states:
-            return state
-        if gs == "BLIND_SELECT":
-            client.call("select")
-            time.sleep(0.3)
-            continue
-        if gs == "SHOP":
-            client.call("next_round")
-            time.sleep(0.3)
-            continue
-        if gs in ("HAND_PLAYED", "DRAW_TO_HAND", "NEW_ROUND", "ROUND_EVAL"):
-            time.sleep(0.3)
-            continue
-        time.sleep(0.3)
-    raise TimeoutError(f"Never reached {target_states}, stuck in {state.get('state')}")
-
-
-def setup_game(client, seed, joker_keys=None, card_configs=None):
-    try:
-        client.call("menu")
-    except APIError:
-        pass
-    time.sleep(0.5)
-    client.call("start", {"deck": "RED", "stake": "WHITE", "seed": seed})
-    state = wait_for_state(client, ["SELECTING_HAND"])
-
-    for i in range(state.get("jokers", {}).get("count", 0)):
-        try:
-            client.call("sell", {"joker": 0})
-        except APIError:
-            pass
-
-    for _ in range(2):
-        state = client.call("gamestate")
-        hc = state.get("hand", {}).get("cards", [])
-        if hc:
-            try:
-                client.call("discard", {"cards": list(range(min(len(hc), 5)))})
-                time.sleep(0.2)
-            except APIError:
-                pass
-
-    if joker_keys:
-        for jk in joker_keys:
-            params = {"key": jk} if isinstance(jk, str) else jk
-            try:
-                client.call("add", params)
-            except APIError as e:
-                print(f"  FAILED joker {params}: {e.message}")
-
-    if card_configs:
-        for cfg in card_configs:
-            params = {"key": cfg["key"]}
-            for k in ("edition", "enhancement", "seal"):
-                if k in cfg:
-                    params[k] = cfg[k]
-            try:
-                client.call("add", params)
-            except APIError as e:
-                print(f"  FAILED card {cfg['key']}: {e.message}")
-
-    time.sleep(0.3)
-    return client.call("gamestate")
+from harness import wait_for_state, setup_game_full as setup_game
 
 
 def dump_jokers(jokers):
@@ -369,6 +302,12 @@ def main():
         if r.get("bot_xmult") != r.get("expected_xmult"):
             xm_note = f" (bot=x{r['bot_xmult']}, expected=x{r['expected_xmult']})"
         print(f"  [{status:8s}] {r['label']:45s} est={r['est']:6d} actual={r['actual']:6d} diff={r['diff']:+d}{xm_note}")
+
+    mismatches = [r for r in results if r and r["diff"] != 0]
+    if mismatches:
+        print(f"\nFAILED: {len(mismatches)} mismatch(es)")
+        sys.exit(1)
+    print("\nPASSED: all scores matched")
 
 
 if __name__ == "__main__":

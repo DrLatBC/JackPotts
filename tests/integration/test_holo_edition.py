@@ -20,26 +20,13 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "support"))
 
 from balatrobot.cli.client import BalatroClient, APIError
 from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
 from balatro_bot.domain.scoring.estimate import score_hand_detailed
 from balatro_bot.cards import card_chip_value, card_mult_value, card_xmult_value, _modifier
-
-
-def wait_for_state(client, target_states, max_tries=30):
-    """Poll until game reaches one of the target states."""
-    for _ in range(max_tries):
-        state = client.call("gamestate")
-        gs = state.get("state", "")
-        if gs in target_states:
-            return state
-        if gs == "BLIND_SELECT":
-            client.call("select")
-            time.sleep(0.3)
-            continue
-        time.sleep(0.3)
-    raise TimeoutError(f"Never reached {target_states}, stuck in {state.get('state')}")
+from harness import wait_for_state
 
 
 def dump_card(i, c):
@@ -269,6 +256,12 @@ def main():
 
     print(f"\nCheck the lovely console for BB.EDITION debug messages!")
     print("Look for: raw_edition={{...}} to see if card.edition.mult is contaminated")
+
+    mismatches = [r for r in results if r and r["diff"] != 0]
+    if mismatches:
+        print(f"\nFAILED: {len(mismatches)} mismatch(es)")
+        sys.exit(1)
+    print("\nPASSED: all scores matched")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ Moved from hand_evaluator.py during Phase 2 of the logic separation refactor.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import (
@@ -20,62 +21,109 @@ from balatro_bot.cards import (
     is_debuffed,
     is_joker_debuffed,
     is_stone,
+    joker_key,
     rank_value,
 )
 from balatro_bot.constants import HAND_INFO, RANK_CHIPS
+from balatro_bot.domain.models.card import Card
+from balatro_bot.joker_effects.parsers import _ability
 
 if TYPE_CHECKING:
     from typing import Any
 
 
-def _apply_before_phase(scoring_cards, played_cards, jokers):
+def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
     """Simulate the game's 'before' phase — jokers that fire before card scoring.
 
-    Vampire: strips enhancement from enhanced scoring cards, gains xmult.
-    Returns (modified_scoring_cards, modified_played_cards, vampire_xmult).
-    The played_cards list is updated so that stripped scoring cards replace
-    their originals (needed for id()-based matching in _apply_card_scoring).
-    """
-    vampire = None
-    for j in (jokers or []):
-        if j.get("key") == "j_vampire" and not is_joker_debuffed(j):
-            vampire = j
-            break
-    if not vampire:
-        return scoring_cards, played_cards, None
+    In the Lua source (state_events.lua:637), context.before iterates jokers
+    left-to-right. Both Midas Mask (card.lua:3783) and Vampire (card.lua:3805)
+    fire in this phase, mutating cards in-place. Their relative order matters:
 
+      Midas LEFT of Vampire: Midas sets face cards to GOLD, then Vampire
+        strips GOLD (and all other enhancements), gaining xmult for them.
+      Vampire LEFT of Midas: Vampire strips existing enhancements first,
+        then Midas sets face cards to GOLD (they keep GOLD for card scoring).
+
+    This function iterates jokers in list order to match the game's behavior.
+    Returns (modified_scoring_cards, modified_played_cards, vampire_xmult).
+    Callers must update ctx.scoring_cards with the returned cards so that
+    joker_main effects (Flower Pot, Seeing Double, etc.) see the correct
+    post-before-phase enhancement state.
+    """
     from balatro_bot.cards import is_debuffed, _modifier
     from balatro_bot.joker_effects.parsers import _ability, _ab_xmult
+    from balatro_bot.constants import FACE_RANKS
 
-    ab = _ability(vampire)
-    extra = ab.get("extra", 0.1)
-    current_xmult = _ab_xmult(vampire, fallback=1.0)
+    before_jokers = []
+    for j in (jokers or []):
+        if is_joker_debuffed(j):
+            continue
+        key = joker_key(j)
+        if key in ("j_midas_mask", "j_vampire"):
+            before_jokers.append((key, j))
 
-    enhanced_count = 0
-    orig_to_stripped = {}
-    stripped_scoring = []
-    for card in scoring_cards:
-        mod = _modifier(card)
-        enhancement = mod.get("enhancement", "")
-        if enhancement and enhancement != "BASE" and not is_debuffed(card):
-            enhanced_count += 1
-            card_copy = dict(card)
-            mod_copy = dict(mod)
-            mod_copy.pop("enhancement", None)
-            card_copy["modifier"] = mod_copy
-            orig_to_stripped[id(card)] = card_copy
-            stripped_scoring.append(card_copy)
-        else:
-            stripped_scoring.append(card)
+    if not before_jokers:
+        return scoring_cards, played_cards, None
 
-    stripped_played = played_cards
-    if enhanced_count > 0 and played_cards is not None:
-        stripped_played = [
-            orig_to_stripped.get(id(c), c) for c in played_cards
-        ]
+    # Work on copies so we don't mutate the caller's lists
+    effective = list(scoring_cards)
+    remap: list[tuple] = []  # (original, replacement) for played_cards remapping
+    vampire_xmult = None
 
-    vampire_xmult = current_xmult + extra * enhanced_count if enhanced_count > 0 else current_xmult
-    return stripped_scoring, stripped_played, vampire_xmult
+    for key, j in before_jokers:
+        if key == "j_midas_mask":
+            # Midas: convert all face cards to GOLD enhancement (card.lua:3786-3788)
+            for i, card in enumerate(effective):
+                rank = card_rank(card)
+                if rank and (pareidolia or rank in FACE_RANKS):
+                    mod = _modifier(card)
+                    if mod.get("enhancement") == "GOLD":
+                        continue
+                    if isinstance(card, Card):
+                        card_copy = replace(card, modifier=replace(card.modifier, enhancement="GOLD"))
+                    else:
+                        card_copy = dict(card)
+                        mod_copy = dict(mod) if isinstance(mod, dict) else {}
+                        mod_copy["enhancement"] = "GOLD"
+                        card_copy["modifier"] = mod_copy
+                    remap.append((effective[i], card_copy))
+                    effective[i] = card_copy
+
+        elif key == "j_vampire":
+            # Vampire: strip all non-BASE enhancements, gain xmult (card.lua:3805-3833)
+            ab = _ability(j)
+            extra = ab.get("extra", 0.1)
+            current_xmult = _ab_xmult(j, fallback=1.0)
+            enhanced_count = 0
+
+            for i, card in enumerate(effective):
+                mod = _modifier(card)
+                enhancement = mod.get("enhancement", "")
+                if enhancement and enhancement != "BASE" and not is_debuffed(card):
+                    enhanced_count += 1
+                    if isinstance(card, Card):
+                        card_copy = replace(card, modifier=replace(card.modifier, enhancement=None))
+                    else:
+                        card_copy = dict(card)
+                        mod_copy = dict(mod)
+                        mod_copy.pop("enhancement", None)
+                        card_copy["modifier"] = mod_copy
+                    remap.append((effective[i], card_copy))
+                    effective[i] = card_copy
+
+            vampire_xmult = current_xmult + extra * enhanced_count if enhanced_count > 0 else current_xmult
+
+    # Remap played_cards to reference the modified copies
+    effective_played = played_cards
+    if remap and played_cards is not None:
+        def _get_remapped(c):
+            for orig, replacement in remap:
+                if c is orig:
+                    return replacement
+            return c
+        effective_played = [_get_remapped(c) for c in played_cards]
+
+    return effective, effective_played, vampire_xmult
 
 
 def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
@@ -88,11 +136,10 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     from balatro_bot.joker_effects import retrigger_count
     from balatro_bot.constants import FACE_RANKS, FIBONACCI_RANKS, EVEN_RANKS, ODD_RANKS
 
-    scoring_id_set = set(id(c) for c in scoring_cards)
-    scored_in_play_order = [c for c in (played_cards or scoring_cards) if id(c) in scoring_id_set]
-    played_id_set = set(id(c) for c in scored_in_play_order)
+    scored_in_play_order = [c for c in (played_cards or scoring_cards)
+                            if any(c is s for s in scoring_cards)]
     for c in scoring_cards:
-        if id(c) not in played_id_set:
+        if not any(c is p for p in scored_in_play_order):
             scored_in_play_order.append(c)
 
     _per_card = []
@@ -100,7 +147,7 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
 
     def _add_per_card_effect(key: str, joker: dict) -> None:
         """Add per-card scoring effects for a joker key, using joker's ability data."""
-        ab = joker.get("value", {}).get("ability", {})
+        ab = _ability(joker)
         if key == "j_greedy_joker":
             _per_card.append(("suit_mult", "D", ab.get("s_mult", 3)))
         elif key == "j_lusty_joker":
@@ -144,34 +191,21 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     for i, j in enumerate(joker_list):
         if is_joker_debuffed(j):
             continue
-        k = j.get("key", "")
+        k = joker_key(j)
         if k == "j_blueprint":
             # Blueprint copies the joker to its right
             if i + 1 < len(joker_list):
                 target = joker_list[i + 1]
                 if not is_joker_debuffed(target):
-                    _add_per_card_effect(target.get("key", ""), target)
+                    _add_per_card_effect(joker_key(target), target)
         elif k == "j_brainstorm":
             # Brainstorm copies the leftmost joker
             if joker_list and joker_list[0] is not j:
                 target = joker_list[0]
                 if not is_joker_debuffed(target):
-                    _add_per_card_effect(target.get("key", ""), target)
+                    _add_per_card_effect(joker_key(target), target)
         else:
             _add_per_card_effect(k, j)
-
-    _has_midas = any(j.get("key") == "j_midas_mask" for j in (jokers or []))
-    if _has_midas:
-        for i, card in enumerate(scored_in_play_order):
-            rank = card_rank(card)
-            if rank and (ctx.pareidolia or rank in FACE_RANKS):
-                mod = _modifier(card)
-                if isinstance(mod, dict) and mod.get("enhancement") not in (None, "", "GOLD"):
-                    card_copy = dict(card)
-                    mod_copy = dict(mod)
-                    mod_copy["enhancement"] = "GOLD"
-                    card_copy["modifier"] = mod_copy
-                    scored_in_play_order[i] = card_copy
 
     for card in scored_in_play_order:
         triggers = retrigger_count(card, ctx)
@@ -259,17 +293,17 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     for i, j in enumerate(joker_list):
         if is_joker_debuffed(j):
             continue
-        k = j.get("key", "")
+        k = joker_key(j)
         if k == "j_blueprint":
             if i + 1 < len(joker_list):
                 target = joker_list[i + 1]
                 if not is_joker_debuffed(target):
-                    _count_held_phase(target.get("key", ""), target)
+                    _count_held_phase(joker_key(target), target)
         elif k == "j_brainstorm":
             if joker_list and joker_list[0] is not j:
                 target = joker_list[0]
                 if not is_joker_debuffed(target):
-                    _count_held_phase(target.get("key", ""), target)
+                    _count_held_phase(joker_key(target), target)
         else:
             _count_held_phase(k, j)
 
@@ -315,7 +349,7 @@ def ox_most_played_hand(hand_levels: dict) -> str | None:
     best_hand = None
     best_count = 0
     for ht, info in hand_levels.items():
-        if isinstance(info, dict):
+        if hasattr(info, "get"):
             played = info.get("played", 0)
             if played > best_count:
                 best_count = played
@@ -377,7 +411,7 @@ def score_hand(
         if _ox_locked and hand_name == _ox_locked:
             money = 0
 
-    joker_keys_set = {j.get("key") for j in jokers if not is_joker_debuffed(j)}
+    joker_keys_set = {joker_key(j) for j in jokers if not is_joker_debuffed(j)}
     ctx = ScoreContext(
         chips=base_chips,
         mult=float(base_mult),
@@ -400,8 +434,10 @@ def score_hand(
     )
 
     effective_scoring, effective_played, vampire_xmult = _apply_before_phase(
-        scoring_cards, played_cards, jokers)
+        scoring_cards, played_cards, jokers, pareidolia=ctx.pareidolia)
     ctx.vampire_xmult = vampire_xmult
+    ctx.scoring_cards = effective_scoring
+    ctx.played_cards = effective_played or ctx.played_cards
 
     _apply_card_scoring(ctx, effective_scoring, effective_played, jokers, ancient_suit)
 
@@ -449,13 +485,22 @@ def score_hand_detailed(
 
     card_details = []
     for c in scoring_cards:
-        label = c.get("label", "?")
-        chips = card_chip_value(c)
-        mult = card_mult_value(c)
-        xmult = card_xmult_value(c)
-        mod = c.get("modifier", {})
-        if isinstance(mod, dict) and (mod.get("edition") or mod.get("enhancement")):
-            label += f"[{mod.get('edition','')}/{mod.get('enhancement','')}]"
+        if isinstance(c, Card):
+            label = c.label or "?"
+            chips = card_chip_value(c)
+            mult = card_mult_value(c)
+            xmult = card_xmult_value(c)
+            mod = c.modifier
+            if mod.edition or mod.enhancement:
+                label += f"[{mod.edition or ''}/{mod.enhancement or ''}]"
+        else:
+            label = c.get("label", "?")
+            chips = card_chip_value(c)
+            mult = card_mult_value(c)
+            xmult = card_xmult_value(c)
+            mod = c.get("modifier", {})
+            if isinstance(mod, dict) and (mod.get("edition") or mod.get("enhancement")):
+                label += f"[{mod.get('edition','')}/{mod.get('enhancement','')}]"
         card_details.append((label, chips, mult, xmult))
 
     if not jokers:
@@ -483,7 +528,7 @@ def score_hand_detailed(
             "total": math.floor(total_chips * total_mult),
         }
 
-    joker_keys_set = {j.get("key") for j in jokers if not is_joker_debuffed(j)}
+    joker_keys_set = {joker_key(j) for j in jokers if not is_joker_debuffed(j)}
     ctx = ScoreContext(
         chips=base_chips,
         mult=float(base_mult),
@@ -506,8 +551,10 @@ def score_hand_detailed(
     )
 
     effective_scoring, effective_played, vampire_xmult = _apply_before_phase(
-        scoring_cards, played_cards, jokers)
+        scoring_cards, played_cards, jokers, pareidolia=ctx.pareidolia)
     ctx.vampire_xmult = vampire_xmult
+    ctx.scoring_cards = effective_scoring
+    ctx.played_cards = effective_played or ctx.played_cards
 
     _apply_card_scoring(ctx, effective_scoring, effective_played, jokers, ancient_suit)
 

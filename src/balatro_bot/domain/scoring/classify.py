@@ -191,10 +191,9 @@ def _straight_scoring_cards(
     # All cards whose rank falls in the window score (including duplicate ranks)
     result = [c for rv, c in ranked if rv in window_set]
 
-    # Append Stone cards
-    result_set = set(id(c) for c in result)
+    # Append Stone cards not already in result
     for c in cards:
-        if is_stone(c) and id(c) not in result_set:
+        if is_stone(c) and not any(c is r for r in result):
             result.append(c)
 
     return result
@@ -230,18 +229,15 @@ def _scoring_cards_for(
                     or _straight_scoring_cards(cards, four_fingers=True, shortcut=shortcut)
                     or []
                 )
-                scored_ids = set(id(c) for c in straight_cards)
                 # Add any flush-subset cards not already in the straight set
                 flush_cards = _flush_scoring_cards(cards, smeared=smeared, four_fingers=True)
                 for c in flush_cards:
-                    if id(c) not in scored_ids:
+                    if not any(c is s for s in straight_cards):
                         straight_cards.append(c)
-                        scored_ids.add(id(c))
                 # Add Stone cards
                 for c in cards:
-                    if is_stone(c) and id(c) not in scored_ids:
+                    if is_stone(c) and not any(c is s for s in straight_cards):
                         straight_cards.append(c)
-                        scored_ids.add(id(c))
                 return straight_cards or list(cards)
             # Plain Flush with four_fingers: only the 4 flush-suit cards score.
             suited = [c for c in cards if not is_stone(c)]
@@ -305,9 +301,8 @@ def _scoring_cards_for(
         ranked.sort(key=lambda c: rank_value(card_rank(c)), reverse=True)
         result = ranked[:1] if ranked else cards[:1]
 
-    result_set = set(id(c) for c in result)
     for c in cards:
-        if is_stone(c) and id(c) not in result_set:
+        if is_stone(c) and not any(c is r for r in result):
             result.append(c)
 
     return result

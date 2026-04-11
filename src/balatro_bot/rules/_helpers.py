@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suit, card_suits, card_xmult_value, card_chip_value, card_mult_value, rank_value, is_debuffed, _modifier
+from balatro_bot.cards import card_rank, card_suit, card_suits, card_xmult_value, card_chip_value, card_mult_value, joker_key, rank_value, is_debuffed, _modifier
 from balatro_bot.constants import (
     FEWER_CARDS_JOKERS, ALL_SCORE_JOKERS, EXACT_4_JOKERS,
     FACE_RANKS, FACE_RANKS_TAROT, PLANET_KEYS, NO_TARGET_TAROTS, TARGETING_TAROTS,
@@ -34,7 +34,7 @@ def _pad_with_junk(
     Card into a Pair, or creating an accidental Flush/Straight).  If we
     can't fill to target without changing the hand, we play fewer cards.
     """
-    joker_keys = {j.get("key") for j in jokers}
+    joker_keys = {joker_key(j) for j in jokers}
     n = len(card_indices)
 
     if joker_keys & FEWER_CARDS_JOKERS and n <= 3:
@@ -103,7 +103,7 @@ def _sort_play_order(
     if len(indices) <= 1:
         return indices
 
-    joker_keys = {j.get("key") for j in jokers}
+    joker_keys = {joker_key(j) for j in jokers}
     has_hanging_chad = "j_hanging_chad" in joker_keys
     has_photograph = "j_photograph" in joker_keys
     has_triboulet = "j_triboulet" in joker_keys
@@ -140,7 +140,7 @@ def _sort_play_order(
             suits = card_suits(c)
             add = card_chip_value(c) + card_mult_value(c)
             for j in jokers:
-                k = j.get("key", "")
+                k = joker_key(j)
                 if k == "j_even_steven" and rank in EVEN_RANKS:
                     add += 4
                 elif k == "j_odd_todd" and rank in ODD_RANKS:
@@ -284,7 +284,7 @@ def _find_glass_targets(hand_cards, count, rank_affinity=None):
 
 
 def _find_stone_targets(hand_cards, count, jokers, rank_affinity=None):
-    has_stone_joker = any(j.get("key") == "j_stone" for j in jokers)
+    has_stone_joker = any(joker_key(j) == "j_stone" for j in jokers)
     candidates = []
     for i, c in enumerate(hand_cards):
         r = card_rank(c)

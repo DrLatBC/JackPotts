@@ -4,6 +4,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import PackAction, Action
+from balatro_bot.cards import joker_key
 from balatro_bot.constants import (
     NO_TARGET_TAROTS, TARGETING_TAROTS, PLANET_HAND_MAP, PLANET_KEYS,
     SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
@@ -26,7 +27,7 @@ class SkipPackForRedCard:
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         jokers = state.get("jokers", {}).get("cards", [])
-        if not any(j.get("key") == "j_red_card" for j in jokers):
+        if not any(joker_key(j) == "j_red_card" for j in jokers):
             return None
 
         pack = state.get("pack", {})
@@ -103,7 +104,7 @@ class PickFromPlanetPack:
             return None
 
         jokers = state.get("jokers", {}).get("cards", [])
-        joker_keys = {j.get("key") for j in jokers}
+        joker_keys = {joker_key(j) for j in jokers}
         hand_levels = state.get("hands", {})
         strat = compute_strategy(jokers, hand_levels)
 

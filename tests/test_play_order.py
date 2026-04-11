@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace as dc_replace
+
 from balatro_bot.rules._helpers import _sort_play_order, _pad_with_junk
 from tests.conftest import card, joker
 
@@ -91,8 +93,7 @@ def test_hanging_chad_glass_xmult_beats_additive():
 
 def test_hanging_chad_debuffed_card_never_first():
     """Debuffed card should never be placed first."""
-    debuffed = card("A", "S")
-    debuffed["state"]["debuff"] = True
+    debuffed = dc_replace(card("A", "S"), state=dc_replace(card("A", "S").state, debuff=True))
     hand = [
         debuffed,         # 0: debuffed
         card("2", "H"),   # 1: low but not debuffed

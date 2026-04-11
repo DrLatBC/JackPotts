@@ -28,6 +28,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "support"))
 _venv_sp = os.path.join(os.path.dirname(__file__), "..", "..", ".venv", "Lib", "site-packages")
 if os.path.isdir(_venv_sp) and _venv_sp not in sys.path:
     sys.path.insert(0, os.path.abspath(_venv_sp))
@@ -40,6 +41,8 @@ from balatro_bot.cards import card_chip_value, _modifier, is_debuffed, card_rank
 from balatro_bot.joker_effects.parsers import parse_effect_value, _ability, _ab_xmult
 from balatro_bot.constants import FACE_RANKS
 
+from harness import wait_for_state
+
 # Lazy-imported: harness eagerly validates config paths at import time.
 # from harness import TEST_PORT, ensure_server, stop_server
 
@@ -47,28 +50,6 @@ from balatro_bot.constants import FACE_RANKS
 # =========================================================================
 # Helpers
 # =========================================================================
-
-def wait_for_state(client, target_states, max_tries=30):
-    state = {}
-    for _ in range(max_tries):
-        state = client.call("gamestate")
-        gs = state.get("state", "")
-        if gs in target_states:
-            return state
-        if gs == "BLIND_SELECT":
-            client.call("select")
-            time.sleep(0.3)
-            continue
-        if gs == "SHOP":
-            client.call("next_round")
-            time.sleep(0.3)
-            continue
-        if gs in ("HAND_PLAYED", "DRAW_TO_HAND", "NEW_ROUND", "ROUND_EVAL"):
-            time.sleep(0.3)
-            continue
-        time.sleep(0.3)
-    raise TimeoutError(f"Never reached {target_states}, stuck in {state.get('state')}")
-
 
 def get_current_blind(state):
     for b in state.get("blinds", {}).values():
@@ -660,8 +641,7 @@ def main():
         if server_proc:
             _stop(server_proc)
 
-    if mismatches > 0:
-        sys.exit(1)
+    assert mismatches == 0, f"{mismatches} scoring mismatch(es) — see SUMMARY above"
 
 
 if __name__ == "__main__":

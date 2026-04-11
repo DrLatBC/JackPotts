@@ -1,34 +1,69 @@
 """Shared test fixtures — card factory helpers."""
 
-
-def card(rank: str, suit: str, enhancement: str | None = None) -> dict:
-    """Build a minimal card dict matching the balatrobot schema."""
-    c: dict = {
-        "id": 0,
-        "key": f"{suit}_{rank}",
-        "set": "DEFAULT",
-        "label": f"{rank} of {suit}",
-        "value": {"suit": suit, "rank": rank},
-        "modifier": {},
-        "state": {},
-        "cost": {},
-    }
-    if enhancement:
-        c["modifier"]["enhancement"] = enhancement
-    return c
+from balatro_bot.domain.models.card import Card, CardModifier, CardState, CardValue
 
 
-def stone_card() -> dict:
-    return {
-        "id": 0, "key": "stone", "set": "ENHANCED", "label": "Stone Card",
-        "value": {}, "modifier": {"enhancement": "STONE"}, "state": {}, "cost": {},
-    }
+def card(rank: str, suit: str, enhancement: str | None = None) -> Card:
+    """Build a minimal Card matching the balatrobot schema."""
+    return Card(
+        id=0,
+        key=f"{suit}_{rank}",
+        set_="DEFAULT",
+        label=f"{rank} of {suit}",
+        value=CardValue(rank=rank, suit=suit),
+        modifier=CardModifier(enhancement=enhancement),
+        state=CardState(),
+        cost={},
+    )
 
 
-def wild_card(rank: str, suit: str) -> dict:
-    c = card(rank, suit)
-    c["modifier"]["enhancement"] = "WILD"
-    return c
+def stone_card() -> Card:
+    return Card(
+        id=0, key="stone", set_="ENHANCED", label="Stone Card",
+        value=CardValue(), modifier=CardModifier(enhancement="STONE"),
+        state=CardState(), cost={},
+    )
+
+
+def wild_card(rank: str, suit: str) -> Card:
+    return Card(
+        id=0,
+        key=f"{suit}_{rank}",
+        set_="DEFAULT",
+        label=f"{rank} of {suit}",
+        value=CardValue(rank=rank, suit=suit),
+        modifier=CardModifier(enhancement="WILD"),
+        state=CardState(),
+        cost={},
+    )
+
+
+def debuffed_card(rank: str, suit: str, enhancement: str | None = None) -> Card:
+    """Build a debuffed Card."""
+    return Card(
+        id=0,
+        key=f"{suit}_{rank}",
+        set_="DEFAULT",
+        label=f"{rank} of {suit}",
+        value=CardValue(rank=rank, suit=suit),
+        modifier=CardModifier(enhancement=enhancement),
+        state=CardState(debuff=True),
+        cost={},
+    )
+
+
+def card_with_perma(rank: str, suit: str, perma_bonus: int, enhancement: str | None = None) -> Card:
+    """Build a Card with perma_bonus."""
+    return Card(
+        id=0,
+        key=f"{suit}_{rank}",
+        set_="DEFAULT",
+        label=f"{rank} of {suit}",
+        value=CardValue(rank=rank, suit=suit, perma_bonus=perma_bonus),
+        modifier=CardModifier(enhancement=enhancement),
+        state=CardState(),
+        cost={},
+    )
 
 
 def joker(key: str, label: str = "") -> dict:

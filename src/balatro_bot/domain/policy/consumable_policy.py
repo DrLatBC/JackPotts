@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suit, card_suits, _modifier, rank_value
+from balatro_bot.cards import card_rank, card_suit, card_suits, _modifier, joker_key, rank_value
 from balatro_bot.constants import (
     PLANET_KEYS, SAFE_CONSUMABLE_TAROTS, TARGETING_TAROTS,
     IMMEDIATE_TARGETING, SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
@@ -147,7 +147,7 @@ def score_consumable(
         if hand_type == "ALL":
             return _BLACK_HOLE_VALUE  # Black Hole — always top priority
         hand_levels = state.get("hands", {})
-        has_constellation = any(j.get("key") == "j_constellation" for j in jokers)
+        has_constellation = any(joker_key(j) == "j_constellation" for j in jokers)
         affinity = strat.hand_affinity(hand_type) if strat else 0.0
         if affinity > 0:
             score = _PLANET_BASE_VALUE + affinity
@@ -226,7 +226,7 @@ def _score_targeting_tarot(
     if effect_type == "enhance":
         base = _ENHANCE_SCORES.get(extra, 2.0)
         jokers = state.get("jokers", {}).get("cards", [])
-        joker_keys = {j.get("key") for j in jokers}
+        joker_keys = {joker_key(j) for j in jokers}
         if extra == "Lucky":
             if "j_lucky_cat" in joker_keys:
                 base += _LUCKY_CAT_BONUS
@@ -243,7 +243,7 @@ def _score_targeting_tarot(
         return remaining_rounds * _DEVIL_INCOME_PER_ROUND / _DEVIL_DIVISOR
 
     if effect_type == "stone":
-        has_stone_joker = any(j.get("key") == "j_stone"
+        has_stone_joker = any(joker_key(j) == "j_stone"
                              for j in state.get("jokers", {}).get("cards", []))
         return _STONE_WITH_JOKER if has_stone_joker else _STONE_WITHOUT_JOKER
 
@@ -272,7 +272,7 @@ def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict) -> float:
     if len(jokers) <= 1:
         return _HEX_SOLO_VALUE  # 1 joker: free Polychrome
 
-    owned_keys = {j.get("key") for j in jokers}
+    owned_keys = {joker_key(j) for j in jokers}
     # Never use with multiple scaling jokers — losing any is unacceptable
     scaling_count = len(owned_keys & SCALING_JOKERS)
     if scaling_count >= 2:

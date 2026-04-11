@@ -29,7 +29,8 @@ from balatro_bot.cards import _modifier, card_rank, card_suits, is_joker_debuffe
 
 from harness import (
     TEST_PORT, BOSS_MIN_ANTE,
-    wait_for_state, setup_game, get_current_blind,
+    wait_for_state, setup_game, setup_game_full as setup_clean,
+    get_current_blind,
     advance_to_boss_select, advance_through_post_blind,
     force_boss, inject_jokers, set_ante, beat_blind_fast,
     ensure_server, stop_server, take_screenshot,
@@ -40,59 +41,6 @@ from scoring_diagnostics import fmt_card, dump_hand_detail
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def setup_clean(client, seed, joker_keys=None, card_configs=None):
-    """Start fresh game, sell default jokers, discard hand, inject jokers + cards."""
-    try:
-        client.call("menu")
-    except APIError:
-        pass
-    time.sleep(0.5)
-
-    client.call("start", {"deck": "RED", "stake": "WHITE", "seed": seed})
-    state = wait_for_state(client, {"SELECTING_HAND"})
-
-    # Sell default jokers
-    for _ in range(state.get("jokers", {}).get("count", 0)):
-        try:
-            client.call("sell", {"joker": 0})
-        except APIError:
-            pass
-
-    # Discard hand twice to clear starting cards
-    for _ in range(2):
-        state = client.call("gamestate")
-        hc = state.get("hand", {}).get("cards", [])
-        if hc:
-            try:
-                client.call("discard", {"cards": list(range(min(len(hc), 5)))})
-                time.sleep(0.2)
-            except APIError:
-                pass
-
-    # Inject jokers
-    if joker_keys:
-        for jk in joker_keys:
-            params = {"key": jk} if isinstance(jk, str) else jk
-            try:
-                client.call("add", params)
-            except APIError as e:
-                print(f"  FAILED joker {params}: {e.message}")
-
-    # Inject playing cards
-    if card_configs:
-        for cfg in card_configs:
-            params = {"key": cfg["key"]}
-            for k in ("edition", "enhancement", "seal"):
-                if k in cfg:
-                    params[k] = cfg[k]
-            try:
-                client.call("add", params)
-            except APIError as e:
-                print(f"  FAILED card {cfg['key']}: {e.message}")
-
-    time.sleep(0.3)
-    return client.call("gamestate")
 
 
 def play_and_compare(client, state, play_indices, label="", blind_name="",

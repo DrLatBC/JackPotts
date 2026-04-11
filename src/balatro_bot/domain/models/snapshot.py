@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from balatro_bot.domain.models.card import Card
+from balatro_bot.domain.models.hand_level import HandLevel
+from balatro_bot.domain.models.joker import Joker
+
 
 @dataclass(frozen=True)
 class BlindSnapshot:
@@ -34,12 +38,11 @@ class Snapshot:
     deck_count: int
     round: RoundSnapshot
     current_blind: BlindSnapshot
-    # Raw collections — typed card models deferred to Phase 2
-    hand_cards: list[dict]
-    hand_levels: dict[str, dict]
-    jokers: list[dict]
-    deck_cards: list[dict]
-    consumables: list[dict]
-    shop_cards: list[dict]
-    vouchers: list[dict]
-    pack_cards: list[dict]
+    hand_cards: list[Card]
+    hand_levels: dict[str, HandLevel]
+    jokers: list[Joker]
+    deck_cards: list[Card]
+    consumables: list[Card]
+    shop_cards: list[Card]
+    vouchers: list[Card]
+    pack_cards: list[Card]

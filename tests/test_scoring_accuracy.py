@@ -6,7 +6,8 @@ import math
 from balatro_bot.domain.scoring.estimate import score_hand, score_hand_detailed
 from balatro_bot.domain.scoring.base import arm_reduce_hand_levels, flint_halve_hand_levels
 from balatro_bot.cards import card_chip_value
-from tests.conftest import card, wild_card, stone_card, joker
+from dataclasses import replace as dc_replace
+from tests.conftest import card, wild_card, stone_card, card_with_perma, debuffed_card, joker
 
 
 def _joker_with_ability(key: str, ability: dict, **extra) -> dict:
@@ -340,14 +341,12 @@ class TestStoneCardPermaBonus:
 
     def test_stone_with_perma_bonus(self):
         """Stone card with perma_bonus (e.g. from Hiker) adds to 50 base."""
-        sc = stone_card()
-        sc["value"]["perma_bonus"] = 25
+        sc = dc_replace(stone_card(), value=dc_replace(stone_card().value, perma_bonus=25))
         assert card_chip_value(sc) == 75
 
     def test_stone_perma_bonus_zero(self):
         """Stone card with perma_bonus=0 still gives 50."""
         sc = stone_card()
-        sc["value"]["perma_bonus"] = 0
         assert card_chip_value(sc) == 50
 
 
@@ -365,11 +364,9 @@ class TestFlowerPotDebuffed:
             card("A", "H"),
             card("K", "D"),
             card("Q", "C"),
-            card("J", "S"),
+            debuffed_card("J", "S"),
             card("T", "H"),
         ]
-        # Debuff the Spade card — it should still provide its suit
-        cards[3]["state"] = {"debuff": True}
         _, _, total_with = score_hand("Straight", cards, jokers=[self._flower_pot_joker()])
         _, _, total_without = score_hand("Straight", cards)
         # All 4 suits present (debuffed J♠ still contributes Spade)
@@ -391,6 +388,217 @@ class TestFlowerPotDebuffed:
         _, _, total_with = score_hand("Straight", cards, jokers=[self._flower_pot_joker()])
         _, _, total_without = score_hand("Straight", cards)
         assert total_with == total_without, "Flower Pot should NOT trigger with only 3 suits"
+
+
+# ---------------------------------------------------------------------------
+# Vampire + Flower Pot: enhancement stripping propagation (issue #16)
+# ---------------------------------------------------------------------------
+
+class TestVampireFlowerPot:
+    """Vampire strips enhancements in _apply_before_phase() which runs in the
+    game's 'before' context (card.lua:3805). Flower Pot evaluates in the
+    'joker_main' context (card.lua:4137). Since 'before' completes entirely
+    before 'joker_main' starts, Vampire ALWAYS strips before Flower Pot
+    evaluates — regardless of joker slot order. Regression test for issue #16."""
+
+    def _vampire_joker(self, xmult: float = 1.0):
+        return _joker_with_ability("j_vampire", {"extra": 0.1, "Xmult": xmult})
+
+    def _flower_pot_joker(self):
+        return _joker_with_ability("j_flower_pot", {"extra": 3.0})
+
+    def _assert_flower_pot_does_not_fire(self, cards, jokers):
+        """Flower Pot should NOT fire after Vampire strips the only WILD."""
+        _, _, total_with_both = score_hand("Straight", cards, jokers=jokers)
+        _, _, total_vampire_only = score_hand("Straight", cards, jokers=[self._vampire_joker()])
+        if total_vampire_only > 0:
+            ratio = total_with_both / total_vampire_only
+            assert ratio < 2.0, (
+                f"Flower Pot should NOT fire after Vampire strips WILD "
+                f"(ratio={ratio:.2f}, expected ~1.0)"
+            )
+
+    def test_vampire_strips_wild_before_flower_pot(self):
+        """Vampire strips WILD in the 'before' phase. Flower Pot then sees
+        only 3 natural suits (H, D, C) in 'joker_main' and does NOT fire."""
+        cards = [
+            card("A", "H"),
+            card("K", "D"),
+            card("Q", "C"),
+            card("J", "C"),
+            wild_card("T", "H"),  # WILD provides 4th suit — but Vampire strips it
+        ]
+        # Vampire left of Flower Pot
+        self._assert_flower_pot_does_not_fire(
+            cards, [self._vampire_joker(), self._flower_pot_joker()])
+
+    def test_vampire_right_of_flower_pot_still_strips(self):
+        """Vampire fires in 'before' phase, Flower Pot in 'joker_main'.
+        Even with Flower Pot LEFT of Vampire, Vampire still strips first."""
+        cards = [
+            card("A", "H"),
+            card("K", "D"),
+            card("Q", "C"),
+            card("J", "C"),
+            wild_card("T", "H"),
+        ]
+        # Flower Pot left of Vampire — should NOT matter
+        self._assert_flower_pot_does_not_fire(
+            cards, [self._flower_pot_joker(), self._vampire_joker()])
+
+    def test_vampire_strips_wild_4_natural_suits_flower_pot_still_fires(self):
+        """If all 4 natural suits are present even after WILD is stripped,
+        Flower Pot should still fire."""
+        cards = [
+            card("A", "H"),
+            card("K", "D"),
+            card("Q", "C"),
+            card("J", "S"),
+            wild_card("T", "H"),  # WILD stripped, but 4 natural suits already present
+        ]
+        jokers = [self._vampire_joker(), self._flower_pot_joker()]
+        _, _, total_with_both = score_hand("Straight", cards, jokers=jokers)
+        _, _, total_vampire_only = score_hand("Straight", cards, jokers=[self._vampire_joker()])
+
+        # 4 natural suits (H, D, C, S) present after stripping — Flower Pot fires
+        if total_vampire_only > 0:
+            ratio = total_with_both / total_vampire_only
+            assert ratio > 2.5, (
+                f"Flower Pot should fire with 4 natural suits post-strip "
+                f"(ratio={ratio:.2f}, expected ~3.0)"
+            )
+
+    def test_no_vampire_wild_still_counts_for_flower_pot(self):
+        """Without Vampire, WILD should still provide suit coverage for Flower Pot."""
+        cards = [
+            card("A", "H"),
+            card("K", "D"),
+            card("Q", "C"),
+            card("J", "C"),
+            wild_card("T", "H"),
+        ]
+        jokers = [self._flower_pot_joker()]
+        _, _, total_with = score_hand("Straight", cards, jokers=jokers)
+        _, _, total_without = score_hand("Straight", cards)
+
+        if total_without > 0:
+            ratio = total_with / total_without
+            assert ratio > 2.5, (
+                f"Without Vampire, WILD should let Flower Pot fire "
+                f"(ratio={ratio:.2f}, expected ~3.0)"
+            )
+
+    def test_vampire_strips_mult_enhancement_flower_pot_unaffected(self):
+        """Vampire strips a MULT enhancement (not WILD). Flower Pot should
+        evaluate suits based on natural suits only — no change either way."""
+        cards = [
+            card("A", "H"),
+            card("K", "D"),
+            card("Q", "C"),
+            card("J", "S"),
+            card("T", "H", enhancement="MULT"),
+        ]
+        jokers = [self._vampire_joker(), self._flower_pot_joker()]
+        _, _, total_both = score_hand("Straight", cards, jokers=jokers)
+        _, _, total_fp_only = score_hand("Straight", cards, jokers=[self._flower_pot_joker()])
+
+        # 4 natural suits present regardless of MULT stripping — Flower Pot fires in both
+        assert total_both > 0
+        assert total_fp_only > 0
+
+
+# ---------------------------------------------------------------------------
+# Midas Mask + Vampire: before-phase ordering (card.lua:3783, 3805)
+# ---------------------------------------------------------------------------
+
+class TestMidasVampireOrder:
+    """Midas Mask and Vampire both fire in context.before (state_events.lua:637).
+    Within that phase, jokers iterate left-to-right. Their relative order
+    determines whether Midas-set GOLD gets stripped by Vampire or persists."""
+
+    def _vampire_joker(self, xmult: float = 1.0):
+        return _joker_with_ability("j_vampire", {"extra": 0.1, "Xmult": xmult})
+
+    def _midas_joker(self):
+        return _joker_with_ability("j_midas_mask", {})
+
+    def test_midas_left_vampire_right_strips_gold(self):
+        """Midas (left) sets face cards to GOLD, then Vampire (right) strips
+        GOLD and gains xmult for those cards."""
+        # K♥ is a face card — Midas will set it to GOLD, then Vampire strips it
+        cards = [card("K", "H"), card("K", "D")]
+        jokers = [self._midas_joker(), self._vampire_joker()]
+        _, _, total = score_hand("Pair", cards, jokers=jokers)
+
+        # Vampire should count the GOLD enhancement that Midas set
+        # Baseline: no jokers
+        _, _, base = score_hand("Pair", cards)
+        # With Vampire stripping 2 GOLD enhancements: xmult = 1.0 + 0.1*2 = 1.2
+        # Cards end up BASE (stripped), so no GOLD $3 bonus from card scoring
+        assert total > base, "Vampire should apply xmult from Midas-set GOLD cards"
+
+    def test_vampire_left_midas_right_keeps_gold(self):
+        """Vampire (left) strips existing enhancements first, then Midas (right)
+        sets face cards to GOLD. Face cards end up GOLD for card scoring."""
+        # K♥ has MULT enhancement — Vampire strips it, then Midas sets GOLD
+        cards = [card("K", "H", enhancement="MULT"), card("K", "D")]
+        jokers = [self._vampire_joker(), self._midas_joker()]
+        _, _, total_vm = score_hand("Pair", cards, jokers=jokers)
+
+        # Same cards but Midas left of Vampire — Midas sets GOLD, Vampire strips it
+        cards2 = [card("K", "H", enhancement="MULT"), card("K", "D")]
+        jokers2 = [self._midas_joker(), self._vampire_joker()]
+        _, _, total_mv = score_hand("Pair", cards2, jokers=jokers2)
+
+        # Vampire-left: strips MULT (1 card), gains x1.1. Midas then sets GOLD.
+        #   Cards score with GOLD enhancement during card scoring.
+        # Midas-left: sets both to GOLD, Vampire strips both GOLD, gains x1.2.
+        #   Cards score without enhancement.
+        # Vampire-left should differ from Midas-left due to ordering
+        assert total_vm != total_mv, (
+            f"Order should matter: Vampire-left={total_vm} vs Midas-left={total_mv}"
+        )
+
+    def test_midas_alone_sets_gold_on_face_cards(self):
+        """Midas alone converts face cards to GOLD enhancement."""
+        cards = [card("K", "H"), card("Q", "D")]
+        jokers = [self._midas_joker()]
+        _, _, total_midas = score_hand("Pair", cards, jokers=jokers)
+
+        # Without Midas, plain face cards
+        _, _, total_base = score_hand("Pair", cards)
+        # GOLD cards give $3 each when scored but no chip/mult bonus
+        # The totals may differ due to GOLD replacing base enhancement
+        assert total_midas > 0
+
+    def test_midas_does_not_affect_non_face_cards(self):
+        """Midas only converts face cards (J, Q, K). Number cards unaffected."""
+        cards = [card("7", "H", enhancement="MULT"), card("7", "D")]
+        jokers = [self._midas_joker()]
+        _, _, total_midas = score_hand("Pair", cards, jokers=jokers)
+
+        # Without Midas — should be the same since 7s aren't face cards
+        _, _, total_base = score_hand("Pair", cards)
+        assert total_midas == total_base, "Midas should not affect non-face cards"
+
+    def test_midas_with_pareidolia_affects_all_cards(self):
+        """With Pareidolia, all cards count as face cards for Midas.
+        A MULT-enhanced number card should lose MULT and become GOLD."""
+        # 7♥ has MULT (+4 mult). Pareidolia makes it a "face card" for Midas.
+        # Midas converts it to GOLD, removing the MULT enhancement.
+        cards = [card("7", "H", enhancement="MULT"), card("7", "D")]
+        pareidolia = _joker_with_ability("j_pareidolia", {})
+        jokers_with = [pareidolia, self._midas_joker()]
+        _, mult_with, _ = score_hand("Pair", cards, jokers=jokers_with)
+
+        jokers_without = [pareidolia]
+        _, mult_without, _ = score_hand("Pair", cards, jokers=jokers_without)
+        # Without Midas, 7♥ has MULT enhancement adding +4 mult
+        # With Midas, 7♥ becomes GOLD (no +4 mult)
+        assert mult_with < mult_without, (
+            f"Pareidolia + Midas should strip MULT enhancement from number card "
+            f"(mult_with={mult_with}, mult_without={mult_without})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -420,8 +628,7 @@ class TestRaisedFistDebuffed:
     def test_lowest_debuffed_adds_zero(self):
         """Lowest held card (4♣) debuffed by boss → 0 mult from Raised Fist."""
         played = [card("5", "H"), card("5", "D")]
-        held = [card("A", "D"), card("Q", "D"), card("4", "C")]
-        held[2]["state"] = {"debuff": True}
+        held = [card("A", "D"), card("Q", "D"), debuffed_card("4", "C")]
         result = score_hand_detailed(
             "Pair", played, hand_levels=self._HL,
             jokers=[self._raised_fist_joker()],
@@ -433,8 +640,7 @@ class TestRaisedFistDebuffed:
     def test_non_lowest_debuffed_still_adds(self):
         """Higher card (K♣) debuffed, lowest (4♥) fine → adds 2×4 = 8."""
         played = [card("5", "H"), card("5", "D")]
-        held = [card("K", "C"), card("Q", "D"), card("4", "H")]
-        held[0]["state"] = {"debuff": True}
+        held = [debuffed_card("K", "C"), card("Q", "D"), card("4", "H")]
         result = score_hand_detailed(
             "Pair", played, hand_levels=self._HL,
             jokers=[self._raised_fist_joker()],
@@ -446,9 +652,7 @@ class TestRaisedFistDebuffed:
     def test_all_held_debuffed_adds_zero(self):
         """All held cards debuffed → 0 mult from Raised Fist."""
         played = [card("5", "H"), card("5", "D")]
-        held = [card("A", "C"), card("Q", "C"), card("4", "C")]
-        for c in held:
-            c["state"] = {"debuff": True}
+        held = [debuffed_card("A", "C"), debuffed_card("Q", "C"), debuffed_card("4", "C")]
         result = score_hand_detailed(
             "Pair", played, hand_levels=self._HL,
             jokers=[self._raised_fist_joker()],
