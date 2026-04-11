@@ -14,8 +14,10 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "support"))
 
 from balatrobot.cli.client import BalatroClient, APIError
+from harness import wait_for_state
 
 
 # ── helpers ──────────────────────────────────────────────────────
@@ -25,25 +27,6 @@ def give_money(client, amount=9999):
         client.call("set", {"money": amount})
     except APIError:
         pass
-
-
-def wait_for_state(client, target_states, max_tries=30):
-    for _ in range(max_tries):
-        state = client.call("gamestate")
-        gs = state.get("state", "")
-        if gs in target_states:
-            return state
-        if gs == "BLIND_SELECT":
-            client.call("select")
-            time.sleep(0.3)
-        elif gs in ("HAND_PLAYED", "DRAW_TO_HAND", "NEW_ROUND", "ROUND_EVAL"):
-            time.sleep(0.3)
-        elif gs == "SHOP":
-            client.call("next_round")
-            time.sleep(0.3)
-        else:
-            time.sleep(0.3)
-    raise TimeoutError(f"Never reached {target_states}, stuck in {state.get('state')}")
 
 
 def advance_to_shop(client, max_tries=40):

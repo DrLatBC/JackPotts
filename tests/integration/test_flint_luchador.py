@@ -574,6 +574,8 @@ def main():
             print("Use --start-server to auto-launch, or start one manually.")
             sys.exit(1)
 
+    result = None
+    engine_result = None
     try:
         if not args.engine_only:
             # Test 1: Controlled Flint + Luchador lifecycle
@@ -581,6 +583,30 @@ def main():
 
         # Test 2: Engine mode (production loop replication)
         engine_result = run_engine_mode_test(client, seed=args.seed + "2")
+
+        # --- Mismatch assertions ---
+        failures = []
+
+        if not args.engine_only and result is not None:
+            if result["h1_diff"] != 0:
+                failures.append(f"Hand #1 (Flint active): diff={result['h1_diff']:+d}")
+            if result["h2_diff_disabled"] != 0:
+                failures.append(f"Hand #2 (Flint disabled): diff={result['h2_diff_disabled']:+d}")
+
+        # Engine mode doesn't compute estimate diffs inline, so a None result
+        # (test aborted) is the main failure signal from that test.
+
+        if result is None and not args.engine_only:
+            failures.append("run_flint_luchador_test aborted (returned None)")
+        if engine_result is None:
+            failures.append("run_engine_mode_test aborted (returned None)")
+
+        if failures:
+            print(f"\nFAILED: {len(failures)} failure(s)")
+            for f in failures:
+                print(f"  - {f}")
+            sys.exit(1)
+        print("\nPASSED: all scores matched")
 
     finally:
         if server_proc:

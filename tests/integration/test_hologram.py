@@ -18,12 +18,14 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "support"))
 
 from balatrobot.cli.client import BalatroClient, APIError
 from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
 from balatro_bot.domain.scoring.estimate import score_hand_detailed
 from balatro_bot.cards import _modifier
 from balatro_bot.joker_effects.parsers import parse_effect_value, _ability, _ab_xmult
+from harness import wait_for_state
 
 
 # ── helpers ──────────────────────────────────────────────────────
@@ -49,25 +51,6 @@ def beat_blind_fast(client):
         except APIError:
             pass
     time.sleep(0.5)
-
-
-def wait_for_state(client, target_states, max_tries=30):
-    for _ in range(max_tries):
-        state = client.call("gamestate")
-        gs = state.get("state", "")
-        if gs in target_states:
-            return state
-        if gs == "BLIND_SELECT":
-            client.call("select")
-            time.sleep(0.3)
-        elif gs == "SHOP":
-            client.call("next_round")
-            time.sleep(0.3)
-        elif gs in ("HAND_PLAYED", "DRAW_TO_HAND", "NEW_ROUND", "ROUND_EVAL"):
-            time.sleep(0.3)
-        else:
-            time.sleep(0.3)
-    raise TimeoutError(f"Never reached {target_states}, stuck in {state.get('state')}")
 
 
 def wait_for_one(client, target_state, max_tries=30):
@@ -508,6 +491,12 @@ def main():
         print(f"  DNA hands:      {dm}/{len(dna_results)} match")
         if dm < len(dna_results):
             print(f"    >>> DNA mid-scoring increment causes stale snapshot")
+
+    mismatches = [r for r in results if r and r["diff"] != 0]
+    if mismatches:
+        print(f"\nFAILED: {len(mismatches)} mismatch(es)")
+        sys.exit(1)
+    print("\nPASSED: all scores matched")
 
 
 if __name__ == "__main__":
