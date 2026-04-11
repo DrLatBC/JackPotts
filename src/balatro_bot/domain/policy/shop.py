@@ -200,7 +200,9 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
 
     money = state.get("money", 0)
     sell_value = weakest_joker.get("cost", {}).get("sell", 0)
-    current_interest = min(money // 5, 5)
+    # Use post-sell interest as baseline — BuyJokersInShop will see
+    # post-sell money, so the sell-side guard must match that bracket.
+    current_interest = min((money + sell_value) // 5, 5)
 
     best_sell_target = None
     best_shop_value = -1.0
