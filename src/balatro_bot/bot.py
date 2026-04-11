@@ -775,6 +775,16 @@ def run_bot(
             indices = params["cards"]
             labels = [fmt_card(hand_cards[i]) for i in indices if i < len(hand_cards)]
             card_detail = f" [{', '.join(labels)}]"
+        elif method == "use" and params and "cards" in params:
+            hand_cards = state.get("hand", {}).get("cards", [])
+            indices = params["cards"]
+            labels = [fmt_card(hand_cards[i]) for i in indices if i < len(hand_cards)]
+            card_detail = f" targets:[{', '.join(labels)}]"
+        elif method == "pack" and params and "targets" in params:
+            hand_cards = state.get("hand", {}).get("cards", [])
+            indices = params["targets"]
+            labels = [fmt_card(hand_cards[i]) for i in indices if i < len(hand_cards)]
+            card_detail = f" targets:[{', '.join(labels)}]"
 
         log.info(
             "[#%d] %s -> %s(%s)%s | %s",
