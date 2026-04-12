@@ -42,7 +42,7 @@ def choose_winning_play(ctx: RoundContext) -> Action | None:
         return None
     effective_score = ctx.best.total * ctx.score_discount
     if effective_score >= ctx.chips_remaining:
-        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name)
+        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit)
         indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
         return PlayCards(
             indices,
@@ -115,7 +115,7 @@ def choose_high_value_play(ctx: RoundContext) -> Action | None:
         )
         return None
 
-    indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name)
+    indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit)
     indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
     return PlayCards(
         indices,
@@ -149,7 +149,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
             return DiscardCards(to_discard, reason="last resort discard (hand too weak, searching for better)")
 
     if ctx.best:
-        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name)
+        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit)
         indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
         return PlayCards(
             indices,
@@ -166,7 +166,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
             hands_left=ctx.hands_left,
         )
         if unconstrained:
-            indices = _pad_with_junk(unconstrained.card_indices, ctx.hand_cards, ctx.jokers, unconstrained.hand_name)
+            indices = _pad_with_junk(unconstrained.card_indices, ctx.hand_cards, ctx.jokers, unconstrained.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit)
             indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
             return PlayCards(
                 indices,
