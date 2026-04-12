@@ -290,8 +290,8 @@ def two_pair_draw_quality(
 
     deck_size = len(deck_cards)
 
-    # Compute P(at least one rank pairs up) using inclusion-exclusion:
-    # P(miss all) = product of P(miss rank_i) for each viable rank
+    # Compute P(at least one rank pairs up) via independence approximation:
+    # P(miss all) ≈ product of P(miss rank_i) for each viable rank
     p_miss_all = 1.0
     for count in deck_rank_counts.values():
         if count >= 2:

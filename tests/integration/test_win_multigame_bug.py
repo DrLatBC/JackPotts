@@ -29,8 +29,8 @@ from balatrobot.cli.client import BalatroClient, APIError
 from balatro_bot.engine import RuleEngine
 from balatro_bot.bot import run_bot, setup_logging
 from harness import (
-    start_server, stop_server, setup_game, inject_god_mode_complex,
-    advance_to_boss_select, get_boss_name, wait_for_state,
+    start_server, stop_server, setup_god_mode_ante8,
+    wait_for_state,
     TEST_PORT, _check_port,
 )
 
@@ -69,31 +69,6 @@ def main():
             stop_server(server_proc)
 
 
-def _setup_god_mode_ante8(client: BalatroClient, seed: str) -> dict:
-    """Cheat to ante 8 boss, inject god-mode jokers, let bot play with 4 hands."""
-    setup_game(client, seed=seed)
-    advance_to_boss_select(client, target_ante=8)
-
-    state = client.call("gamestate")
-    print(f"\n  Ante 8 boss: {get_boss_name(state)}")
-
-    if state.get("state") == "BLIND_SELECT":
-        client.call("select")
-        time.sleep(0.5)
-        state = wait_for_state(client, {"SELECTING_HAND"})
-
-    # Sell existing jokers to make room for god-mode ones
-    joker_count = state.get("jokers", {}).get("count", 0)
-    for _ in range(joker_count):
-        try:
-            client.call("sell", {"joker": 0})
-        except APIError:
-            pass
-
-    inject_god_mode_complex(client)
-    return client.call("gamestate")
-
-
 def _run_test(client: BalatroClient):
     print("\n" + "=" * 60)
     print("TEST: Server survives win screen for multi-game loop")
@@ -101,7 +76,7 @@ def _run_test(client: BalatroClient):
 
     # ---- Game 1: win at ante 8 ----
     print("\n--- GAME 1: Win at ante 8 ---")
-    _setup_god_mode_ante8(client, seed="MULTIGAME1")
+    setup_god_mode_ante8(client, seed="MULTIGAME1")
 
     engine = RuleEngine()
     try:

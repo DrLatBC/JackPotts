@@ -279,7 +279,7 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
     sell_value = weakest_joker.get("cost", {}).get("sell", 0)
     # Use post-sell interest as baseline — BuyJokersInShop will see
     # post-sell money, so the sell-side guard must match that bracket.
-    current_interest = min((money + sell_value) // 5, 5)
+    current_interest = _interest_after(money + sell_value, 0)
 
     best_sell_target = None
     best_shop_value = -1.0
@@ -301,7 +301,7 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
             continue
 
         if ante < _INTEREST_ANTE_CUTOFF and money_after_sell < INTEREST_CAP:
-            interest_after_buy = min((money_after_sell - cost) // 5, 5)
+            interest_after_buy = _interest_after(money_after_sell, cost)
             if interest_after_buy < current_interest:
                 continue
 
@@ -613,9 +613,9 @@ def choose_buy_consumable_in_shop(state: dict[str, Any]) -> Action | None:
             passed_on.append(f"{label}(${cost}, can't afford)")
             continue
 
-        current_interest = min(money // 5, 5)
+        current_interest = _interest_after(money, 0)
         if money < INTEREST_CAP:
-            interest_after = min((money - cost) // 5, 5)
+            interest_after = _interest_after(money, cost)
             if interest_after < current_interest and cost > 3:
                 passed_on.append(f"{label}(${cost}, saving for interest)")
                 continue

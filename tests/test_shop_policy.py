@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from balatro_bot.actions import BuyCard, BuyPack, BuyVoucher, NextRound, Reroll, SellConsumable, SellJoker
 from balatro_bot.domain.policy.shop import (
     choose_buy_consumable_in_shop,
@@ -408,9 +410,12 @@ def test_riff_raff_penalizes_buy_when_reserving_slots() -> None:
     # Both buy Vagabond, but the Riff-Raff version has a lower reported value
     assert isinstance(action_no_rr, BuyCard)
     assert isinstance(action_with_rr, BuyCard)
-    # Extract values from reason strings
-    no_rr_val = float(action_no_rr.reason.split("value=")[1].split(",")[0])
-    rr_val = float(action_with_rr.reason.split("value=")[1].split(",")[0])
+    # Extract values from reason strings via regex (resilient to format changes)
+    no_rr_match = re.search(r"value=([\d.]+)", action_no_rr.reason)
+    rr_match = re.search(r"value=([\d.]+)", action_with_rr.reason)
+    assert no_rr_match and rr_match, "Could not parse value from reason strings"
+    no_rr_val = float(no_rr_match.group(1))
+    rr_val = float(rr_match.group(1))
     assert rr_val < no_rr_val, f"Riff-Raff penalty not applied: {rr_val} >= {no_rr_val}"
 
 

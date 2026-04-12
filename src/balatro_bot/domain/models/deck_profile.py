@@ -106,7 +106,7 @@ class DeckProfile:
                 enh = card.modifier.enhancement
             else:
                 mod = card.get("modifier", {})
-                if isinstance(mod, list):
+                if not isinstance(mod, dict):
                     mod = {}
                 enh = mod.get("enhancement")
 

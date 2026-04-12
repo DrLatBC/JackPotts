@@ -662,6 +662,31 @@ def burn_discards(client: BalatroClient, target_discards: int = 20) -> None:
     print(f"    Burned {discarded} cards via discard")
 
 
+def setup_god_mode_ante8(client: BalatroClient, seed: str) -> dict:
+    """Cheat to ante 8 boss, inject god-mode jokers, let bot play with 4 hands."""
+    setup_game(client, seed=seed)
+    advance_to_boss_select(client, target_ante=8)
+
+    state = client.call("gamestate")
+    print(f"\n  Ante 8 boss: {get_boss_name(state)}")
+
+    if state.get("state") == "BLIND_SELECT":
+        client.call("select")
+        time.sleep(0.5)
+        state = wait_for_state(client, {"SELECTING_HAND"})
+
+    # Sell existing jokers to make room for god-mode ones
+    joker_count = state.get("jokers", {}).get("count", 0)
+    for _ in range(joker_count):
+        try:
+            client.call("sell", {"joker": 0})
+        except APIError:
+            pass
+
+    inject_god_mode_complex(client)
+    return client.call("gamestate")
+
+
 def snapshot_jokers(state: dict, track_keys: set[str]) -> dict:
     """Snapshot ability dicts for tracked joker keys."""
     snap = {}
