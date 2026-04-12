@@ -4,7 +4,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import PackAction, Action
-from balatro_bot.cards import joker_key
+from balatro_bot.cards import card_rank, card_suit, joker_key
 from balatro_bot.constants import (
     NO_TARGET_TAROTS, TARGETING_TAROTS, PLANET_HAND_MAP, PLANET_KEYS,
     SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
@@ -158,10 +158,11 @@ class PickFromBuffoonPack:
         joker_limit = joker_slots.get("limit", 5)
         strat = compute_strategy(owned_jokers, hand_levels)
 
-        from balatro_bot.domain.policy.shop import ALWAYS_BUY
+        from balatro_bot.domain.policy.shop import ALWAYS_BUY, _get_deck_profile
         best_idx, best_score, reason = choose_from_buffoon_pack(
             cards, owned_jokers, hand_levels, ante, joker_limit, strat,
             always_buy_keys=ALWAYS_BUY,
+            deck_profile=_get_deck_profile(state),
         )
 
         return PackAction(card_index=best_idx, reason=reason)
@@ -201,6 +202,80 @@ class PickFromSpectralPack:
             return PackAction(card_index=best_idx, targets=targets, reason=reason)
 
         return PackAction(card_index=best_idx, reason=reason)
+
+
+class PickFromStandardPack:
+    """Evaluate Standard pack cards against strategy; pick or skip."""
+    name = "pick_from_standard_pack"
+
+    # Minimum score for a card to be worth picking (vs diluting the deck)
+    _PICK_THRESHOLD = 2.0
+
+    # Bonus for editions/enhancements/seals on Standard pack cards
+    _EDITION_BONUS = {"POLYCHROME": 8.0, "HOLOGRAPHIC": 4.0, "FOIL": 2.0}
+    _ENHANCEMENT_BONUS = {
+        "STEEL": 5.0, "GLASS": 4.0, "LUCKY": 3.0, "MULT": 3.0,
+        "WILD": 2.0, "BONUS": 2.0, "GOLD": 2.0,
+    }
+    _SEAL_BONUS = {"GOLD": 3.0, "RED": 4.0, "BLUE": 2.0, "PURPLE": 2.0}
+
+    def evaluate(self, state: dict[str, Any]) -> Action | None:
+        pack = state.get("pack", {})
+        cards = pack.get("cards", [])
+        if not cards:
+            return None
+
+        # Only handle Standard packs — cards should be playing cards
+        if not all(c.get("set") in ("DEFAULT", "PLAYING_CARD", None) for c in cards):
+            return None
+
+        jokers = state.get("jokers", {}).get("cards", [])
+        hand_levels = state.get("hands", {})
+        strat = compute_strategy(jokers, hand_levels)
+
+        best_idx = None
+        best_score = -1.0
+
+        for i, card in enumerate(cards):
+            score = 0.0
+
+            # Suit affinity
+            suit = card_suit(card)
+            if suit and strat.preferred_suits:
+                score += strat.suit_affinity(suit) * 1.5
+
+            # Rank affinity
+            rank = card_rank(card)
+            if rank:
+                score += strat.rank_affinity(rank) * 1.0
+
+            # Edition/enhancement/seal bonuses
+            mod = card.get("modifier", {})
+            if isinstance(mod, dict):
+                edition = mod.get("edition")
+                if edition:
+                    score += self._EDITION_BONUS.get(edition.upper(), 0.0)
+                enhancement = mod.get("enhancement")
+                if enhancement:
+                    score += self._ENHANCEMENT_BONUS.get(enhancement.upper(), 0.0)
+                seal = mod.get("seal")
+                if seal:
+                    score += self._SEAL_BONUS.get(seal.upper(), 0.0)
+
+            if score > best_score:
+                best_score = score
+                best_idx = i
+
+        if best_idx is not None and best_score >= self._PICK_THRESHOLD:
+            c = cards[best_idx]
+            label = c.get("label", "?")
+            log.info("Standard pack: pick %s (score=%.1f)", label, best_score)
+            return PackAction(
+                card_index=best_idx,
+                reason=f"standard pack: pick {label} (value={best_score:.1f})",
+            )
+
+        return PackAction(card_index=None, reason="skip standard pack (no strategic value)")
 
 
 class PickBestFromPack:

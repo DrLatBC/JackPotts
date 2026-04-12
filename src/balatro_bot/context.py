@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.scoring.base import arm_reduce_hand_levels, flint_halve_hand_levels
 from balatro_bot.domain.scoring.search import HandCandidate, best_hand
 from balatro_bot.infrastructure.state_adapter import adapt_state
@@ -42,6 +43,7 @@ class RoundContext:
     min_cards: int
     strategy: Strategy
     deck_cards: list[dict]
+    deck_profile: DeckProfile = field(default_factory=DeckProfile)
     mouth_locked_hand: str | None = None
     score_discount: float = 1.0
     forced_card_idx: int | None = None
@@ -159,6 +161,7 @@ class RoundContext:
         ancient_suit = snapshot.round.ancient_suit
         ox_most_played = snapshot.round.most_played_poker_hand if blind_name == "The Ox" and not boss_disabled else None
         strat = compute_strategy(jokers, hand_levels)
+        deck_profile = DeckProfile.from_cards(list(deck_cards) + list(hand_cards))
         # When boss is disabled (Luchador sold), clear blind_name for scoring
         # so boss-specific scoring effects (The Tooth, The Ox, etc.) don't fire.
         effective_blind = "" if boss_disabled else blind_name
@@ -199,4 +202,5 @@ class RoundContext:
             min_cards=min_cards,
             strategy=strat,
             deck_cards=deck_cards,
+            deck_profile=deck_profile,
         )

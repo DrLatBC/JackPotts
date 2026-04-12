@@ -14,7 +14,8 @@ from balatro_bot.rules.shop import (
 from balatro_bot.rules.round_eval import AlwaysCashOut
 from balatro_bot.rules.packs import (
     SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
-    PickFromBuffoonPack, PickFromSpectralPack, PickBestFromPack,
+    PickFromBuffoonPack, PickFromSpectralPack, PickFromStandardPack,
+    PickBestFromPack,
 )
 from balatro_bot.rules.consumables import UseConsumables
 
@@ -28,6 +29,7 @@ __all__ = [
     "BuyVouchersInShop", "RerollShop", "LeaveShop",
     "AlwaysCashOut",
     "SkipPackForRedCard", "PickFromTarotPack", "PickFromPlanetPack",
-    "PickFromBuffoonPack", "PickFromSpectralPack", "PickBestFromPack",
+    "PickFromBuffoonPack", "PickFromSpectralPack", "PickFromStandardPack",
+    "PickBestFromPack",
     "UseConsumables",
 ]

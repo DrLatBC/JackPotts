@@ -247,6 +247,7 @@ ANTI_SYNERGY: dict[str, frozenset[str]] = {
     # Slot conflicts
     "j_stencil":        frozenset({"j_abstract", "j_riff_raff"}),
     "j_abstract":       frozenset({"j_stencil"}),
+    "j_riff_raff":      frozenset({"j_stencil"}),
     # Enhancement conflicts
     "j_vampire":        frozenset({"j_glass", "j_lucky_cat"}),
     # Strategy conflicts

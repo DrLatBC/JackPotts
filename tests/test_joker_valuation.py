@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from tests.conftest import card, joker
+from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.shop_valuation import (
     _make_card,
     _synthetic_hand,
     _scoring_delta,
     _synergy_multiplier,
     _context_scale,
+    _deck_composition_adjustment,
     evaluate_joker_value,
     UTILITY_VALUE,
 )
@@ -235,3 +237,175 @@ class TestEvaluateJokerValue:
         j = joker("j_nonexistent_xyz")
         val = evaluate_joker_value(j, [], {}, ante=1)
         assert val == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Baseball Card synergy tests
+# ---------------------------------------------------------------------------
+
+class TestBaseballCardSynergy:
+    def test_baseball_synergy_scales_with_uncommon_count(self):
+        """Baseball Card synergy multiplier should increase with Uncommon count."""
+        strat = Strategy([], [], [], [])
+
+        # 0 Uncommon jokers
+        mult_0 = _synergy_multiplier(
+            "j_baseball", set(), strat, [],
+        )
+        # 2 Uncommon jokers owned
+        owned_2 = [
+            joker("j_jolly", "Jolly Joker", rarity=2),
+            joker("j_zany", "Zany Joker", rarity=2),
+        ]
+        mult_2 = _synergy_multiplier(
+            "j_baseball", {"j_jolly", "j_zany"}, strat, owned_2,
+        )
+        # 3 Uncommon jokers owned
+        owned_3 = owned_2 + [joker("j_crazy", "Crazy Joker", rarity=2)]
+        mult_3 = _synergy_multiplier(
+            "j_baseball", {"j_jolly", "j_zany", "j_crazy"}, strat, owned_3,
+        )
+
+        assert mult_0 == 1.0  # no Uncommons, no bonus
+        assert mult_2 > mult_0  # 2 Uncommons boost Baseball
+        assert mult_3 > mult_2  # 3 Uncommons boost even more
+
+    def test_uncommon_candidate_boosted_when_baseball_owned(self):
+        """Uncommon joker value should be boosted when Baseball Card is owned."""
+        owned = [joker("j_baseball", "Baseball Card", rarity=2)]
+        owned_keys = {"j_baseball"}
+        strat = Strategy([], [], [], [])
+
+        # Uncommon candidate with Baseball owned
+        candidate = joker("j_jolly", "Jolly Joker", rarity=2)
+        mult_with = _synergy_multiplier(
+            "j_jolly", owned_keys, strat, owned, candidate=candidate,
+        )
+        # Same candidate without Baseball
+        mult_without = _synergy_multiplier(
+            "j_jolly", set(), strat, [], candidate=candidate,
+        )
+
+        assert mult_with > mult_without
+
+    def test_common_candidate_not_boosted_by_baseball(self):
+        """Common joker value should NOT be boosted by Baseball Card."""
+        owned = [joker("j_baseball", "Baseball Card", rarity=2)]
+        owned_keys = {"j_baseball"}
+        strat = Strategy([], [], [], [])
+
+        candidate = joker("j_joker", "Joker", rarity=1)
+        mult = _synergy_multiplier(
+            "j_joker", owned_keys, strat, owned, candidate=candidate,
+        )
+
+        assert mult == 1.0  # Common, no Baseball boost
+
+
+# ---------------------------------------------------------------------------
+# Deck composition adjustment tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeckCompositionAdjustment:
+    """Test _deck_composition_adjustment for enhancement-aware joker valuation."""
+
+    def _profile_with_enhancements(self, **enh_counts):
+        """Build a DeckProfile with specific enhancement counts."""
+        cards = []
+        for enh, count in enh_counts.items():
+            for _ in range(count):
+                cards.append(card("A", "H", enhancement=enh))
+        # Pad with plain cards to make 52
+        for _ in range(52 - len(cards)):
+            cards.append(card("2", "S"))
+        return DeckProfile.from_cards(cards)
+
+    def test_steel_joker_no_steel_cards(self):
+        dp = self._profile_with_enhancements()
+        base = 5.0
+        adjusted = _deck_composition_adjustment("j_steel_joker", base, dp, None)
+        assert adjusted < base  # penalized
+
+    def test_steel_joker_with_steel_cards(self):
+        dp = self._profile_with_enhancements(STEEL=5)
+        base = 5.0
+        adjusted = _deck_composition_adjustment("j_steel_joker", base, dp, None)
+        assert adjusted > base  # boosted
+
+    def test_lucky_cat_with_lucky_cards(self):
+        dp = self._profile_with_enhancements(LUCKY=4)
+        base = 3.0
+        adjusted = _deck_composition_adjustment("j_lucky_cat", base, dp, None)
+        assert adjusted > base
+
+    def test_glass_joker_no_glass(self):
+        dp = self._profile_with_enhancements()
+        base = 4.0
+        adjusted = _deck_composition_adjustment("j_glass", base, dp, None)
+        assert adjusted < base
+
+    def test_drivers_license_below_threshold(self):
+        dp = self._profile_with_enhancements(STEEL=5)
+        base = 5.0
+        adjusted = _deck_composition_adjustment("j_drivers_license", base, dp, None)
+        assert adjusted == base * 0.1  # only 5 enhanced < 12
+
+    def test_drivers_license_near_threshold(self):
+        dp = self._profile_with_enhancements(STEEL=14)
+        base = 5.0
+        adjusted = _deck_composition_adjustment("j_drivers_license", base, dp, None)
+        assert adjusted == base * 0.5  # 14 enhanced, between 12-16
+
+    def test_drivers_license_above_threshold(self):
+        dp = self._profile_with_enhancements(STEEL=16)
+        base = 5.0
+        adjusted = _deck_composition_adjustment("j_drivers_license", base, dp, None)
+        assert adjusted == base  # 16 >= 16, full value
+
+    def test_suit_joker_with_enhanced_suit(self):
+        """Bloodstone (Hearts) should get a bonus when Hearts cards are enhanced."""
+        cards = [card("A", "H", enhancement="STEEL") for _ in range(4)]
+        cards += [card("2", "S") for _ in range(48)]
+        dp = DeckProfile.from_cards(cards)
+        base = 3.0
+        adjusted = _deck_composition_adjustment("j_bloodstone", base, dp, None)
+        assert adjusted > base  # Hearts suit has 4 enhanced cards
+
+    def test_suit_joker_no_enhanced_suit(self):
+        """Bloodstone gets no bonus when Hearts cards aren't enhanced."""
+        cards = [card("A", "S", enhancement="STEEL") for _ in range(4)]  # Spades, not Hearts
+        cards += [card("2", "H") for _ in range(48)]  # Hearts unenhanced
+        dp = DeckProfile.from_cards(cards)
+        base = 3.0
+        adjusted = _deck_composition_adjustment("j_bloodstone", base, dp, None)
+        assert adjusted == base
+
+    def test_unrelated_joker_unaffected(self):
+        dp = self._profile_with_enhancements(STEEL=10)
+        base = 4.0
+        adjusted = _deck_composition_adjustment("j_joker", base, dp, None)
+        assert adjusted == base  # plain Joker not in any deck-comp list
+
+
+class TestEvaluateJokerWithDeckProfile:
+    """Integration: evaluate_joker_value respects deck_profile."""
+
+    def test_steel_joker_higher_with_steel_cards(self):
+        candidate = joker("j_steel_joker", "Steel Joker")
+        candidate.setdefault("value", {})["effect"] = "X1.0 Mult"
+        owned = [joker("j_joker", "Joker")]
+        hl = {"Pair": {"chips": 10, "mult": 2, "level": 1, "played": 0, "played_this_round": 0}}
+        strat = compute_strategy(owned, hl)
+
+        no_steel = DeckProfile.from_cards([card("A", "H") for _ in range(52)])
+        with_steel = DeckProfile.from_cards(
+            [card("A", "H", enhancement="STEEL") for _ in range(8)]
+            + [card("2", "S") for _ in range(44)]
+        )
+
+        val_none = evaluate_joker_value(candidate, owned, hl, ante=3, strategy=strat,
+                                         deck_profile=no_steel)
+        val_steel = evaluate_joker_value(candidate, owned, hl, ante=3, strategy=strat,
+                                          deck_profile=with_steel)
+        assert val_steel > val_none

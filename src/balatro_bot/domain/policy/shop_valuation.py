@@ -26,7 +26,7 @@ from balatro_bot.strategy import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from balatro_bot.domain.models.deck_profile import DeckProfile
 
 # ---------------------------------------------------------------------------
 # Scoring category metadata (moved from BuyJokersInShop)
@@ -406,6 +406,7 @@ def _synergy_multiplier(
     owned_keys: set[str],
     strategy: Strategy,
     owned_jokers: list[dict],
+    candidate: dict | None = None,
 ) -> float:
     """Unified synergy multiplier replacing _cross_synergy + coherence bonus."""
     mult = 1.0
@@ -425,6 +426,21 @@ def _synergy_multiplier(
     if candidate_key in _COPY_JOKERS:
         if owned_keys & _XMULT_COPY_TARGETS:
             mult *= 1.3
+
+    # --- Baseball Card synergy (rarity-based) ---
+    uncommon_count = sum(
+        1 for j in owned_jokers
+        if j.get("value", {}).get("rarity") in (2, "Uncommon")
+        and joker_key(j) != "j_baseball"
+    )
+    if candidate_key == "j_baseball":
+        # Baseball scales with Uncommon count: more Uncommons = more x1.5 triggers
+        mult *= 1.0 + uncommon_count * 0.3
+    elif "j_baseball" in owned_keys and candidate is not None:
+        # Uncommon candidates get a boost when Baseball is owned
+        cand_rarity = candidate.get("value", {}).get("rarity")
+        if cand_rarity in (2, "Uncommon"):
+            mult *= 1.4
 
     # --- Trigger coherence (hand type overlap) ---
     candidate_hands = set(JOKER_HAND_AFFINITY.get(candidate_key, ([], 0))[0])
@@ -480,6 +496,92 @@ def _context_scale(
 
 
 # ---------------------------------------------------------------------------
+# Deck composition adjustments
+# ---------------------------------------------------------------------------
+
+# Joker key -> enhancement it cares about
+_ENHANCEMENT_JOKERS: dict[str, str] = {
+    "j_steel_joker": "STEEL",
+    "j_lucky_cat": "LUCKY",
+    "j_glass": "GLASS",
+}
+
+# Suit-affinity jokers — key -> suit they care about
+_SUIT_JOKERS: dict[str, str] = {
+    "j_greedy_joker": "D",
+    "j_lusty_joker": "H",
+    "j_wrathful_joker": "S",
+    "j_gluttenous_joker": "C",
+    "j_arrowhead": "S",
+    "j_onyx_agate": "C",
+    "j_bloodstone": "H",
+    "j_rough_gem": "D",
+}
+
+_FACE_RANKS = frozenset({"J", "Q", "K"})
+
+
+def _deck_composition_adjustment(
+    key: str,
+    base_value: float,
+    deck_profile: DeckProfile,
+    strategy: Strategy | None,
+) -> float:
+    """Adjust base_value based on deck composition."""
+    # --- Enhancement-count jokers (Steel Joker, Lucky Cat, Glass Joker) ---
+    enh_type = _ENHANCEMENT_JOKERS.get(key)
+    if enh_type:
+        count = deck_profile.enhancement_counts.get(enh_type, 0)
+        if count == 0:
+            # No matching enhanced cards → heavily penalize
+            base_value *= 0.2
+        else:
+            # Each matching card adds value (diminishing)
+            base_value += math.log2(1 + count) * 1.5
+
+            # Suit-concentration synergy: if enhanced cards cluster in a suit
+            # the bot already favors, that's extra valuable
+            if strategy and strategy.preferred_suits:
+                conc_suit = deck_profile.enhancement_suit_concentration(enh_type)
+                if conc_suit:
+                    suit_aff = strategy.suit_affinity(conc_suit)
+                    if suit_aff > 0:
+                        base_value += min(suit_aff * 0.3, 1.5)
+
+            # Lucky Cat + face-card synergy: Lucky cards on face ranks
+            # synergize with face-card jokers
+            if key == "j_lucky_cat":
+                enh_by_rank = deck_profile.enhancements_by_rank
+                face_lucky = sum(
+                    enh_by_rank.get(r, {}).get("LUCKY", 0)
+                    for r in _FACE_RANKS
+                )
+                if face_lucky >= 2 and strategy and strategy.active_archetypes:
+                    if any(a == "face_card" for a, _ in strategy.active_archetypes):
+                        base_value += face_lucky * 0.4
+
+    # --- Drivers License: gate on enhanced card count ---
+    if key == "j_drivers_license":
+        enh_count = deck_profile.enhanced_card_count
+        if enh_count < 12:
+            base_value *= 0.1  # can't realistically activate
+        elif enh_count < 16:
+            base_value *= 0.5  # close but not there yet
+        # >= 16: full value (already activated)
+
+    # --- Suit-affinity jokers: bonus when that suit has enhancements ---
+    suit = _SUIT_JOKERS.get(key)
+    if suit:
+        suit_enhancements = deck_profile.enhancements_by_suit.get(suit, {})
+        enh_total = sum(suit_enhancements.values())
+        if enh_total > 0:
+            # Enhanced cards in the suit retrigger/score extra → suit joker more valuable
+            base_value += min(enh_total * 0.3, 2.0)
+
+    return base_value
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -490,6 +592,7 @@ def evaluate_joker_value(
     ante: int,
     strategy: Strategy | None = None,
     joker_limit: int = 5,
+    deck_profile: DeckProfile | None = None,
 ) -> float:
     """Unified joker valuation. Returns ~0.0 to ~15.0.
 
@@ -516,6 +619,20 @@ def evaluate_joker_value(
         base_value = UTILITY_VALUE.get(key, 0.0)
         base_value += _utility_synergy_bonus(key, owned_keys, strategy)
 
+    # Riff-Raff: dynamic value based on available slots for spawns
+    if key == "j_riff_raff":
+        owned_count = len(owned_jokers)
+        free_slots = max(0, joker_limit - owned_count)
+        if free_slots <= 1:
+            # No room for spawns (Riff-Raff itself takes the last slot)
+            base_value = 0.0
+        elif free_slots == 2:
+            # Room for Riff-Raff + 1 spawn only
+            base_value = 0.5
+        else:
+            # Room for Riff-Raff + 2 spawns — full value
+            base_value = 2.0 if ante <= 3 else 1.0
+
     # For jokers with parsed accumulated values (scaling jokers), take the
     # max of simulation and dynamic power from effect text
     effect_text = candidate.get("value", {}).get("effect", "")
@@ -524,8 +641,12 @@ def evaluate_joker_value(
         dp = _dynamic_power(parsed)
         base_value = max(base_value, dp)
 
+    # Deck composition adjustment — boost/gate jokers based on deck contents
+    if deck_profile is not None:
+        base_value = _deck_composition_adjustment(key, base_value, deck_profile, strategy)
+
     # Layer 2: synergy
-    synergy = _synergy_multiplier(key, owned_keys, strategy, owned_jokers)
+    synergy = _synergy_multiplier(key, owned_keys, strategy, owned_jokers, candidate)
 
     # Layer 3: context
     context = _context_scale(key, owned_jokers, ante)

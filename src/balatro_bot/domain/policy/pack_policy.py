@@ -17,6 +17,7 @@ from balatro_bot.constants import (
 
 if TYPE_CHECKING:
     from typing import Any
+    from balatro_bot.domain.models.deck_profile import DeckProfile
     from balatro_bot.strategy import Strategy
 
 log = logging.getLogger("balatro_bot")
@@ -141,6 +142,7 @@ def choose_from_buffoon_pack(
     joker_limit: int,
     strat: Strategy,
     always_buy_keys: set[str],
+    deck_profile: DeckProfile | None = None,
 ) -> tuple[int, float, str]:
     """Pick the best joker from a Buffoon pack.
 
@@ -178,7 +180,7 @@ def choose_from_buffoon_pack(
         score = evaluate_joker_value(
             card, owned_jokers=owned_jokers,
             hand_levels=hand_levels, ante=ante, strategy=strat,
-            joker_limit=joker_limit,
+            joker_limit=joker_limit, deck_profile=deck_profile,
         )
         # S-tier jokers get a massive boost
         if key in always_buy_keys:

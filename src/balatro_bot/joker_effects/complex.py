@@ -58,7 +58,11 @@ def _misprint(ctx: ScoreContext, j: dict) -> None:
     ab = _ability(j)
     lo = ab.get("min", 0)
     hi = ab.get("max", 23)
-    ctx.mult += (lo + hi) / 2
+    # Risk-adjusted: with fewer hands left, estimate conservatively.
+    # percentile 0.0 = lo, 1.0 = hi, 0.5 = midpoint (EV).
+    # 1 hand → 25th percentile, 4+ hands → midpoint.
+    pct = min(ctx.hands_left / 4, 1.0) * 0.5
+    ctx.mult += lo + (hi - lo) * pct
 
 def _raised_fist(ctx: ScoreContext, j: dict) -> None:
     # Raised Fist uses chip values (J/Q/K=10, A=11), not rank order (J=11..A=14)
