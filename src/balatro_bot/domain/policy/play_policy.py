@@ -134,7 +134,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
     if ctx.blind_name == "The Needle" and ctx.discards_left > 0:
         if ctx.best:
             keep = set(ctx.best.card_indices)
-            to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit)[:min(5, ctx.discards_left)]
+            to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit, strategy=ctx.strategy)[:min(5, ctx.discards_left)]
             if to_discard:
                 return DiscardCards(to_discard, reason="Needle: use all discards to find winning hand")
         return None
@@ -144,7 +144,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
     if (ctx.best and ctx.best.total < ctx.chips_remaining
             and ctx.discards_left > 0 and len(ctx.best.card_indices) < 5):
         keep = set(ctx.best.card_indices)
-        to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit)[:min(5, ctx.discards_left)]
+        to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit, strategy=ctx.strategy)[:min(5, ctx.discards_left)]
         if to_discard:
             return DiscardCards(to_discard, reason="last resort discard (hand too weak, searching for better)")
 

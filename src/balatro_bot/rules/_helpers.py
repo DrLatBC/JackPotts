@@ -297,13 +297,25 @@ def _find_stone_targets(hand_cards, count, jokers, rank_affinity=None):
     return [i for i, _, _ in candidates[:count]]
 
 
-def _find_destroy_targets(hand_cards, count, rank_affinity=None):
+def _find_destroy_targets(hand_cards, count, rank_affinity=None, strategy=None):
     candidates = []
     for i, c in enumerate(hand_cards):
         r = card_rank(c)
         if r and not _modifier(c).get("enhancement"):
-            aff = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
-            candidates.append((i, aff, rank_value(r)))  # low/negative affinity first
+            # Base score from rank affinity (low affinity → destroy first)
+            score = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
+
+            # Suit-awareness: off-suit cards in suit builds are prime targets
+            if strategy and strategy.preferred_suits:
+                s = card_suit(c)
+                if s:
+                    suit_aff = strategy.suit_affinity(s)
+                    if suit_aff > 0:
+                        score += 3.0   # protect on-suit cards
+                    elif suit_aff <= 0:
+                        score -= 2.0   # target off-suit cards
+
+            candidates.append((i, score, rank_value(r)))
     candidates.sort(key=lambda x: (x[1], x[2]))
     return [i for i, _, _ in candidates[:count]]
 
@@ -422,7 +434,8 @@ def _find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, strat
         targets = _find_stone_targets(hand_cards, max_count, jokers, rank_affinity=rank_aff)
         return (targets, 1.5) if targets else (None, 0)
     if effect_type == "destroy":
-        targets = _find_destroy_targets(hand_cards, max_count, rank_affinity=rank_aff)
+        targets = _find_destroy_targets(hand_cards, max_count, rank_affinity=rank_aff,
+                                        strategy=strat)
         return (targets, 1.0) if targets else (None, 0)
     if effect_type == "clone":
         targets = _find_clone_targets(hand_cards, strat)

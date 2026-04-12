@@ -13,6 +13,7 @@ from balatro_bot.domain.policy.play_policy import (
     choose_milk_play,
 )
 from balatro_bot.domain.policy.discard_policy import choose_discard
+from balatro_bot.domain.scoring.search import cards_not_in
 from balatro_bot.domain.scoring.search import best_hand, HandCandidate
 from balatro_bot.strategy import compute_strategy
 from tests.conftest import card, joker
@@ -273,3 +274,63 @@ class TestRuleDelegation:
         }
         action = PlayBestAvailable().evaluate(state)
         assert isinstance(action, PlayCards)
+
+
+# ---------------------------------------------------------------------------
+# cards_not_in: suit-aware discard ordering
+# ---------------------------------------------------------------------------
+
+class TestCardsNotInSuitAwareness:
+    """cards_not_in should prefer discarding off-suit cards in suit builds."""
+
+    def test_off_suit_discarded_first_in_flush_build(self):
+        from tests.conftest import card
+        from balatro_bot.strategy import Strategy
+
+        # Hand: 3 Hearts (on-suit) + 2 Spades (off-suit)
+        hand = [
+            card("A", "H"), card("K", "H"), card("Q", "H"),  # Hearts — on-suit
+            card("3", "S"), card("2", "S"),                    # Spades — off-suit
+        ]
+        keep = {0}  # keep A♥
+        strat = Strategy(
+            preferred_hands=[("Flush", 5.0)],
+            preferred_suits=[("H", 5.0)],
+        )
+
+        result = cards_not_in(hand, keep, strategy=strat)
+        # Spades (indices 3, 4) should appear before Hearts (1, 2)
+        spade_positions = [result.index(3), result.index(4)]
+        heart_positions = [result.index(1), result.index(2)]
+        assert max(spade_positions) < min(heart_positions), \
+            f"off-suit Spades {spade_positions} should sort before on-suit Hearts {heart_positions}"
+
+    def test_no_strategy_preserves_original_ordering(self):
+        from tests.conftest import card
+
+        hand = [
+            card("A", "H"), card("K", "S"), card("Q", "D"),
+        ]
+        keep = {0}
+
+        with_strat = cards_not_in(hand, keep, strategy=None)
+        without = cards_not_in(hand, keep)
+        assert with_strat == without
+
+    def test_neutral_suit_no_penalty(self):
+        """Cards in suits with zero affinity shouldn't be penalized vs each other."""
+        from tests.conftest import card
+        from balatro_bot.strategy import Strategy
+
+        hand = [
+            card("A", "H"), card("K", "D"), card("Q", "C"),
+        ]
+        keep = set()
+        strat = Strategy(
+            preferred_hands=[("Pair", 3.0)],
+            preferred_suits=[],  # no suit preference
+        )
+
+        result = cards_not_in(hand, keep, strategy=strat)
+        # All three should sort by rank affinity/rank value, not suit
+        assert len(result) == 3

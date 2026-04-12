@@ -6,7 +6,10 @@ Moved from hand_evaluator.py during Phase 2 of the logic separation refactor.
 from __future__ import annotations
 
 from itertools import combinations
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from balatro_bot.strategy import Strategy
 
 from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, is_joker_debuffed, is_stone, joker_key, rank_value
 from balatro_bot.constants import HAND_INFO
@@ -190,18 +193,31 @@ def cards_not_in(
     hand_cards: list[dict], keep_indices: set[int], blackboard: bool = False,
     rank_affinity: dict[str, float] | None = None,
     scoring_suit: str | None = None,
+    strategy: Strategy | None = None,
 ) -> list[int]:
     """Return indices of cards NOT in the keep set — candidates for discard.
 
     When rank_affinity is provided, high-affinity ranks are protected (sorted
     last) and negative-affinity ranks are prioritized for discard (sorted first).
     When scoring_suit is set (suit restriction bosses), off-suit cards sort earlier.
+    When strategy is provided, off-suit cards in suit-focused builds are
+    prioritized for discard (lower score = discarded first).
     """
     candidates = [i for i in range(len(hand_cards)) if i not in keep_indices]
+
+    def _suit_affinity_score(i: int) -> float:
+        if not strategy or not strategy.preferred_suits:
+            return 0.0
+        s = card_suit(hand_cards[i])
+        if not s:
+            return 0.0
+        return strategy.suit_affinity(s)
+
     candidates.sort(key=lambda i: (
         0 if is_debuffed(hand_cards[i]) else 1,
         0 if blackboard and card_suit(hand_cards[i]) in ("H", "D") else 1,
         1 if scoring_suit and scoring_suit in card_suits(hand_cards[i]) else 0 if not scoring_suit else -1,
+        _suit_affinity_score(i),
         rank_affinity.get(card_rank(hand_cards[i]) or "", 0.0) if rank_affinity else 0,
         rank_value(card_rank(hand_cards[i]) or "2"),
     ))
@@ -346,7 +362,7 @@ def discard_candidates(
     has_blackboard = any(joker_key(j) == "j_blackboard" for j in (jokers or []))
 
     for chase_name, keep, prob, reason in strategies:
-        to_discard = cards_not_in(hand_cards, set(keep), blackboard=has_blackboard, rank_affinity=rank_aff)[:max_discard]
+        to_discard = cards_not_in(hand_cards, set(keep), blackboard=has_blackboard, rank_affinity=rank_aff, strategy=strat)[:max_discard]
         if to_discard:
             results.append(ChaseCandidate(to_discard, reason, chase_name, list(keep), prob))
 

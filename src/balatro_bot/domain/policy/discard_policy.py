@@ -76,7 +76,7 @@ def choose_discard(ctx: RoundContext) -> Action | None:
         # Desperation cycle: extra cards in hand + hopeless outlook
         extra_count = len(ctx.hand_cards) - 5
         if extra_count > 0 and outlook == "hopeless":
-            extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit)
+            extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit, strategy=ctx.strategy)
             to_discard = extras[:min(extra_count, ctx.discards_left, 5)]
             if to_discard:
                 return DiscardCards(

@@ -66,6 +66,9 @@ def card_with_perma(rank: str, suit: str, perma_bonus: int, enhancement: str | N
     )
 
 
-def joker(key: str, label: str = "") -> dict:
+def joker(key: str, label: str = "", rarity: int | str | None = None) -> dict:
     """Build a minimal joker dict."""
-    return {"key": key, "label": label or key, "set": "JOKER", "cost": {"sell": 3}}
+    j: dict = {"key": key, "label": label or key, "set": "JOKER", "cost": {"sell": 3}}
+    if rarity is not None:
+        j.setdefault("value", {})["rarity"] = rarity
+    return j

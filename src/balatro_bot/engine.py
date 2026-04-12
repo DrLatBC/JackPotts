@@ -15,7 +15,8 @@ from balatro_bot.rules import (
     BuyVouchersInShop, RerollShop, LeaveShop,
     AlwaysCashOut,
     SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
-    PickFromBuffoonPack, PickFromSpectralPack, PickBestFromPack,
+    PickFromBuffoonPack, PickFromSpectralPack, PickFromStandardPack,
+    PickBestFromPack,
     UseConsumables,
 )
 
@@ -59,7 +60,7 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
     "TAROT_PACK": [SkipPackForRedCard(), PickFromTarotPack(), PickBestFromPack()],
     "PLANET_PACK": [PickFromPlanetPack(), PickBestFromPack()],
     "SPECTRAL_PACK": [SkipPackForRedCard(), PickBestFromPack()],
-    "STANDARD_PACK": [SkipPackForRedCard(), PickBestFromPack()],
+    "STANDARD_PACK": [SkipPackForRedCard(), PickFromStandardPack(), PickBestFromPack()],
     "BUFFOON_PACK": [PickFromBuffoonPack(), PickBestFromPack()],
     "SMODS_BOOSTER_OPENED": [
         SkipPackForRedCard(), PickFromTarotPack(), PickFromPlanetPack(),

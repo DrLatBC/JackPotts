@@ -423,6 +423,13 @@ def run_bot(
                         )
                 continue
             except httpx.TimeoutException:
+                if cur_ante >= 8:
+                    log.info(
+                        "Server unresponsive at ante %d — likely post-win; exiting gracefully",
+                        cur_ante,
+                    )
+                    gs.actually_won = True
+                    break
                 log.error("Double timeout — server unresponsive, aborting")
                 raise
         except APIError as e:

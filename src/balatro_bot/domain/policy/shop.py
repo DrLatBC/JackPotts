@@ -14,6 +14,7 @@ from balatro_bot.constants import (
     SCALING_JOKERS, SCALING_XMULT, SPECTRAL_TARGETING, TARGETING_TAROTS,
 )
 from balatro_bot.cards import joker_key
+from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
 from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
 from balatro_bot.rules._helpers import evaluate_hex
@@ -23,6 +24,20 @@ if TYPE_CHECKING:
     from typing import Any
 
 log = logging.getLogger("balatro_bot")
+
+
+def _get_deck_profile(state: dict[str, Any]) -> DeckProfile:
+    """Get or build+cache a DeckProfile from the raw state dict."""
+    cached = state.get("_deck_profile")
+    if cached is not None:
+        return cached
+    from balatro_bot.domain.models.card import card_from_dict
+    deck_cards = [card_from_dict(c) for c in state.get("cards", {}).get("cards", [])]
+    hand_cards = [card_from_dict(c) for c in state.get("hand", {}).get("cards", [])]
+    profile = DeckProfile.from_cards(deck_cards + hand_cards)
+    state["_deck_profile"] = profile
+    return profile
+
 
 # ── Tuning constants ─────────────────────────────────────────────────
 
@@ -119,6 +134,19 @@ def _pack_priority(label: str) -> int | None:
     return None
 
 
+def _riff_raff_reserved_slots(owned_cards: list[dict], joker_limit: int) -> int:
+    """Return how many slots Riff-Raff reserves for spawns (0-2).
+
+    Riff-Raff spawns 2 Common jokers on blind select IF there are empty slots.
+    Returns 0 if Riff-Raff is not owned or slots are already full.
+    """
+    has_riff_raff = any(joker_key(j) == "j_riff_raff" for j in owned_cards)
+    if not has_riff_raff:
+        return 0
+    free_slots = max(0, joker_limit - len(owned_cards))
+    return min(2, free_slots)
+
+
 # ── Policy functions ─────────────────────────────────────────────────
 
 def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
@@ -148,8 +176,44 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
                     i, reason=f"sell decayed Ramen (X{current_xmult:.2f}, reducing scores)"
                 )
 
+    # Proactive sell: dead Riff-Raff when all joker slots are full
+    joker_count = joker_info.get("count", 0)
+    joker_limit = joker_info.get("limit", 5)
+    for i, j in enumerate(owned):
+        if joker_key(j) == "j_riff_raff" and joker_count >= joker_limit:
+            return SellJoker(
+                i, reason="sell dead Riff-Raff (all joker slots full, spawns can't trigger)"
+            )
+
+    # Proactive sell: weak Common jokers when Riff-Raff is owned and slots tight
+    has_riff_raff = any(joker_key(j) == "j_riff_raff" for j in owned)
+    if has_riff_raff and joker_count >= joker_limit - 1:
+        hand_levels = state.get("hands", {})
+        ante = state.get("ante_num", 1)
+        strat = compute_strategy(owned, hand_levels)
+        _rr_protected = {"j_madness", "j_ceremonial", "j_riff_raff"} | SCALING_XMULT
+        common_candidates = []
+        for i, j in enumerate(owned):
+            if joker_key(j) in _rr_protected or _is_polychrome(j):
+                continue
+            rarity = j.get("value", {}).get("rarity")
+            if rarity not in (1, "Common"):
+                continue
+            val = evaluate_joker_value(j, owned_jokers=owned,
+                                       hand_levels=hand_levels, ante=ante, strategy=strat,
+                                       deck_profile=_get_deck_profile(state))
+            if val < 1.0:
+                common_candidates.append((i, val, j))
+        if common_candidates:
+            worst_idx, worst_val, worst_j = min(common_candidates, key=lambda x: x[1])
+            return SellJoker(
+                worst_idx,
+                reason=f"sell weak Common {worst_j.get('label', '?')} "
+                       f"(value={worst_val:.1f}, freeing slot for Riff-Raff spawns)",
+            )
+
     # Only consider upgrade-selling when slots are full
-    if joker_info.get("count", 0) < joker_info.get("limit", 5):
+    if joker_count < joker_limit:
         return None
     if not owned:
         return None
@@ -173,6 +237,16 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
     else:
         protected = always_protected | SCALING_JOKERS
 
+    # Baseball Card: protect Uncommon jokers that feed its x1.5 triggers
+    owned_keys = {joker_key(j) for j in owned}
+    if "j_baseball" in owned_keys:
+        uncommon_keys = {
+            joker_key(j) for j in owned
+            if j.get("value", {}).get("rarity") in (2, "Uncommon")
+        }
+        if len(uncommon_keys) >= 2:  # only protect when Baseball has real value
+            protected = protected | uncommon_keys
+
     def _is_stale_scaler(j: dict, cur_ante: int) -> bool:
         key = joker_key(j)
         if key not in SCALING_JOKERS or key in always_protected:
@@ -187,9 +261,11 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
             return True
         return False
 
+    _dp = _get_deck_profile(state)
     owned_values = [
         (i, evaluate_joker_value(j, owned_jokers=owned,
-                                 hand_levels=hand_levels, ante=ante, strategy=strat), j)
+                                 hand_levels=hand_levels, ante=ante, strategy=strat,
+                                 deck_profile=_dp), j)
         for i, j in enumerate(owned)
         if (joker_key(j) not in protected or _is_stale_scaler(j, ante))
         and not _is_polychrome(j)  # never sell Polychrome — ×1.5 every hand
@@ -230,7 +306,8 @@ def choose_sell_weak_joker(state: dict[str, Any]) -> Action | None:
                 continue
 
         shop_value = evaluate_joker_value(card, owned_jokers=owned,
-                                          hand_levels=hand_levels, ante=ante, strategy=strat)
+                                          hand_levels=hand_levels, ante=ante, strategy=strat,
+                                          deck_profile=_dp)
         shop_key = card.get("key", "")
         is_high_tier_xmult = shop_key in HIGH_VALUE_XMULT
 
@@ -423,6 +500,7 @@ def choose_buy_joker_in_shop(state: dict[str, Any]) -> Action | None:
             card, owned_jokers=joker_slots.get("cards", []),
             hand_levels=state.get("hands", {}), ante=ante,
             strategy=strat, joker_limit=jlimit,
+            deck_profile=_get_deck_profile(state),
         )
 
         force_buy = False
@@ -444,6 +522,14 @@ def choose_buy_joker_in_shop(state: dict[str, Any]) -> Action | None:
             if stencil_mult_after <= 2 and value < 5.0:
                 passed_on.append(f"{label}(${cost}, Stencil restriction: only ×{stencil_mult_after} left)")
                 continue
+
+        # Riff-Raff slot reservation: penalize buys that eat into spawn slots
+        if not negative and not force_buy:
+            rr_reserved = _riff_raff_reserved_slots(joker_slots.get("cards", []), jlimit)
+            if rr_reserved > 0:
+                free_after_buy = jlimit - joker_count - 1
+                if free_after_buy < rr_reserved:
+                    value *= 0.7
 
         if joker_count == 0:
             value = max(value, 5.0)
