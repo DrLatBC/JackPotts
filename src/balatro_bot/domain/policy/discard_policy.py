@@ -32,7 +32,7 @@ KEEP_DISCARDS_JOKERS = {
     "j_ramen",          # -0.01 xmult per card discarded
 }
 
-N_SAMPLES = 10  # Monte Carlo samples per unique keep set
+N_SAMPLES = 30  # Monte Carlo samples per unique keep set
 
 
 def choose_discard(ctx: RoundContext) -> Action | None:
@@ -102,6 +102,7 @@ def choose_discard(ctx: RoundContext) -> Action | None:
         chips_remaining=ctx.chips_remaining,
         jokers=ctx.jokers,
         required_hand=ctx.mouth_locked_hand,
+        deck_profile=ctx.deck_profile,
     )
 
     # Try EV-based chase first

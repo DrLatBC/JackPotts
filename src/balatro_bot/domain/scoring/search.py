@@ -15,14 +15,7 @@ from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, is_
 from balatro_bot.constants import HAND_INFO
 
 from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
-from balatro_bot.domain.scoring.draws import (
-    flush_draw,
-    flush_draw_quality,
-    straight_draw,
-    straight_draw_quality,
-    two_pair_draw_quality,
-    three_kind_draw_quality,
-)
+from balatro_bot.domain.scoring.chase import generate_chases
 from balatro_bot.domain.scoring.estimate import score_hand
 
 
@@ -214,11 +207,16 @@ def cards_not_in(
         return strategy.suit_affinity(s)
 
     candidates.sort(key=lambda i: (
-        0 if is_debuffed(hand_cards[i]) else 1,
-        0 if blackboard and card_suit(hand_cards[i]) in ("H", "D") else 1,
+        # 1. Hard constraints (boss/joker mechanics) — protect required cards
         1 if scoring_suit and scoring_suit in card_suits(hand_cards[i]) else 0 if not scoring_suit else -1,
+        0 if blackboard and card_suit(hand_cards[i]) in ("H", "D") else 1,
+        # 2. Strategic value — protect cards the strategy wants to keep
         _suit_affinity_score(i),
         rank_affinity.get(card_rank(hand_cards[i]) or "", 0.0) if rank_affinity else 0,
+        # 3. Debuff as tiebreaker — debuffed junk goes first, but debuffed
+        #    cards with strategic value are protected by layers above
+        0 if is_debuffed(hand_cards[i]) else 1,
+        # 4. Raw card value — higher rank cards survive longer
         rank_value(card_rank(hand_cards[i]) or "2"),
     ))
     return candidates
@@ -234,119 +232,52 @@ def discard_candidates(
     chips_remaining: int = 0,
     jokers: list[dict] | None = None,
     required_hand: str | None = None,
+    deck_profile=None,
 ) -> list[ChaseCandidate]:
     """Suggest discard sets that improve toward better hands."""
     bh = best_hand(hand_cards, hand_levels, max_select, jokers=jokers, required_hand=required_hand)
     if not bh:
-        return [(list(range(min(max_discard, len(hand_cards)))), "no hand found")]
-
-    joker_keys = {joker_key(j) for j in (jokers or [])}
-    shortcut = "j_shortcut" in joker_keys
-    smeared = "j_smeared" in joker_keys
+        fallback = list(range(min(max_discard, len(hand_cards))))
+        return [ChaseCandidate(fallback, "no hand found", "High Card", [], 0.0)]
 
     from balatro_bot.strategy import compute_strategy
     strat = compute_strategy(jokers or [], hand_levels)
     rank_aff = strat.rank_affinity_dict() or None
 
-    strategies: list[tuple[str, list[int], float, str]] = []
-
-    if chips_remaining > 0 and bh.total < chips_remaining * 0.10:
-        keep_indices = bh.card_indices
-        n_discard = min(max_discard, len(hand_cards) - len(keep_indices))
-        if n_discard > 0:
-            strategies.append((
-                "redraw",
-                keep_indices,
-                0.5,
-                f"redraw {n_discard} cards ({bh.hand_name} for {bh.total} is hopeless vs {chips_remaining} needed)",
-            ))
-
-    strategies.append((
-        bh.hand_name,
-        bh.card_indices,
-        1.0,
-        f"keep {bh.hand_name}, discard dead cards",
-    ))
-
-    if HAND_INFO["Flush"][2] < HAND_INFO[bh.hand_name][2]:
-        if deck_cards:
-            fdq = flush_draw_quality(hand_cards, deck_cards, smeared=smeared, rank_affinity=rank_aff)
-            if fdq:
-                indices, prob, suit = fdq
-                strategies.append((
-                    "Flush",
-                    indices,
-                    prob,
-                    f"chase Flush ({prob:.0%} to hit, {suit}), discard {len(hand_cards) - len(indices)} cards",
-                ))
-        else:
-            flush_indices = flush_draw(hand_cards, smeared=smeared)
-            if flush_indices:
-                strategies.append((
-                    "Flush",
-                    flush_indices,
-                    0.5,
-                    f"chase Flush, discard {len(hand_cards) - len(flush_indices)} cards",
-                ))
-
-    if HAND_INFO["Straight"][2] < HAND_INFO[bh.hand_name][2]:
-        if deck_cards:
-            sdq = straight_draw_quality(hand_cards, deck_cards, shortcut=shortcut)
-            if sdq:
-                indices, prob = sdq
-                strategies.append((
-                    "Straight",
-                    indices,
-                    prob,
-                    f"chase Straight ({prob:.0%} to hit), discard {len(hand_cards) - len(indices)} cards",
-                ))
-        else:
-            straight_indices = straight_draw(hand_cards, shortcut=shortcut)
-            if straight_indices:
-                strategies.append((
-                    "Straight",
-                    straight_indices,
-                    0.5,
-                    f"chase Straight, discard {len(hand_cards) - len(straight_indices)} cards",
-                ))
-
-    if deck_cards and HAND_INFO["Two Pair"][2] < HAND_INFO[bh.hand_name][2]:
-        tpdq = two_pair_draw_quality(hand_cards, deck_cards, rank_affinity=rank_aff)
-        if tpdq:
-            indices, prob = tpdq
-            strategies.append((
-                "Two Pair",
-                indices,
-                prob,
-                f"chase Two Pair ({prob:.0%} to hit), discard {len(hand_cards) - len(indices)} cards",
-            ))
-
-    if deck_cards and HAND_INFO["Three of a Kind"][2] < HAND_INFO[bh.hand_name][2]:
-        tkdq = three_kind_draw_quality(hand_cards, deck_cards, rank_affinity=rank_aff)
-        if tkdq:
-            indices, prob = tkdq
-            strategies.append((
-                "Three of a Kind",
-                indices,
-                prob,
-                f"chase Three of a Kind ({prob:.0%} to hit), discard {len(hand_cards) - len(indices)} cards",
-            ))
-
-    if required_hand:
-        strategies = [
-            (n, k, p, r) for n, k, p, r in strategies
-            if n == required_hand or n == "redraw"
-        ]
+    strategies = generate_chases(
+        hand_cards, bh,
+        hand_levels=hand_levels,
+        deck_cards=deck_cards,
+        jokers=jokers,
+        chips_remaining=chips_remaining,
+        max_discard=max_discard,
+        rank_affinity=rank_aff,
+        required_hand=required_hand,
+        deck_profile=deck_profile,
+    )
 
     has_any_affinity = strategy_affinity and any(v > 0 for v in strategy_affinity.values())
 
-    def chase_score(strategy: tuple[str, list[int], float, str]) -> float:
-        hand_name, _, prob, _ = strategy
-        if hand_name == "redraw":
-            return 150 * prob
+    def _leveled_value(hand_name: str) -> float:
+        """Return chips * mult for a hand using real hand levels."""
+        base_chips, base_mult, _ = HAND_INFO[hand_name]
+        if hand_levels and hand_name in hand_levels:
+            lvl = hand_levels[hand_name]
+            base_chips = lvl.get("chips", base_chips)
+            base_mult = lvl.get("mult", base_mult)
+        return base_chips * base_mult
 
-        chips, mult, _ = HAND_INFO[hand_name]
-        base = chips * mult * prob
+    def chase_score(strategy: tuple[str, list[int], float, str]) -> float:
+        hand_name, keep, prob, _ = strategy
+        if hand_name == "redraw":
+            keep_cards = [hand_cards[i] for i in keep]
+            _, _, total = score_hand(
+                bh.hand_name, keep_cards,
+                hand_levels=hand_levels, jokers=jokers,
+            )
+            return total * prob
+
+        base = _leveled_value(hand_name) * prob
 
         if has_any_affinity:
             affinity = strategy_affinity.get(hand_name, 0)
