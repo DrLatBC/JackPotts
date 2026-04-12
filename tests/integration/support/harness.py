@@ -579,6 +579,50 @@ def inject_god_mode(client: BalatroClient, *,
             print(f"    FAILED adding {jk}: {e.message}")
 
 
+def inject_god_mode_complex(client: BalatroClient, *,
+                            saturn_levels: int = 15) -> None:
+    """Inject a complex build: level Straight to 15, add 9 jokers with editions.
+
+    All negative-edition jokers don't consume slots, so this fits in 5 slots.
+    The scoring chain: Pareidolia makes every card count as every suit/rank,
+    Four Fingers makes 4-card straights valid, Shortcut allows gaps in straights,
+    then Devious/Cavendish/Card Sharp/Hanging Chad/The Order provide massive mult.
+    """
+    # Level up Straight via Saturn (planet card for Straight)
+    leveled = 0
+    for _ in range(saturn_levels):
+        try:
+            client.call("add", {"key": "c_saturn"})
+            client.call("use", {"consumable": 0})
+            leveled += 1
+        except APIError:
+            break
+        time.sleep(0.15)
+    print(f"    Leveled Straight {leveled} times")
+
+    # Jokers with their editions
+    # Negative edition jokers don't take a slot (+1 joker slot each)
+    jokers = [
+        ("j_shortcut",        "NEGATIVE"),
+        ("j_four_fingers",    "NEGATIVE"),
+        ("j_sock_and_buskin", "NEGATIVE"),
+        ("j_pareidolia",      "NEGATIVE"),
+        ("j_devious",         "POLYCHROME"),
+        ("j_cavendish",       "POLYCHROME"),
+        ("j_card_sharp",      "NEGATIVE"),
+        ("j_hanging_chad",    "POLYCHROME"),
+        ("j_order",           "POLYCHROME"),
+    ]
+
+    for key, edition in jokers:
+        try:
+            client.call("add", {"key": key, "edition": edition})
+            print(f"    Added {key} ({edition})")
+        except APIError as e:
+            print(f"    FAILED adding {key}: {e.message}")
+        time.sleep(0.15)
+
+
 def inject_milk_trigger(client: BalatroClient) -> None:
     """Add Green Joker (milk_priority=3) to force milking behavior."""
     try:
