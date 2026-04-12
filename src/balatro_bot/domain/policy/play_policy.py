@@ -410,10 +410,10 @@ def _milk_play_action(ctx: RoundContext, joker_keys: set,
                     deck_cards=ctx.deck_cards,
                 )
                 if chases:
-                    indices, reason = chases[0]
+                    best = chases[0]
                     return DiscardCards(
-                        indices,
-                        reason=f"milk: chase {ht} for {jname} ({reason})",
+                        best.discard_indices,
+                        reason=f"milk: chase {ht} for {jname} ({best.reason})",
                     )
 
     # --- Category 3: Generic triggers ---
