@@ -172,8 +172,44 @@ def _chase_ev(candidate: ChaseCandidate, ctx: RoundContext, miss_ev: float) -> f
     return candidate.hit_prob * improved + (1 - candidate.hit_prob) * miss_ev
 
 
+# Minimum EV multiplier a chase must beat play_ev by.
+# Scales with discard scarcity: burning your last discard needs a bigger payoff.
+_BASE_CHASE_MARGIN = 1.2       # chase must be at least 1.2× play_ev
+_SCARCITY_BONUS_PER = 0.15     # +0.15× for each discard already used
+
+_HAND_ABBREV = {
+    "High Card": "HC", "Pair": "Pair", "Two Pair": "TP",
+    "Three of a Kind": "3oK", "Straight": "Str", "Flush": "Flush",
+    "Full House": "FH", "Four of a Kind": "4oK", "Straight Flush": "SF",
+    "Five of a Kind": "5oK", "Flush House": "FlH", "Flush Five": "Fl5",
+}
+
+
+def _chase_margin(ctx: RoundContext) -> float:
+    """Required EV multiplier for a chase to be accepted.
+
+    Base margin of 1.2× increases as discards get scarcer.
+    With 3+ discards left the bar is low; with 1 left it's steep.
+    Hopeless outlook lowers the bar — we're desperate.
+    """
+    if ctx.discards_left >= 3:
+        margin = _BASE_CHASE_MARGIN
+    elif ctx.discards_left == 2:
+        margin = _BASE_CHASE_MARGIN + _SCARCITY_BONUS_PER
+    else:
+        margin = _BASE_CHASE_MARGIN + _SCARCITY_BONUS_PER * 2
+
+    if ctx.round_outlook == "hopeless":
+        margin = max(1.05, margin * 0.7)
+
+    return margin
+
+
 def _best_chase(suggestions: list[ChaseCandidate], ctx: RoundContext, play_ev: float) -> DiscardCards | None:
-    """Find the best chase candidate whose EV exceeds play_ev."""
+    """Find the best chase candidate whose EV exceeds play_ev by the required margin."""
+    margin_req = _chase_margin(ctx)
+    ev_threshold = play_ev * margin_req
+
     # Build miss_ev cache — one sample pass per unique keep set
     miss_ev_cache: dict[tuple[int, ...], float] = {}
     for candidate in suggestions:
@@ -182,55 +218,50 @@ def _best_chase(suggestions: list[ChaseCandidate], ctx: RoundContext, play_ev: f
         key = tuple(sorted(candidate.keep_indices))
         if key not in miss_ev_cache:
             miss_ev_cache[key] = _sample_miss_ev(candidate.keep_indices, ctx)
-            log.info("MC miss_ev for keep=%s: %.0f (play_ev=%.0f)", key, miss_ev_cache[key], play_ev)
+            log.info("MC miss_ev for keep=%s: %.0f (play_ev=%.0f, threshold=%.0f, margin=%.2fx)", key, miss_ev_cache[key], play_ev, ev_threshold, margin_req)
 
-    # Find best chase by EV
+    # Find best chase by EV (must clear the margin threshold)
     best = None
-    best_ev = play_ev
+    best_ev = ev_threshold
 
     for candidate in suggestions:
         if "chase" not in candidate.reason:
             continue
         key = tuple(sorted(candidate.keep_indices))
         ev = _chase_ev(candidate, ctx, miss_ev_cache[key])
+        accepted = ev > best_ev
         log.info(
-            "chase EV: %s %.0f%% -> EV %.0f (miss=%.0f, play=%.0f) %s",
+            "chase EV: %s %.0f%% -> EV %.0f (miss=%.0f, threshold=%.0f) %s",
             candidate.chase_hand, candidate.hit_prob * 100, ev,
-            miss_ev_cache[key], play_ev,
-            "ACCEPT" if ev > best_ev else "reject",
+            miss_ev_cache[key], ev_threshold,
+            "ACCEPT" if accepted else "reject",
         )
-        if ev > best_ev:
+        if accepted:
             best_ev = ev
             best = candidate
 
     # Stream log — consolidated one-liner for all chase evaluations
-    _HAND_ABBREV = {
-        "High Card": "HC", "Pair": "Pair", "Two Pair": "TP",
-        "Three of a Kind": "3oK", "Straight": "Str", "Flush": "Flush",
-        "Full House": "FH", "Four of a Kind": "4oK", "Straight Flush": "SF",
-        "Five of a Kind": "5oK", "Flush House": "FlH", "Flush Five": "Fl5",
-    }
     chase_parts = []
     for candidate in suggestions:
         if "chase" not in candidate.reason:
             continue
         key = tuple(sorted(candidate.keep_indices))
         ev = _chase_ev(candidate, ctx, miss_ev_cache[key])
-        accepted = ev > play_ev
+        accepted = ev > ev_threshold
         abbrev = _HAND_ABBREV.get(candidate.chase_hand, candidate.chase_hand)
         chase_parts.append(
             f"{abbrev} {candidate.hit_prob * 100:.0f}% EV {ev:.0f} {'YES' if accepted else 'no'}"
         )
     if chase_parts:
-        _stream_log.info("Considering chase: %s (play EV %.0f)", " | ".join(chase_parts), play_ev)
+        _stream_log.info("Considering chase: %s (play EV %.0f, need %.1fx)", " | ".join(chase_parts), play_ev, margin_req)
 
     if best is not None:
         margin = best_ev / play_ev if play_ev > 0 else float("inf")
-        log.info("chase ACCEPTED: %s EV %.0f vs play %.0f (%.1fx)", best.chase_hand, best_ev, play_ev, margin)
+        log.info("chase ACCEPTED: %s EV %.0f vs play %.0f (%.1fx, needed %.1fx)", best.chase_hand, best_ev, play_ev, margin, margin_req)
         return DiscardCards(
             best.discard_indices,
             reason=f"{best.reason} [EV {best_ev:.0f} vs play {play_ev:.0f}, {margin:.1f}x]",
         )
     if miss_ev_cache:
-        log.info("all chases rejected (play_ev=%.0f beats all)", play_ev)
+        log.info("all chases rejected (play_ev=%.0f, threshold=%.0f, margin=%.2fx)", play_ev, ev_threshold, margin_req)
     return None
