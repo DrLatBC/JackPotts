@@ -528,8 +528,6 @@ def _deck_composition_adjustment(
     strategy: Strategy | None,
 ) -> float:
     """Adjust base_value based on deck composition."""
-    from balatro_bot.domain.models.deck_profile import DeckProfile  # noqa: F811
-
     # --- Enhancement-count jokers (Steel Joker, Lucky Cat, Glass Joker) ---
     enh_type = _ENHANCEMENT_JOKERS.get(key)
     if enh_type:

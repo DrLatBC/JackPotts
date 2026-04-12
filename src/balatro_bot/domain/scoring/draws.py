@@ -386,6 +386,7 @@ def three_kind_draw_quality(
         key=lambda x: (
             deck_rank_counts.get(x[0], 0),
             rank_affinity.get(x[0], 0.0) if rank_affinity else 0.0,
+            rank_value(x[0]),
         ),
     )
     keep = pair_indices[:2]
@@ -807,11 +808,17 @@ def flush_house_draw_quality(
         # Path A: Have trips in suit — need a pair in same suit from deck
         for trip_rank, trip_idxs in suit_trips.items():
             keep = trip_idxs[:3]
-            # Add one more suited card if available (not of trip rank)
-            for r, idxs in suit_rank_indices.items():
-                if r != trip_rank:
-                    keep = keep + idxs[:1]
-                    break
+            # Add the best non-trip suited card (prefer high affinity/rank)
+            other_ranks = sorted(
+                [(r, idxs) for r, idxs in suit_rank_indices.items() if r != trip_rank],
+                key=lambda x: (
+                    rank_affinity.get(x[0], 0.0) if rank_affinity else 0.0,
+                    rank_value(x[0]),
+                ),
+                reverse=True,
+            )
+            if other_ranks:
+                keep = keep + other_ranks[0][1][:1]
             if len(keep) < 4:
                 continue
             keep = keep[:4]
@@ -834,14 +841,18 @@ def flush_house_draw_quality(
             if pair_rank in suit_trips:
                 continue  # Already covered by Path A
             keep = pair_idxs[:2]
-            # Add other suited cards
-            for r, idxs in suit_rank_indices.items():
-                if r != pair_rank:
-                    for idx in idxs:
-                        if idx not in keep:
-                            keep.append(idx)
-                        if len(keep) >= 4:
-                            break
+            # Add other suited cards, preferring high affinity/rank
+            other_idxs = sorted(
+                [idx for r, idxs in suit_rank_indices.items()
+                 if r != pair_rank for idx in idxs if idx not in keep],
+                key=lambda idx: (
+                    rank_affinity.get(card_rank(hand_cards[idx]) or "", 0.0) if rank_affinity else 0.0,
+                    rank_value(card_rank(hand_cards[idx]) or "2"),
+                ),
+                reverse=True,
+            )
+            for idx in other_idxs:
+                keep.append(idx)
                 if len(keep) >= 4:
                     break
             if len(keep) < 4:
@@ -896,10 +907,16 @@ def flush_five_draw_quality(
             if r:
                 suit_rank_indices.setdefault(r, []).append(idx)
 
-        # Need 4 of the same rank in this suit
-        for rank, rank_idxs in suit_rank_indices.items():
-            if len(rank_idxs) < 4:
-                continue
+        # Need 4 of the same rank in this suit — prefer high affinity/rank
+        candidates = sorted(
+            [(r, idxs) for r, idxs in suit_rank_indices.items() if len(idxs) >= 4],
+            key=lambda x: (
+                rank_affinity.get(x[0], 0.0) if rank_affinity else 0.0,
+                rank_value(x[0]),
+            ),
+            reverse=True,
+        )
+        for rank, rank_idxs in candidates:
             keep = rank_idxs[:4]
             draws = len(hand_cards) - len(keep)
 
