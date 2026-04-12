@@ -32,7 +32,8 @@ KEEP_DISCARDS_JOKERS = {
     "j_ramen",          # -0.01 xmult per card discarded
 }
 
-N_SAMPLES = 30  # Monte Carlo samples per unique keep set
+N_SAMPLES = 30          # Monte Carlo samples per unique keep set
+_RISK_AVERSION = 0.5    # upside discount per unit of miss probability
 
 
 def choose_discard(ctx: RoundContext) -> Action | None:
@@ -151,7 +152,12 @@ def _sample_miss_ev(keep_indices: list[int], ctx: RoundContext) -> float:
 
 
 def _chase_ev(candidate: ChaseCandidate, ctx: RoundContext, miss_ev: float) -> float:
-    """Expected value of taking a chase discard."""
+    """Risk-adjusted expected value of taking a chase discard.
+
+    Discounts the upside by miss probability — low-probability chases
+    need proportionally bigger payoffs to justify the gamble.  A 90% chase
+    keeps ~95% of its upside; a 10% lottery ticket keeps only ~55%.
+    """
     if candidate.chase_hand == "redraw":
         return miss_ev
 
@@ -169,7 +175,9 @@ def _chase_ev(candidate: ChaseCandidate, ctx: RoundContext, miss_ev: float) -> f
         ancient_suit=ctx.ancient_suit,
     )
 
-    return candidate.hit_prob * improved + (1 - candidate.hit_prob) * miss_ev
+    risk_factor = 1.0 - candidate.hit_prob
+    upside_discount = 1.0 - risk_factor * _RISK_AVERSION
+    return candidate.hit_prob * improved * upside_discount + (1 - candidate.hit_prob) * miss_ev
 
 
 # Minimum EV multiplier a chase must beat play_ev by.
