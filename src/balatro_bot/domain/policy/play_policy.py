@@ -48,6 +48,7 @@ def choose_winning_play(ctx: RoundContext) -> Action | None:
             indices,
             reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}) >= {ctx.chips_remaining} needed",
             hand_name=ctx.best.hand_name,
+            total=ctx.best.total,
         )
     return None
 
@@ -121,6 +122,7 @@ def choose_high_value_play(ctx: RoundContext) -> Action | None:
         indices,
         reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}), outlook={outlook}, {ctx.chips_remaining} remaining",
         hand_name=ctx.best.hand_name,
+        total=ctx.best.total,
     )
 
 
@@ -155,6 +157,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
             indices,
             reason=f"best available: {ctx.best.hand_name} for {ctx.best.total}",
             hand_name=ctx.best.hand_name,
+            total=ctx.best.total,
         )
 
     # No valid hand found (e.g. The Mouth locked to a hand type we can't form).
@@ -173,6 +176,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
                 reason=f"mouth locked ({ctx.mouth_locked_hand}) but can't form it: "
                        f"playing {unconstrained.hand_name} for {unconstrained.total}",
                 hand_name=unconstrained.hand_name,
+                total=unconstrained.total,
             )
 
     # Absolute fallback: play best 5-card combo we can find
@@ -182,9 +186,11 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
                             key=lambda i: rank_value(card_rank(ctx.hand_cards[i]) or "2"),
                             reverse=True)
             indices = _sort_play_order(ranked[:5], ctx.hand_cards, ctx.jokers, ctx.strategy)
-            return PlayCards(indices, reason="fallback: play 5 highest cards", hand_name="High Card")
+            return PlayCards(indices, reason="fallback: play 5 highest cards", hand_name="High Card",
+                            total=ctx.best.total if ctx.best else 0)
         indices = _sort_play_order(list(range(len(ctx.hand_cards))), ctx.hand_cards, ctx.jokers, ctx.strategy)
-        return PlayCards(indices, reason="fallback: play all remaining cards", hand_name="High Card")
+        return PlayCards(indices, reason="fallback: play all remaining cards", hand_name="High Card",
+                         total=ctx.best.total if ctx.best else 0)
     return None
 
 
@@ -237,7 +243,7 @@ def choose_milk_play(ctx: RoundContext) -> Action | None:
     should_preserve_discards = (has_banner and not has_mystic) or has_green
 
     if not should_preserve_discards and ctx.discards_left > 0:
-        discard_action = _milk_discard(ctx, joker_keys, active)
+        discard_action = milk_discard(ctx, joker_keys, active)
         if discard_action:
             return discard_action
 
@@ -264,13 +270,13 @@ def choose_milk_play(ctx: RoundContext) -> Action | None:
                          if p.trigger == "final_hand"}
 
     if play_scalers or final_hand_scalers:
-        return _milk_play_action(ctx, joker_keys, play_scalers, final_hand_scalers, free_hands)
+        return milk_play_action(ctx, joker_keys, play_scalers, final_hand_scalers, free_hands)
 
     return None
 
 
-def _milk_discard(ctx: RoundContext, joker_keys: set,
-                  active: dict[str, ScalingProfile]) -> Action | None:
+def milk_discard(ctx: RoundContext, joker_keys: set,
+                 active: dict[str, ScalingProfile]) -> Action | None:
     """Try to milk via discards (doesn't cost a hand play)."""
     # Hit the Road: discard Jacks
     if "j_hit_the_road" in active:
@@ -303,9 +309,9 @@ def _milk_discard(ctx: RoundContext, joker_keys: set,
     return None
 
 
-def _milk_play_action(ctx: RoundContext, joker_keys: set,
-                      play_scalers: dict, final_hand_scalers: dict,
-                      free_hands: int) -> Action | None:
+def milk_play_action(ctx: RoundContext, joker_keys: set,
+                     play_scalers: dict, final_hand_scalers: dict,
+                     free_hands: int) -> Action | None:
     """Pick the optimal milk hand to play."""
     avoid_faces = "j_ride_the_bus" in joker_keys
     hands_after = ctx.hands_left - 1
@@ -370,6 +376,35 @@ def _milk_play_action(ctx: RoundContext, joker_keys: set,
                 hand_name=hand_name,
             )
 
+    # 8 Ball: include 8s in milk hands for 1/4 Tarot chance
+    if "j_8_ball" in joker_keys and "j_8_ball" not in play_scalers:
+        eights = [(i, v) for i, v in junk if v == 8]
+        if eights:
+            required = eights[0][0]
+            filler = [i for i, _ in junk if i != required][:4]
+            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy)
+            hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
+            return PlayCards(
+                indices,
+                reason=f"milk: 8 + {len(filler)} junk for 8 Ball (1/4 Tarot) ({hands_after} hands left)",
+                hand_name=hand_name,
+            )
+
+    # Midas Mask: include face cards in milk hands to convert to Gold (economy)
+    # Skip when Ride the Bus is owned (faces reset its counter)
+    if "j_midas_mask" in joker_keys and not avoid_faces:
+        faces = [(i, v) for i, v in junk if v >= 11]  # J=11, Q=12, K=13
+        if faces:
+            required = faces[0][0]
+            filler = [i for i, _ in junk if i != required][:4]
+            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy)
+            hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
+            return PlayCards(
+                indices,
+                reason=f"milk: face + {len(filler)} junk for Midas Mask (Gold) ({hands_after} hands left)",
+                hand_name=hand_name,
+            )
+
     # --- Category 2: Hand-type triggers ---
     targets: list[tuple[str, str]] = []
 
@@ -385,6 +420,16 @@ def _milk_play_action(ctx: RoundContext, joker_keys: set,
         for ht in ("Flush", "Straight", "Full House", "Straight Flush",
                     "Two Pair", "Three of a Kind", "Four of a Kind"):
             targets.append((ht, "j_hiker"))
+    # Space Joker: 1/8 chance to level up played hand type — milk strategy hand
+    if "j_space" in joker_keys:
+        preferred = ctx.strategy.top_hand()
+        if preferred:
+            targets.append((preferred, "j_space"))
+    # Séance: creates Spectral on specific hand type (default Straight Flush)
+    if "j_seance" in joker_keys:
+        seance_type = _seance_hand_type(ctx.jokers)
+        if seance_type:
+            targets.append((seance_type, "j_seance"))
 
     if targets:
         candidates = enumerate_hands(
@@ -435,4 +480,46 @@ def _milk_play_action(ctx: RoundContext, joker_keys: set,
             hand_name=hand_name,
         )
 
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Séance hand type mapping — the joker ability stores the hand type key.
+_SEANCE_HAND_MAP = {
+    "Straight Flush": "Straight Flush",
+    "straight_flush": "Straight Flush",
+    "Four of a Kind": "Four of a Kind",
+    "four_of_a_kind": "Four of a Kind",
+    "Full House": "Full House",
+    "full_house": "Full House",
+    "Flush": "Flush",
+    "Straight": "Straight",
+    "Three of a Kind": "Three of a Kind",
+    "three_of_a_kind": "Three of a Kind",
+    "Two Pair": "Two Pair",
+    "two_pair": "Two Pair",
+    "Pair": "Pair",
+    "High Card": "High Card",
+    "high_card": "High Card",
+    "Five of a Kind": "Five of a Kind",
+    "five_of_a_kind": "Five of a Kind",
+    "Flush House": "Flush House",
+    "flush_house": "Flush House",
+    "Flush Five": "Flush Five",
+    "flush_five": "Flush Five",
+}
+
+
+def _seance_hand_type(jokers: list) -> str | None:
+    """Return the hand type that triggers Séance, or None."""
+    for j in jokers:
+        if joker_key(j) == "j_seance":
+            ab = j.value.ability
+            hand_key = ab.poker_hand or (
+                str(ab.extra) if ab.extra else "Straight Flush"
+            )
+            return _SEANCE_HAND_MAP.get(hand_key, hand_key)
     return None

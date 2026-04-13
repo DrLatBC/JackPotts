@@ -241,12 +241,14 @@ def log_action(
 
     reason = getattr(action, "reason", "")
     if method == "play" and card_detail:
-        if reason.startswith("milk:"):
-            _stream_log.info("Milk: %s", reason[5:].strip())
+        if reason.startswith("milk:") or reason.startswith("plan milk:"):
+            _stream_log.info("Milk: %s", reason.split(":", 1)[1].strip())
+        elif not getattr(action, "total", 0):
+            _stream_log.info("Play: %s (%s)", card_detail, reason)
         else:
-            score_m = re.search(r"for (\d+)", reason)
+            score_val = action.total
             hand_name_str = getattr(action, "hand_name", "") or "?"
-            score_str = f"{int(score_m.group(1)):,}" if score_m else "?"
+            score_str = f"{score_val:,}"
             chips_remaining = state.get("round", {}).get("chips", 0)
             blind_need = gs.current_blind_target if isinstance(gs.current_blind_target, int) else 0
             remaining = blind_need - chips_remaining if blind_need else 0

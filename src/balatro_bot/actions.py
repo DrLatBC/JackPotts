@@ -14,6 +14,7 @@ class PlayCards:
     card_indices: list[int]
     reason: str = ""
     hand_name: str = ""
+    total: int = 0
 
     def to_rpc(self) -> tuple[str, dict]:
         return "play", {"cards": self.card_indices}

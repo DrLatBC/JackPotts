@@ -7,8 +7,10 @@ from typing import TYPE_CHECKING
 
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.scoring.base import arm_reduce_hand_levels, flint_halve_hand_levels
+from balatro_bot.cards import joker_key
 from balatro_bot.domain.scoring.search import HandCandidate, best_hand
 from balatro_bot.infrastructure.state_adapter import adapt_state
+from balatro_bot.scaling import FINAL_HAND_JOKERS
 from balatro_bot.strategy import Strategy, compute_strategy
 
 if TYPE_CHECKING:
@@ -50,6 +52,7 @@ class RoundContext:
     ancient_suit: str | None = None
     eye_used_hands: set[str] | None = None
     scoring_suit: str | None = None
+    best_as_finisher: HandCandidate | None = None
 
     @property
     def round_outlook(self) -> str:
@@ -166,6 +169,43 @@ class RoundContext:
         # so boss-specific scoring effects (The Tooth, The Ox, etc.) don't fire.
         effective_blind = "" if boss_disabled else blind_name
 
+        best = best_hand(
+            hand_cards, hand_levels,
+            min_select=min_cards, jokers=jokers,
+            money=money, discards_left=discards_left,
+            hands_left=hands_left,
+            joker_limit=snapshot.joker_limit,
+            required_hand=mouth_locked_hand,
+            required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
+            ancient_suit=ancient_suit,
+            excluded_hands=eye_used_hands,
+            deck_cards=deck_cards,
+            blind_name=effective_blind,
+            ox_most_played=ox_most_played,
+        )
+
+        # Score best hand as if it were the final hand (hands_left=1) so the
+        # planner can see the Acrobat x3 / Dusk retrigger value.
+        joker_keys_set = {joker_key(j) for j in jokers}
+        has_final_hand = bool(joker_keys_set & FINAL_HAND_JOKERS) and hands_left > 1
+        best_as_finisher = (
+            best_hand(
+                hand_cards, hand_levels,
+                min_select=min_cards, jokers=jokers,
+                money=money, discards_left=discards_left,
+                hands_left=1,
+                joker_limit=snapshot.joker_limit,
+                required_hand=mouth_locked_hand,
+                required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
+                ancient_suit=ancient_suit,
+                excluded_hands=eye_used_hands,
+                deck_cards=deck_cards,
+                blind_name=effective_blind,
+                ox_most_played=ox_most_played,
+            )
+            if has_final_hand else None
+        )
+
         return RoundContext(
             blind_score=blind_score,
             blind_name=effective_blind,
@@ -176,20 +216,7 @@ class RoundContext:
             hand_cards=hand_cards,
             hand_levels=hand_levels,
             jokers=jokers,
-            best=best_hand(
-                hand_cards, hand_levels,
-                min_select=min_cards, jokers=jokers,
-                money=money, discards_left=discards_left,
-                hands_left=hands_left,
-                joker_limit=snapshot.joker_limit,
-                required_hand=mouth_locked_hand,
-                required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
-                ancient_suit=ancient_suit,
-                excluded_hands=eye_used_hands,
-                deck_cards=deck_cards,
-                blind_name=effective_blind,
-                ox_most_played=ox_most_played,
-            ),
+            best=best,
             mouth_locked_hand=mouth_locked_hand,
             score_discount=score_discount,
             forced_card_idx=forced_card_idx,
@@ -203,4 +230,5 @@ class RoundContext:
             strategy=strat,
             deck_cards=deck_cards,
             deck_profile=deck_profile,
+            best_as_finisher=best_as_finisher,
         )

@@ -24,11 +24,33 @@ class VerdantLeafUnlock:
         return choose_verdant_leaf_unlock(ctx)
 
 
+class FollowRoundPlan:
+    """Round-level hand sequencing: milk early, set up Card Sharp, save best for last.
+
+    Replaces MilkScalingJokers with a full round-ordering plan that accounts
+    for Acrobat (x3 on final hand), Dusk (retrigger on final hand),
+    Card Sharp (x3 for consecutive same type), and all scaling jokers.
+    Falls through to existing rules when no plan is applicable.
+    """
+    name = "follow_round_plan"
+
+    def evaluate(self, state: dict[str, Any]) -> Action | None:
+        from balatro_bot.domain.policy.hand_sequencing import build_round_plan, execute_plan_step
+        ctx = RoundContext.from_state(state)
+        plan = build_round_plan(ctx)
+        if plan is None:
+            return None
+        return execute_plan_step(plan, ctx)
+
+
 class MilkScalingJokers:
     """If we can already win, exploit spare hands/discards to scale jokers.
 
     Uses the scaling registry to pick optimal milk actions per trigger type
     and computes a milk budget (free hands available before winning).
+
+    NOTE: Superseded by FollowRoundPlan in the default rule chain, but
+    kept available for backward compatibility and testing.
     """
     name = "milk_scaling_jokers"
 
