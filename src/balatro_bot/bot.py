@@ -156,7 +156,7 @@ def find_current_blind(state: dict) -> tuple[str, int | str] | None:
 
 def _check_victory(
     gs: GameLoopState, state: dict,
-    pre_play_chips: int = 0, expected_hand_score: int = 0,
+    pre_play_chips: int = 0,
 ) -> bool:
     """Detect ante 9+ victory. Returns True if newly detected."""
     from balatro_bot.bot_logging import log_blind_result
@@ -167,33 +167,13 @@ def _check_victory(
 
     gs.actually_won = True
 
-    if pre_play_chips or expected_hand_score:
-        # Timeout victory — estimate final chips from pre-play + expected score
-        if gs.current_blind_name:
-            target = gs.current_blind_target if isinstance(gs.current_blind_target, int) else 0
-            final_chips = pre_play_chips + expected_hand_score
-            gs.max_chips_this_blind = max(gs.max_chips_this_blind, final_chips)
-            log.info(
-                "VICTORY at ante %s round %s (seed=%s) — scored %s / needed %s — WON | %d hands, %d discards",
-                ante, state.get("round_num", "?"), state.get("seed", "?"),
-                f"{final_chips:,}", f"{target:,}",
-                gs.total_hands_played - gs.hands_at_blind_start,
-                gs.total_discards_used - gs.discards_at_blind_start,
-            )
-        else:
-            log.info(
-                "VICTORY at ante %s round %s (seed=%s)",
-                ante, state.get("round_num", "?"), state.get("seed", "?"),
-            )
-    else:
-        # Normal victory — log to both loggers
-        log.info(
-            "VICTORY at ante %s round %s (seed=%s) — entering endless mode",
-            ante, state.get("round_num", "?"), state.get("seed", "?"),
-        )
-        _stream_log.info("")
-        _stream_log.info("*** VICTORY! ***")
-        log_blind_result(gs, "WON")
+    log.info(
+        "VICTORY at ante %s round %s (seed=%s) — entering endless mode",
+        ante, state.get("round_num", "?"), state.get("seed", "?"),
+    )
+    _stream_log.info("")
+    _stream_log.info("*** VICTORY! ***")
+    log_blind_result(gs, "WON")
 
     gs.current_blind_name = None
     return True
@@ -352,19 +332,6 @@ def run_bot(
             _scoring_log.info("  PRE_PLAY chips_in_round=%d", pre_play_chips)
             play_snapshot = build_play_snapshot(state, params, action)
 
-        # Capture expected hand score for chip accounting on timeout
-        expected_hand_score = 0
-        if method == "play":
-            m = re.search(r"for (\d+)", getattr(action, "reason", ""))
-            if m:
-                expected_hand_score = int(m.group(1))
-
-        # Shorter timeout on ante 8 plays — the win screen hangs the mod
-        saved_timeout = None
-        if method == "play" and cur_ante == 8:
-            saved_timeout = client.timeout
-            client.timeout = 5.0
-
         try:
             _boss_disabled_before = state.get("_boss_disabled", False)
             state = client.call(method, params)
@@ -405,7 +372,7 @@ def run_bot(
                     break
                 # Victory detection: if ante advanced to 9+ during a play
                 # timeout, the win screen caused the hang — handle it here
-                _check_victory(gs, state, pre_play_chips, expected_hand_score)
+                _check_victory(gs, state, pre_play_chips)
                 # Diagnostic dump on timeout
                 post_state = state.get("state", "?")
                 pack_cards = state.get("pack", {}).get("cards", [])
@@ -454,9 +421,5 @@ def run_bot(
                 state = client.call("gamestate")
                 if _boss_disabled_before:
                     state["_boss_disabled"] = True
-        finally:
-            if saved_timeout is not None:
-                client.timeout = saved_timeout
-
     log_game_over(gs, state)
     return gs.actually_won

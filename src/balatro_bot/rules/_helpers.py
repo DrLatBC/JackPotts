@@ -26,23 +26,27 @@ def _pad_with_junk(
     jokers: list[dict],
     intended_hand: str = "",
     max_cards: int = 5,
+    strategy: Strategy | None = None,
+    scoring_suit: str | None = None,
 ) -> list[int]:
-    """Pad a hand with low-value junk cards for free deck cycling.
+    """Pad a hand with junk cards for free deck cycling.
 
-    If intended_hand is provided, each candidate junk card is checked to
-    ensure it doesn't change the hand classification (e.g. turning a High
-    Card into a Pair, or creating an accidental Flush/Straight).  If we
-    can't fill to target without changing the hand, we play fewer cards.
+    Uses the same strategic discard ordering as the discard system —
+    cards we'd most want to discard are the first ones cycled out via play.
+    If intended_hand is provided, each candidate is checked to ensure it
+    doesn't change the hand classification.
     """
-    joker_keys = {joker_key(j) for j in jokers}
+    from balatro_bot.domain.scoring.search import cards_not_in
+
+    jk = {joker_key(j) for j in jokers}
     n = len(card_indices)
 
-    if joker_keys & FEWER_CARDS_JOKERS and n <= 3:
+    if jk & FEWER_CARDS_JOKERS and n <= 3:
         return card_indices
-    if joker_keys & ALL_SCORE_JOKERS:
+    if jk & ALL_SCORE_JOKERS:
         return card_indices
 
-    if joker_keys & EXACT_4_JOKERS:
+    if jk & EXACT_4_JOKERS:
         target = 4
     else:
         target = max_cards
@@ -50,9 +54,21 @@ def _pad_with_junk(
     if n >= target:
         return card_indices
 
-    four_fingers = "j_four_fingers" in joker_keys
-    shortcut = "j_shortcut" in joker_keys
-    smeared = "j_smeared" in joker_keys
+    four_fingers = "j_four_fingers" in jk
+    shortcut = "j_shortcut" in jk
+    smeared = "j_smeared" in jk
+
+    has_blackboard = "j_blackboard" in jk
+    rank_affinity = strategy.rank_affinity_dict() if strategy else None
+
+    # cards_not_in returns non-keep indices sorted worst-first (discard priority)
+    junk_priority = cards_not_in(
+        hand_cards, set(card_indices),
+        blackboard=has_blackboard,
+        rank_affinity=rank_affinity,
+        scoring_suit=scoring_suit,
+        strategy=strategy,
+    )
 
     # For High Card, junk must not outrank the scoring card or it becomes
     # the new scoring card (game picks highest rank, leftmost on ties).
@@ -61,22 +77,14 @@ def _pad_with_junk(
         scoring_rank = rank_value(card_rank(hand_cards[card_indices[0]]) or "2")
         max_junk_rank = scoring_rank
 
-    used = set(card_indices)
-    junk = []
-    for i, c in enumerate(hand_cards):
-        if i not in used:
-            r = card_rank(c)
-            rv = rank_value(r) if r else 0
-            debuffed = is_debuffed(c)
-            if max_junk_rank is not None and rv > max_junk_rank:
-                continue
-            junk.append((i, 0 if debuffed else 1, rv))
-    junk.sort(key=lambda x: (x[1], x[2]))
-
     padded = list(card_indices)
-    for i, _, _ in junk:
+    for i in junk_priority:
         if len(padded) >= target:
             break
+        if max_junk_rank is not None:
+            rv = rank_value(card_rank(hand_cards[i]) or "2")
+            if rv > max_junk_rank:
+                continue
         if intended_hand:
             test_cards = [hand_cards[j] for j in padded] + [hand_cards[i]]
             if classify_hand(test_cards, four_fingers, shortcut, smeared) != intended_hand:
@@ -297,13 +305,25 @@ def _find_stone_targets(hand_cards, count, jokers, rank_affinity=None):
     return [i for i, _, _ in candidates[:count]]
 
 
-def _find_destroy_targets(hand_cards, count, rank_affinity=None):
+def _find_destroy_targets(hand_cards, count, rank_affinity=None, strategy=None):
     candidates = []
     for i, c in enumerate(hand_cards):
         r = card_rank(c)
         if r and not _modifier(c).get("enhancement"):
-            aff = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
-            candidates.append((i, aff, rank_value(r)))  # low/negative affinity first
+            # Base score from rank affinity (low affinity → destroy first)
+            score = rank_affinity.get(r, 0.0) if rank_affinity else 0.0
+
+            # Suit-awareness: off-suit cards in suit builds are prime targets
+            if strategy and strategy.preferred_suits:
+                s = card_suit(c)
+                if s:
+                    suit_aff = strategy.suit_affinity(s)
+                    if suit_aff > 0:
+                        score += 3.0   # protect on-suit cards
+                    elif suit_aff <= 0:
+                        score -= 2.0   # target off-suit cards
+
+            candidates.append((i, score, rank_value(r)))
     candidates.sort(key=lambda x: (x[1], x[2]))
     return [i for i, _, _ in candidates[:count]]
 
@@ -422,7 +442,8 @@ def _find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, strat
         targets = _find_stone_targets(hand_cards, max_count, jokers, rank_affinity=rank_aff)
         return (targets, 1.5) if targets else (None, 0)
     if effect_type == "destroy":
-        targets = _find_destroy_targets(hand_cards, max_count, rank_affinity=rank_aff)
+        targets = _find_destroy_targets(hand_cards, max_count, rank_affinity=rank_aff,
+                                        strategy=strat)
         return (targets, 1.0) if targets else (None, 0)
     if effect_type == "clone":
         targets = _find_clone_targets(hand_cards, strat)

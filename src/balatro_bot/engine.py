@@ -6,16 +6,15 @@ from typing import TYPE_CHECKING
 
 from balatro_bot.actions import Action, Rule
 from balatro_bot.rules import (
-    VerdantLeafUnlock, MilkScalingJokers, SellLuchador, PlayWinningHand,
+    VerdantLeafUnlock, FollowRoundPlan, MilkScalingJokers, SellLuchador, PlayWinningHand,
     PlayHighValueHand, DiscardToImprove, PlayBestAvailable,
     AlwaysSelectBlind, SkipForTag,
-    SellInvisible, SellDietCola,
-    SellWeakJoker, FeedCampfire, ReorderJokersForScoring,
-    BuyJokersInShop, BuyConsumablesInShop, BuyPacksInShop,
-    BuyVouchersInShop, RerollShop, LeaveShop,
+    ReorderJokersForScoring,
+    UnifiedShopRule,
     AlwaysCashOut,
     SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
-    PickFromBuffoonPack, PickFromSpectralPack, PickBestFromPack,
+    PickFromBuffoonPack, PickFromSpectralPack, PickFromStandardPack,
+    PickBestFromPack,
     UseConsumables,
 )
 
@@ -28,7 +27,7 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
     "SELECTING_HAND": [
         VerdantLeafUnlock(),
         UseConsumables(),
-        MilkScalingJokers(),
+        FollowRoundPlan(),
         ReorderJokersForScoring(),
         SellLuchador(),
         PlayWinningHand(),
@@ -41,17 +40,7 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
         AlwaysSelectBlind(),
     ],
     "SHOP": [
-        SellInvisible(),
-        SellWeakJoker(),
-        FeedCampfire(),
-        ReorderJokersForScoring(),
-        BuyJokersInShop(),
-        BuyConsumablesInShop(),
-        BuyPacksInShop(),
-        BuyVouchersInShop(),
-        SellDietCola(),
-        RerollShop(),
-        LeaveShop(),
+        UnifiedShopRule(),
     ],
     "ROUND_EVAL": [
         AlwaysCashOut(),
@@ -59,7 +48,7 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
     "TAROT_PACK": [SkipPackForRedCard(), PickFromTarotPack(), PickBestFromPack()],
     "PLANET_PACK": [PickFromPlanetPack(), PickBestFromPack()],
     "SPECTRAL_PACK": [SkipPackForRedCard(), PickBestFromPack()],
-    "STANDARD_PACK": [SkipPackForRedCard(), PickBestFromPack()],
+    "STANDARD_PACK": [SkipPackForRedCard(), PickFromStandardPack(), PickBestFromPack()],
     "BUFFOON_PACK": [PickFromBuffoonPack(), PickBestFromPack()],
     "SMODS_BOOSTER_OPENED": [
         SkipPackForRedCard(), PickFromTarotPack(), PickFromPlanetPack(),

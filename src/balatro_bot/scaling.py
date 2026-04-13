@@ -93,6 +93,56 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
         "Strips enhancement but gains xmult. Play enhanced cards to feed it.",
     ),
 
+    # --- Side-effect play scalers (consumable/level generation) ---
+    "j_space": ScalingProfile(
+        "j_space", "play", "mult", 0, False, 1,
+        "1/8 chance to level up played hand type. Milk strategy hand for level-ups.",
+    ),
+    "j_8_ball": ScalingProfile(
+        "j_8_ball", "play_8", "mult", 0, False, 1,
+        "1/4 chance to create Tarot when 8 is scored. Include 8s in milk hands.",
+    ),
+    "j_seance": ScalingProfile(
+        "j_seance", "play_hand_type", "mult", 0, False, 1,
+        "Creates Spectral on specific hand type (default Straight Flush). Milk that type.",
+    ),
+    "j_todo_list": ScalingProfile(
+        "j_todo_list", "play_hand_type", "dollars", 4, False, 1,
+        "Pays $4 for playing the target hand type. Milk with that type when it's easy.",
+    ),
+    "j_sixth_sense": ScalingProfile(
+        "j_sixth_sense", "first_hand_solo_6", "mult", 0, False, 2,
+        "Play a solo 6 as first hand for Spectral. Costs a hand — do it when comfortable.",
+    ),
+    "j_midas_mask": ScalingProfile(
+        "j_midas_mask", "play_face", "mult", 0, False, 1,
+        "Converts face cards to Gold when played. Play faces in milk hands for economy.",
+    ),
+    "j_dna": ScalingProfile(
+        "j_dna", "first_hand_solo", "mult", 0, False, 1,
+        "Copies first played card to deck on first hand (solo card only). Very narrow.",
+    ),
+
+    # --- First-discard scalers ---
+    "j_burnt": ScalingProfile(
+        "j_burnt", "first_discard", "mult", 0, False, 1,
+        "Levels up discarded hand type on first discard of round. Discard strategy type first.",
+    ),
+    "j_trading": ScalingProfile(
+        "j_trading", "first_discard", "dollars", 3, False, 1,
+        "Pays $3 on first discard of round. Always discard something first.",
+    ),
+
+    # --- Anti-milk constraints (limit milking, not scale from it) ---
+    "j_glass": ScalingProfile(
+        "j_glass", "play", "xmult", 0, False, 0,
+        "1/4 chance to destroy glass cards when played. ANTI-MILK: fewer plays = safer glass.",
+    ),
+    "j_selzer": ScalingProfile(
+        "j_selzer", "play", "retrigger", 0, False, 0,
+        "Retrigger all cards for N hands then self-destructs. ANTI-MILK: don't waste on junk.",
+    ),
+
     # --- Discard scalers ---
     "j_castle": ScalingProfile(
         "j_castle", "discard", "chips", 3, True, 2,
@@ -147,6 +197,12 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
         "Absorbs sell value of right joker. Park fodder to the right.",
     ),
 
+    # --- Sequence-sensitive (benefit from deliberate hand ordering) ---
+    "j_card_sharp": ScalingProfile(
+        "j_card_sharp", "play_same_type", "xmult", 3, False, 3,
+        "X3 when playing same hand type as last play. Set up deliberately.",
+    ),
+
     # --- Final hand / conditional (affect HOW to milk, not what to milk) ---
     "j_acrobat": ScalingProfile(
         "j_acrobat", "final_hand", "xmult", 3, False, 2,
@@ -198,6 +254,9 @@ DISCARD_SCALERS = _keys_where(lambda p: p.trigger.startswith("discard") and p.mi
 # Jokers that want the winning hand played LAST
 FINAL_HAND_JOKERS = _keys_where(lambda p: p.trigger == "final_hand")
 
+# Jokers that benefit from playing the same hand type consecutively
+SEQUENCE_JOKERS = _keys_where(lambda p: p.trigger == "play_same_type")
+
 # Jokers that scale from shop actions
 SHOP_SCALERS = _keys_where(lambda p: p.trigger in ("sell", "planet", "skip_pack", "reroll"))
 
@@ -217,6 +276,16 @@ DECAY_JOKERS = _keys_where(lambda p: p.gain_per < 0)
 ANTI_DISCARD = _keys_where(
     lambda p: p.trigger == "per_discard_left" or (p.trigger == "discard" and p.gain_per < 0)
 ) | {"j_green_joker"}  # Green Joker loses mult on discard
+
+# Anti-milk jokers: their presence should reduce or skip milking
+ANTI_MILK = frozenset({"j_glass", "j_selzer"}) | DECAY_JOKERS
+
+# First-hand jokers: benefit from specific first-hand-of-round plays
+# Sixth Sense requires solo 6 (too costly), DNA requires solo card — both priority 0.
+FIRST_HAND_JOKERS = frozenset({"j_sixth_sense", "j_dna"})
+
+# First-discard jokers: benefit from strategic first discard of round
+FIRST_DISCARD_JOKERS = frozenset({"j_burnt"})
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +316,7 @@ ANTI_SYNERGY: dict[str, frozenset[str]] = {
     # Slot conflicts
     "j_stencil":        frozenset({"j_abstract", "j_riff_raff"}),
     "j_abstract":       frozenset({"j_stencil"}),
+    "j_riff_raff":      frozenset({"j_stencil"}),
     # Enhancement conflicts
     "j_vampire":        frozenset({"j_glass", "j_lucky_cat"}),
     # Strategy conflicts

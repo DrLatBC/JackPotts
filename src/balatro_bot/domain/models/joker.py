@@ -31,6 +31,8 @@ class JokerAbility:
     dollars: float | None = None
     driver_tally: int | None = None
     odds: int | None = None
+    poker_hand: str | None = None
+    to_do_poker_hand: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,8 @@ def joker_from_dict(d: dict | Joker) -> Joker:
                 dollars=ab.get("dollars"),
                 driver_tally=ab.get("driver_tally"),
                 odds=ab.get("odds"),
+                poker_hand=ab.get("poker_hand"),
+                to_do_poker_hand=ab.get("to_do_poker_hand"),
             ),
         ),
         modifier=CardModifier(
