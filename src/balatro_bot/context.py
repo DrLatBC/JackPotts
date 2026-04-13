@@ -156,8 +156,7 @@ class RoundContext:
         forced_card_idx = None
         if blind_name == "Cerulean Bell" and not boss_disabled:
             for i, c in enumerate(hand_cards):
-                s = c.get("state", {})
-                if isinstance(s, dict) and s.get("highlight"):
+                if c.state.highlight:
                     forced_card_idx = i
                     break
 

@@ -56,7 +56,7 @@ class HandCandidate:
         self.priority = HAND_INFO[hand_name][2]
 
     def __repr__(self) -> str:
-        labels = [c.get("label", "?") for c in self.cards]
+        labels = [c.label if hasattr(c, "label") else c.get("label", "?") for c in self.cards]
         return f"HandCandidate({self.hand_name}, total={self.total}, cards={labels})"
 
 

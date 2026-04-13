@@ -153,8 +153,7 @@ def build_round_plan(ctx: RoundContext) -> RoundPlan | None:
     if "j_glass" in joker_keys:
         glass_count = sum(
             1 for c in ctx.hand_cards
-            if (c.get("value", {}).get("ability", {}).get("enhancement")
-                or c.get("modifier", {}).get("enhancement", "")) == "GLASS"
+            if (c.modifier.enhancement if hasattr(c, 'modifier') else None) == "GLASS"
         )
         if glass_count > 0:
             old_budget = milk_budget
@@ -819,13 +818,12 @@ def _dna_solo(ctx: RoundContext) -> Action | None:
         score = rank_value(r)
 
         # Prefer enhanced cards — duplicating an enhanced card is very strong
-        enhancement = (c.get("value", {}).get("ability", {}).get("enhancement")
-                       or c.get("modifier", {}).get("enhancement", ""))
+        enhancement = c.modifier.enhancement if hasattr(c, 'modifier') else None
         if enhancement and enhancement != "NONE":
             score += 100  # heavily prefer enhanced
 
         # Prefer cards with seals
-        seal = c.get("modifier", {}).get("seal") or c.get("value", {}).get("seal", "")
+        seal = c.modifier.seal if hasattr(c, 'modifier') else None
         if seal and seal != "NONE":
             score += 50
 

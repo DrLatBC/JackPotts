@@ -65,11 +65,19 @@ def compute_budget(money: int, ante: int, joker_count: int = 0) -> Budget:
     rounds_est = max(1, (8 - ante) * 3)
 
     if ante <= 3:
-        phase, reserve, aggression = "BUILD", 25, 0.3
+        phase, reserve, aggression = "BUILD", 15, 0.6
     elif ante <= 5:
-        phase, reserve, aggression = "FLEX", 15, 0.6
+        phase, reserve, aggression = "FLEX", 10, 0.7
     else:
         phase, reserve, aggression = "SPEND", 5, 1.0
+
+    # Empty slots override: with open joker slots the bot MUST buy to scale.
+    # Each empty slot below 3 owned pushes aggression toward 1.0.
+    # At 0 jokers: aggression=1.0; at 1: ≥0.85; at 2: ≥0.7; 3+: phase default.
+    if joker_count < 3:
+        slot_aggression = 1.0 - joker_count * 0.15  # 1.0, 0.85, 0.7
+        aggression = max(aggression, slot_aggression)
+        reserve = min(reserve, 5)  # relax reserve when roster is thin
 
     # Early game: don't let reserve block all spending
     # Keep at least half of money available for purchases
@@ -573,6 +581,7 @@ class ShopEvaluator:
         self._last_order: list[int] | None = None
         self._rerolls_this_shop: int = 0
         self._last_round: int = -1
+        self.slots_full: bool = False  # set by bot.py on "slots are full" API error
         # SellInvisible state
         self._invisible_first_seen: int | None = None
         self._invisible_selling_down: bool = False
@@ -581,10 +590,11 @@ class ShopEvaluator:
         """Main entry point — called once per shop tick."""
         round_num = state.get("round_num", 0)
 
-        # Reset reroll counter on new shop visit
+        # Reset per-shop state on new shop visit
         if round_num != self._last_round:
             self._rerolls_this_shop = 0
             self._last_round = round_num
+            self.slots_full = False
             self.pending_plan = None
             self._pending_sell_keys = {}
             self._last_order = None
@@ -639,15 +649,25 @@ class ShopEvaluator:
             candidates.append(inv_plan)
 
         # 1. Baseline: do nothing and leave
-        interest_value = min(money // 5, 5) * budget.rounds_est * max(0.0, 1.0 - budget.aggression)
+        # This is a LOW floor — actual interest preservation is handled by
+        # _money_opportunity_cost on each purchase. The baseline just ensures
+        # the bot leaves when nothing is worth buying at all.
+        # Scale with inverse aggression so SPEND phase always buys if anything > 0.
+        leave_value = 0.5 * max(0.0, 1.0 - budget.aggression)
         candidates.append(ActionPlan(
             steps=[NextRound(reason="done shopping")],
-            net_value=interest_value * 0.1,  # low baseline, acts as floor
+            net_value=leave_value,
             description="leave shop",
         ))
 
         # 2. Buy jokers
-        slots_open = joker_count < joker_limit
+        # Use len(owned) as ground truth — joker_count from API can be stale.
+        # Also respect slots_full flag set by bot.py when API rejected a buy.
+        actual_count = max(joker_count, len(owned))
+        slots_open = actual_count < joker_limit and not self.slots_full
+        if joker_count != len(owned):
+            log.warning("[SHOP] joker_count mismatch: API count=%d, len(cards)=%d, limit=%d",
+                        joker_count, len(owned), joker_limit)
         weakest = min(roster, key=lambda r: r.ev_delta) if roster else None
 
         for i, card in enumerate(shop.get("cards", [])):

@@ -396,12 +396,25 @@ def run_bot(
             gs.consecutive_errors += 1
             log.warning("API error: %s (%s) — retry %d", e.message, e.name, gs.consecutive_errors)
 
-            # If a consumable use was rejected, clear Fool tracking so
-            # the rule engine doesn't keep trying the same consumable.
+            # If a consumable use was rejected, block that index so the
+            # rule engine doesn't keep trying the same consumable this round.
             if method == "use" and e.name == "NOT_ALLOWED":
+                blocked_idx = (params or {}).get("consumable")
                 for rule in engine.rules.get(game_state, []):
                     if hasattr(rule, "_last_used_consumable"):
                         rule._last_used_consumable = None
+                    if hasattr(rule, "_blocked_consumables") and blocked_idx is not None:
+                        rule._blocked_consumables.add(blocked_idx)
+                        log.info("Blocked consumable index %d for this round", blocked_idx)
+                        break
+
+            # If a joker buy was rejected due to full slots, tell the
+            # shop evaluator so it stops trying to buy jokers this visit.
+            if "joker slots are full" in e.message:
+                for rule in engine.rules.get("SHOP", []):
+                    evaluator = getattr(rule, "_evaluator", None)
+                    if evaluator is not None:
+                        evaluator.slots_full = True
                         break
 
             if gs.consecutive_errors >= 5:
