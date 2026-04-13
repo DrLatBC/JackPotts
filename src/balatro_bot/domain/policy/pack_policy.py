@@ -359,11 +359,9 @@ def choose_from_tarot_pack(
         if score <= best_score:
             continue
 
-        # For targeting tarots, verify we have valid targets in hand
+        # For targeting tarots, also verify we have valid targets
         targets = None
-        if key in TARGETING_TAROTS:
-            if not hand_cards:
-                continue  # can't target with empty hand
+        if key in TARGETING_TAROTS and hand_cards:
             max_count, effect_type, extra = TARGETING_TAROTS[key]
             found_targets, _ = _find_tarot_targets(
                 effect_type, extra, max_count, hand_cards, jokers, strat,
