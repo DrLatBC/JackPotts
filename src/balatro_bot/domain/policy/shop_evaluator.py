@@ -64,8 +64,12 @@ def compute_budget(money: int, ante: int, joker_count: int = 0) -> Budget:
     """
     rounds_est = max(1, (8 - ante) * 3)
 
-    if ante <= 3:
-        phase, reserve, aggression = "BUILD", 15, 0.6
+    if ante <= 2:
+        # Antes 1-2: spend everything on scoring power.  Dead runs earn
+        # no interest — there is no economy to protect this early.
+        phase, reserve, aggression = "BUILD", 0, 1.0
+    elif ante <= 3:
+        phase, reserve, aggression = "BUILD", 15, 0.7
     elif ante <= 5:
         phase, reserve, aggression = "FLEX", 10, 0.7
     else:
@@ -698,8 +702,11 @@ class ShopEvaluator:
             if is_negative:
                 shop_value = max(shop_value, 10.0)  # free slot is always high value
 
-            if slots_open or is_negative:
-                # Direct buy
+            if slots_open or (is_negative and actual_count < joker_limit):
+                # Direct buy — Negative jokers don't consume a slot after
+                # purchase, but the game still requires count < limit at buy
+                # time.  When count is already at limit (from a prior Negative),
+                # fall through to the sell-then-buy path below.
                 opp_cost = _money_opportunity_cost(cost, money, budget)
                 net = shop_value * budget.aggression - opp_cost
                 if cost <= budget.spend_ceiling or is_negative or shop_value >= 8.0:
@@ -709,14 +716,23 @@ class ShopEvaluator:
                         description=f"buy {label}",
                     ))
 
-            elif weakest is not None and not is_negative:
-                # Sell weakest + buy (slots full)
-                # Find the weakest joker that isn't polychrome
+            elif weakest is not None:
+                # Sell weakest + buy (slots full).
+                # For Negative jokers this is especially valuable: selling
+                # frees a slot for the buy check, but the Negative doesn't
+                # consume the slot — net result is no joker lost.
                 sell_candidates = sorted(roster, key=lambda r: r.ev_delta)
                 for sc in sell_candidates:
                     if _get_edition(owned[sc.index]) == "POLYCHROME":
                         continue
-                    upgrade_delta = shop_value - sc.ev_delta
+                    if is_negative:
+                        # Negative: sell weakest then buy = net +1 joker.
+                        # Value = the Negative's value (we keep everything
+                        # except the sold joker, which comes back as a free
+                        # slot once the Negative lands).
+                        upgrade_delta = shop_value
+                    else:
+                        upgrade_delta = shop_value - sc.ev_delta
                     sell_cash = sc.sell_value
                     effective_cost = cost - sell_cash
                     if effective_cost > money:
@@ -726,7 +742,7 @@ class ShopEvaluator:
                     net = upgrade_delta * budget.aggression * 0.7 - opp_cost
                     if net > 0:
                         steps = [
-                            SellJoker(sc.index, reason=f"sell {sc.label} (ev={sc.ev_delta:.1f}) for upgrade"),
+                            SellJoker(sc.index, reason=f"sell {sc.label} (ev={sc.ev_delta:.1f}) for {'Negative buy' if is_negative else 'upgrade'}"),
                         ]
                         # After sell, the shop card index is still i but joker indices shift
                         # The engine re-evaluates each tick, so we just emit the sell

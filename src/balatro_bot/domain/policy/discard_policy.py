@@ -182,7 +182,7 @@ def _chase_ev(candidate: ChaseCandidate, ctx: RoundContext, miss_ev: float) -> f
 
 # Minimum EV multiplier a chase must beat play_ev by.
 # Scales with discard scarcity: burning your last discard needs a bigger payoff.
-_BASE_CHASE_MARGIN = 1.2       # chase must be at least 1.2× play_ev
+_BASE_CHASE_MARGIN = 1.3       # chase must be at least 1.3× play_ev
 _SCARCITY_BONUS_PER = 0.15     # +0.15× for each discard already used
 
 _HAND_ABBREV = {

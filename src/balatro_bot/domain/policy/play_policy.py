@@ -161,7 +161,25 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
         )
 
     # No valid hand found (e.g. The Mouth locked to a hand type we can't form).
+    # Discard aggressively to try to draw into the locked hand type.
+    # Playing a non-matching type is pointless — The Mouth debuffs all cards.
     if ctx.mouth_locked_hand and ctx.hand_cards:
+        if ctx.discards_left > 0:
+            suggestions = discard_candidates(
+                ctx.hand_cards, ctx.hand_levels,
+                max_discard=min(5, ctx.discards_left),
+                deck_cards=ctx.deck_cards,
+                chips_remaining=ctx.chips_remaining,
+                jokers=ctx.jokers,
+                required_hand=ctx.mouth_locked_hand,
+            )
+            if suggestions and suggestions[0].discard_indices:
+                return DiscardCards(
+                    suggestions[0].discard_indices,
+                    reason=f"mouth locked ({ctx.mouth_locked_hand}) but can't form it: "
+                           f"discarding to chase ({suggestions[0].reason})",
+                )
+        # No discards left — forced to play something (will score near-zero).
         unconstrained = best_hand(
             ctx.hand_cards, ctx.hand_levels,
             min_select=ctx.min_cards, jokers=ctx.jokers,
@@ -173,7 +191,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
             indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
             return PlayCards(
                 indices,
-                reason=f"mouth locked ({ctx.mouth_locked_hand}) but can't form it: "
+                reason=f"mouth locked ({ctx.mouth_locked_hand}) but can't form it (no discards): "
                        f"playing {unconstrained.hand_name} for {unconstrained.total}",
                 hand_name=unconstrained.hand_name,
                 total=unconstrained.total,

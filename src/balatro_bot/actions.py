@@ -156,7 +156,7 @@ class PackAction:
             return "pack", {"skip": True}
         params: dict[str, Any] = {"card": self.card_index}
         if self.targets is not None:
-            params["targets"] = self.targets
+            params["cards"] = self.targets
         return "pack", params
 
 

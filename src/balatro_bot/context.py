@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # Round outlook thresholds (projected score / chips remaining)
 # ---------------------------------------------------------------------------
 _COMFORTABLE_RATIO = 1.5   # >= this → comfortable, blind is well in hand
-_TIGHT_RATIO = 0.8         # >= this → tight, every hand matters
+_TIGHT_RATIO = 0.9         # >= this → tight, every hand matters
 
 __all__ = ["RoundContext"]
 
@@ -146,12 +146,12 @@ class RoundContext:
         hands_left = snapshot.round.hands_left
         discards_left = snapshot.round.discards_left
 
-        joker_count = len(jokers)
-        score_discount = (
-            (joker_count - 1) / joker_count if blind_name == "Crimson Heart" and joker_count > 1 and not boss_disabled
-            else 0.5 if blind_name == "Crimson Heart" and not boss_disabled
-            else 1.0
-        )
+        # Crimson Heart: one random joker is debuffed each hand.  The API
+        # reports which joker is currently debuffed, and the scoring pipeline
+        # (score_hand / score_hand_detailed) already skips debuffed jokers via
+        # is_joker_debuffed().  So ctx.best.total already reflects the penalty.
+        # No additional score_discount is needed — applying one double-counts.
+        score_discount = 1.0
 
         forced_card_idx = None
         if blind_name == "Cerulean Bell" and not boss_disabled:

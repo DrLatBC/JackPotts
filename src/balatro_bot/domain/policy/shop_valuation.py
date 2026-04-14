@@ -477,12 +477,14 @@ def _context_scale(
     cat = _KEY_TO_CATEGORY.get(candidate_key)
     factor = 1.0
 
-    # Ante urgency: xMult critical late, flat less so
-    if cat and ante >= 4:
-        if cat == "xmult":
-            factor *= min(1.0 + (ante - 3) * 0.4, 2.6)   # 1.4 @ ante 4, 2.6 @ ante 7+
+    # Ante urgency: xMult is always valuable; prefer it even early
+    if cat == "xmult":
+        if ante <= 3:
+            factor *= 1.15                                     # mild early-game preference
         else:
-            factor *= max(1.0 - (ante - 3) * 0.1, 0.6)    # 0.9 @ ante 4, 0.6 @ ante 7+
+            factor *= min(1.0 + (ante - 3) * 0.4, 2.6)        # 1.4 @ ante 4, 2.6 @ ante 7+
+    elif cat and ante >= 4:
+        factor *= max(1.0 - (ante - 3) * 0.1, 0.6)            # 0.9 @ ante 4, 0.6 @ ante 7+
 
     # Diminishing returns within same category
     if cat:
