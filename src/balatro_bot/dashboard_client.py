@@ -14,32 +14,30 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-JACKPOTTS_URL = os.environ.get("JACKPOTTS_URL", "").rstrip("/")
-JACKPOTTS_API_KEY = os.environ.get("JACKPOTTS_API_KEY", "")
-
 _TIMEOUT = 5.0
 
 
-def _enabled() -> bool:
-    return bool(JACKPOTTS_URL)
+def _url() -> str:
+    return os.environ.get("JACKPOTTS_URL", "").rstrip("/")
 
 
-def _headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {JACKPOTTS_API_KEY}",
-        "Content-Type": "application/json",
-    }
+def _key() -> str:
+    return os.environ.get("JACKPOTTS_API_KEY", "")
 
 
 def _post(path: str, json: dict) -> Optional[dict]:
     """POST to the dashboard API. Returns response JSON or None on failure."""
-    if not _enabled():
+    url = _url()
+    if not url:
         return None
     try:
         resp = httpx.post(
-            f"{JACKPOTTS_URL}{path}",
+            f"{url}{path}",
             json=json,
-            headers=_headers(),
+            headers={
+                "Authorization": f"Bearer {_key()}",
+                "Content-Type": "application/json",
+            },
             timeout=_TIMEOUT,
         )
         resp.raise_for_status()
