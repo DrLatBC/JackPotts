@@ -8,6 +8,7 @@ import random
 import re
 import string
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 
 import httpx
@@ -44,6 +45,9 @@ class GameLoopState:
     max_chips_this_blind: int = 0
     won_logged: bool = False
     actually_won: bool = False
+    round_results: list = field(default_factory=list)
+    jokers_bought: list = field(default_factory=list)
+    hand_types_played: Counter = field(default_factory=Counter)
 
 
 class WinCaptureHandler(logging.handlers.MemoryHandler):
@@ -193,6 +197,7 @@ def run_bot(
     seed: str | None = None,
     poll_interval: float = 0.2,
     stream_delay: float = 0.0,
+    dashboard_batch_id: int | None = None,
 ) -> bool:
     """Main bot loop. Returns True if the game was won."""
     from balatro_bot.bot_logging import (
@@ -325,6 +330,14 @@ def run_bot(
                     pass
                 time.sleep(0.5)
 
+        # Capture joker label before buy RPC (state changes after call)
+        _buying_joker_label = None
+        if method == "buy" and params and "card" in params:
+            shop_cards = state.get("shop", {}).get("cards", [])
+            idx = params["card"]
+            if idx < len(shop_cards) and shop_cards[idx].get("set") == "JOKER":
+                _buying_joker_label = shop_cards[idx].get("label", "?")
+
         pre_play_chips = 0
         play_snapshot = None
         if method == "play":
@@ -343,6 +356,9 @@ def run_bot(
             gs.actions_taken += 1
             if method == "play":
                 gs.total_hands_played += 1
+                hand_name = getattr(action, "hand_name", "") or ""
+                if hand_name:
+                    gs.hand_types_played[hand_name] += 1
                 post_chips = state.get("round", {}).get("chips", 0)
                 _scoring_log.info("  POST_PLAY chips_in_round=%d, delta=%d", post_chips, post_chips - pre_play_chips)
                 # The Hook discards 2 held cards BEFORE scoring (before
@@ -352,6 +368,12 @@ def run_bot(
                 log_played_hand(play_snapshot, pre_play_chips, state)
             elif method == "discard":
                 gs.total_discards_used += 1
+
+            if _buying_joker_label:
+                gs.jokers_bought.append({
+                    "joker_name": _buying_joker_label,
+                    "buy_ante": state.get("ante_num", 0),
+                })
 
             detect_joker_changes(gs, state)
 
@@ -435,4 +457,36 @@ def run_bot(
                 if _boss_disabled_before:
                     state["_boss_disabled"] = True
     log_game_over(gs, state)
+
+    # POST game data to dashboard
+    if dashboard_batch_id:
+        from balatro_bot import dashboard_client
+        joker_cards = state.get("jokers", {}).get("cards", [])
+        final_roster = {j.get("label", "?") for j in joker_cards}
+        dashboard_client.post_game(dashboard_batch_id, {
+            "instance_port": client.port,
+            "seed": state.get("seed", ""),
+            "deck": deck,
+            "stake": stake,
+            "win": gs.actually_won,
+            "final_ante": state.get("ante_num", 0),
+            "final_round": state.get("round_num", 0),
+            "actions": gs.actions_taken,
+            "final_money": state.get("money", 0),
+            "final_jokers": ", ".join(j.get("label", "?") for j in joker_cards),
+            "total_hands": gs.total_hands_played,
+            "total_discards": gs.total_discards_used,
+            "rounds": gs.round_results,
+            "jokers": [
+                {
+                    "joker_name": jb["joker_name"],
+                    "in_final_roster": jb["joker_name"] in final_roster,
+                    "buy_ante": jb["buy_ante"],
+                    "final_value": None,
+                }
+                for jb in gs.jokers_bought
+            ],
+            "hand_types": dict(gs.hand_types_played),
+        })
+
     return gs.actually_won

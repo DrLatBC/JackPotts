@@ -32,6 +32,8 @@ def main() -> None:
                         help="Seconds to pause after each bot action (used by supervisor --stream)")
     parser.add_argument("--stream-log", action="store_true",
                         help="Route logs to bot_log/stream/ instead of bot_log/{port}/")
+    parser.add_argument("--dashboard-batch-id", type=int, default=None,
+                        help="Dashboard batch ID for reporting game results")
     args = parser.parse_args()
 
     if args.stream_log:
@@ -94,6 +96,7 @@ def main() -> None:
                 stake=args.stake,
                 seed=args.seed,
                 stream_delay=args.stream_delay,
+                dashboard_batch_id=args.dashboard_batch_id,
             )
             if won:
                 wins += 1

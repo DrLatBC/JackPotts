@@ -45,6 +45,19 @@ def log_blind_result(gs: GameLoopState, result: str = "WON") -> None:
             target_str, hands_used, discards_used,
         )
 
+    # Accumulate for dashboard reporting
+    is_boss = gs.current_blind_name.startswith("The ") if gs.current_blind_name else False
+    gs.round_results.append({
+        "ante": gs.last_ante or 0,
+        "blind_name": gs.current_blind_name,
+        "is_boss": is_boss,
+        "scored": gs.max_chips_this_blind,
+        "needed": gs.current_blind_target if isinstance(gs.current_blind_target, int) else 0,
+        "won": result == "WON",
+        "hands_used": hands_used,
+        "discards_used": discards_used,
+    })
+
 
 # ---------------------------------------------------------------------------
 # Per-state logging helpers

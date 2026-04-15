@@ -22,6 +22,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from balatro_bot import dashboard_client
 from balatro_bot.config import SupervisorConfig
 
 # ---------------------------------------------------------------------------
@@ -252,6 +253,7 @@ class Supervisor:
         self.session_num = 0
         self.session_start: float = 0.0
         self._shutdown_done = False
+        self.dashboard_batch_id: int | None = None
 
     def setup(self) -> None:
         WINS_DIR.mkdir(parents=True, exist_ok=True)
@@ -266,6 +268,14 @@ class Supervisor:
 
         self.session_num = compute_session_number()
         (LOG_DIR / "next_num.txt").write_text(str(self.session_num))
+
+        self.dashboard_batch_id = dashboard_client.post_batch_start(
+            batch_number=self.session_num,
+            num_instances=len(self.slots),
+            games_per_inst=self.games,
+            decks=",".join(self.decks),
+            stake=self.stake,
+        )
 
         # Clear stale progress files from previous sessions
         for slot in self.slots:
@@ -327,6 +337,8 @@ class Supervisor:
             cmd.append("--verbose")
         if self.stream:
             cmd.extend(["--stream-delay", "2.0", "--stream-log"])
+        if self.dashboard_batch_id:
+            cmd.extend(["--dashboard-batch-id", str(self.dashboard_batch_id)])
         slot.bot_proc = subprocess.Popen(
             cmd,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
@@ -474,6 +486,22 @@ class Supervisor:
         print(f"  Active: {active}  Done: {done}  Wins: {total_wins}{win_pct}  Session: {self.session_num}{rate_str}")
         print(f"  Ctrl+C to stop all")
 
+        if self.dashboard_batch_id:
+            dashboard_client.post_instance_states(self.dashboard_batch_id, [
+                {
+                    "port": s.port,
+                    "name": s.name,
+                    "deck": self._deck_for_slot(s),
+                    "state": s.state,
+                    "games_completed": int(s.progress.split("/")[0]) if "/" in s.progress else 0,
+                    "games_total": self.games,
+                    "wins": s.wins,
+                    "restarts": s.restarts,
+                    "last_reason": s.last_reason,
+                }
+                for s in self.slots
+            ])
+
     def run(self) -> None:
         setup_supervisor_logging()
         self.setup()
@@ -541,6 +569,8 @@ class Supervisor:
                 log.warning("stats exited with rc=%d", result.returncode)
         except Exception as e:
             log.warning("Failed to run stats: %s", e)
+        if self.dashboard_batch_id:
+            dashboard_client.post_batch_finish(self.dashboard_batch_id)
         self._rotate_logs()
 
     def _rotate_logs(self, keep: int = 10) -> None:
