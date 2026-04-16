@@ -87,6 +87,34 @@ def _pick_princess_name(taken: set[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Soft-lock cycle detection
+# ---------------------------------------------------------------------------
+
+_MIN_REPS = 5  # require at least 5 full repetitions to flag a cycle
+_MAX_PERIOD = 4  # check cycles of period 1, 2, 3, 4
+
+
+def _has_repeating_cycle(lines: list[str]) -> bool:
+    """Detect short repeating cycles (period 1-4) in recent log lines.
+
+    Returns True if the last N lines form a repeating pattern of any short
+    period with at least _MIN_REPS full repetitions.  Catches both single-line
+    loops (A-A-A) and multi-line cycles (A-B-A-B or A-B-C-A-B-C).
+    """
+    n = len(lines)
+    for period in range(1, _MAX_PERIOD + 1):
+        required = period * _MIN_REPS
+        if n < required:
+            continue
+        # Check from the tail: do the last `required` lines repeat with this period?
+        tail = lines[-required:]
+        pattern = tail[:period]
+        if all(tail[i] == pattern[i % period] for i in range(required)):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Slot
 # ---------------------------------------------------------------------------
 
@@ -183,8 +211,7 @@ class Slot:
         if len(self.recent_lines) < 20:
             return False
 
-        unique_ratio = len(set(self.recent_lines)) / len(self.recent_lines)
-        if unique_ratio <= 0.25:
+        if _has_repeating_cycle(list(self.recent_lines)):
             if self.loop_start == 0.0:
                 self.loop_start = time.time()
             return time.time() - self.loop_start >= 60

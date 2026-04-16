@@ -592,6 +592,9 @@ def run_bot(
         from balatro_bot import dashboard_client
         joker_cards = state.get("jokers", {}).get("cards", [])
         final_roster = {j.get("label", "?") for j in joker_cards}
+        _rerolls = sum(1 for e in gs.shop_events if e.get("event_type") == "reroll")
+        _pack_picks = sum(1 for e in gs.shop_events if e.get("event_type") == "buy" and e.get("item_type") == "pack")
+        _pack_skips = sum(1 for e in gs.shop_events if e.get("event_type") == "skip" and e.get("item_type") == "pack")
         dashboard_client.post_game(dashboard_batch_id, {
             "instance_port": client.port,
             "seed": state.get("seed", ""),
@@ -601,6 +604,9 @@ def run_bot(
             "final_ante": state.get("ante_num", 0),
             "final_round": state.get("round_num", 0),
             "actions": gs.actions_taken,
+            "rerolls": _rerolls,
+            "pack_picks": _pack_picks,
+            "pack_skips": _pack_skips,
             "final_money": state.get("money", 0),
             "final_jokers": ", ".join(j.get("label", "?") for j in joker_cards),
             "total_hands": gs.total_hands_played,

@@ -772,7 +772,11 @@ class ShopEvaluator:
                         ))
 
         # 4. General reorder (scoring optimization)
-        if owned:
+        # Skip if dagger fodder plan exists — feeding a joker to Dagger for
+        # permanent mult is more valuable than phase ordering, and the two
+        # plans produce incompatible orders that cause an infinite loop.
+        has_dagger_fodder = any("feed" in c.description for c in candidates)
+        if owned and not has_dagger_fodder:
             new_order = _compute_optimal_order(owned)
             if new_order is not None and new_order != self._last_order:
                 phase_names = {PHASE_NOOP: "noop", PHASE_CHIPS: "+c", PHASE_MULT: "+m", PHASE_XMULT: "xm"}
