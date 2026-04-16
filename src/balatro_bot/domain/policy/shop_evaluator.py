@@ -46,12 +46,22 @@ log = logging.getLogger("balatro_bot")
 
 @dataclass(frozen=True)
 class Budget:
-    """Economy plan for this shop visit."""
-    phase: str          # "BUILD", "FLEX", "SPEND"
-    reserve: int        # money floor — don't dip below
-    spend_ceiling: int  # max we'll spend this visit
-    aggression: float   # 0.0-1.0 — how eagerly we trade money for EV
-    rounds_est: int     # estimated rounds remaining in the run
+    """Economy plan for this shop visit.
+
+    Two aggression dials separate concerns that used to share one knob:
+      - scoring_aggression: how eagerly to buy scoring power (jokers,
+        planets/tarots, Celestial/Buffoon packs, Campfire feed). High early
+        because building scoring power is the whole point of the early game.
+      - speculative_aggression: how eagerly to make variance spends (rerolls,
+        vouchers, Arcana/Spectral packs, Diet Cola sell). Low early because
+        these trade real money for uncertain EV and break interest stacking.
+    """
+    phase: str                       # "BUILD", "FLEX", "SPEND"
+    reserve: int                     # money floor — don't dip below
+    spend_ceiling: int               # max we'll spend this visit
+    scoring_aggression: float        # 0.0-1.0 — buy scoring power
+    speculative_aggression: float    # 0.0-1.0 — speculative spends
+    rounds_est: int                  # estimated rounds remaining
 
 
 def compute_budget(money: int, ante: int, joker_count: int = 0) -> Budget:
@@ -60,27 +70,33 @@ def compute_budget(money: int, ante: int, joker_count: int = 0) -> Budget:
     The reserve is a *soft target*, not a hard floor. The spend_ceiling
     ensures the bot can always spend something meaningful — it just costs
     more in opportunity cost when dipping below reserve (handled by
-    _money_opportunity_cost).
+    _money_opportunity_cost, which uses speculative_aggression).
     """
     rounds_est = max(1, (8 - ante) * 3)
 
     if ante <= 2:
-        # Antes 1-2: spend everything on scoring power.  Dead runs earn
-        # no interest — there is no economy to protect this early.
-        phase, reserve, aggression = "BUILD", 0, 1.0
+        # Antes 1-2: build scoring aggressively, but don't burn cash on
+        # rerolls or $10 vouchers — interest stacking still matters once
+        # the roster has anything to protect.
+        phase, reserve = "BUILD", 0
+        scoring_agg, speculative_agg = 1.0, 0.3
     elif ante <= 3:
-        phase, reserve, aggression = "BUILD", 15, 0.7
+        phase, reserve = "BUILD", 15
+        scoring_agg, speculative_agg = 0.8, 0.5
     elif ante <= 5:
-        phase, reserve, aggression = "FLEX", 10, 0.7
+        phase, reserve = "FLEX", 10
+        scoring_agg, speculative_agg = 0.7, 0.7
     else:
-        phase, reserve, aggression = "SPEND", 5, 1.0
+        phase, reserve = "SPEND", 5
+        scoring_agg, speculative_agg = 1.0, 1.0
 
     # Empty slots override: with open joker slots the bot MUST buy to scale.
-    # Each empty slot below 3 owned pushes aggression toward 1.0.
-    # At 0 jokers: aggression=1.0; at 1: ≥0.85; at 2: ≥0.7; 3+: phase default.
+    # Each empty slot below 3 owned pushes scoring aggression toward 1.0.
+    # Speculative aggression is NOT boosted — empty slots don't make rerolls
+    # or vouchers any better.
     if joker_count < 3:
         slot_aggression = 1.0 - joker_count * 0.15  # 1.0, 0.85, 0.7
-        aggression = max(aggression, slot_aggression)
+        scoring_agg = max(scoring_agg, slot_aggression)
         reserve = min(reserve, 5)  # relax reserve when roster is thin
 
     # Early game: don't let reserve block all spending
@@ -89,13 +105,14 @@ def compute_budget(money: int, ante: int, joker_count: int = 0) -> Budget:
     # won't cause reckless spending — just allows it when EV justifies it
     spend_ceiling = max(money // 2, money - reserve)
 
-    # No jokers yet: must buy something, ignore economy constraints
+    # No jokers yet: must buy something, ignore economy constraints.
+    # Speculative aggression stays put — we want jokers, not rerolls.
     if joker_count == 0:
         spend_ceiling = money
         reserve = 0
-        aggression = 1.0
+        scoring_agg = 1.0
 
-    return Budget(phase, reserve, spend_ceiling, aggression, rounds_est)
+    return Budget(phase, reserve, spend_ceiling, scoring_agg, speculative_agg, rounds_est)
 
 
 # ---------------------------------------------------------------------------
@@ -559,16 +576,22 @@ def _invisible_plan(
 # Money cost opportunity
 # ---------------------------------------------------------------------------
 
-def _money_opportunity_cost(cost: int, money: int, budget: Budget) -> float:
-    """How much is spending $cost worth in lost future interest?"""
+def _money_opportunity_cost(cost: int, money: int, budget: Budget,
+                            category_aggression: float) -> float:
+    """How much is spending $cost worth in lost future interest?
+
+    Scoped to the category making the purchase: a joker buy at high
+    scoring_aggression has low opp_cost (we *want* to break interest for
+    scoring), while a voucher buy at low speculative_aggression pays the
+    full interest tax. Without this scoping, a high speculative_aggression
+    would subsidize speculation and a low one would block scoring — both
+    wrong.
+    """
     current_interest = min(money // 5, 5)
     after_interest = min((money - cost) // 5, 5)
     lost_per_round = current_interest - after_interest
 
-    # Weight by rounds remaining and inverse aggression
-    # During SPEND phase (aggression=1.0), opportunity cost is near zero
-    # During BUILD (0.3), losing $1/round for 9 rounds hurts
-    cost_factor = max(0.0, 1.0 - budget.aggression)
+    cost_factor = max(0.0, 1.0 - category_aggression)
     return lost_per_round * budget.rounds_est * cost_factor
 
 
@@ -656,8 +679,9 @@ class ShopEvaluator:
         # This is a LOW floor — actual interest preservation is handled by
         # _money_opportunity_cost on each purchase. The baseline just ensures
         # the bot leaves when nothing is worth buying at all.
-        # Scale with inverse aggression so SPEND phase always buys if anything > 0.
-        leave_value = 0.5 * max(0.0, 1.0 - budget.aggression)
+        # Scale with inverse speculative aggression: when speculation is cheap
+        # (BUILD), leaving is more attractive than gambling on the shop.
+        leave_value = 0.5 * max(0.0, 1.0 - budget.speculative_aggression)
         candidates.append(ActionPlan(
             steps=[NextRound(reason="done shopping")],
             net_value=leave_value,
@@ -707,8 +731,9 @@ class ShopEvaluator:
                 # purchase, but the game still requires count < limit at buy
                 # time.  When count is already at limit (from a prior Negative),
                 # fall through to the sell-then-buy path below.
-                opp_cost = _money_opportunity_cost(cost, money, budget)
-                net = shop_value * budget.aggression - opp_cost
+                opp_cost = _money_opportunity_cost(cost, money, budget,
+                                                   budget.scoring_aggression)
+                net = shop_value * budget.scoring_aggression - opp_cost
                 if cost <= budget.spend_ceiling or is_negative or shop_value >= 8.0:
                     steps = [BuyCard(i, reason=f"buy {label} (${cost}, value={shop_value:.1f})")]
                     candidates.append(ActionPlan(
@@ -737,9 +762,10 @@ class ShopEvaluator:
                     effective_cost = cost - sell_cash
                     if effective_cost > money:
                         continue
-                    opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget)
+                    opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
+                                                       budget.scoring_aggression)
                     # Discount 30%: only the sell emits this tick, buy is uncertain
-                    net = upgrade_delta * budget.aggression * 0.7 - opp_cost
+                    net = upgrade_delta * budget.scoring_aggression * 0.7 - opp_cost
                     if net > 0:
                         steps = [
                             SellJoker(sc.index, reason=f"sell {sc.label} (ev={sc.ev_delta:.1f}) for {'Negative buy' if is_negative else 'upgrade'}"),
@@ -767,7 +793,7 @@ class ShopEvaluator:
                         candidates.append(ActionPlan(
                             steps=[RearrangeJokers(order=new_order,
                                                    reason=f"feed {r.label} to Dagger (+{r.fodder_mult:.0f} mult)")],
-                            net_value=r.fodder_mult * budget.aggression,
+                            net_value=r.fodder_mult * budget.scoring_aggression,
                             description=f"feed {r.label} to Dagger",
                         ))
 
@@ -807,8 +833,9 @@ class ShopEvaluator:
                 if value <= 0:
                     continue
 
-                opp_cost = _money_opportunity_cost(cost, money, budget)
-                net = value * budget.aggression - opp_cost
+                opp_cost = _money_opportunity_cost(cost, money, budget,
+                                                   budget.scoring_aggression)
+                net = value * budget.scoring_aggression - opp_cost
                 if cost <= budget.spend_ceiling or value >= 4.0:
                     candidates.append(ActionPlan(
                         steps=[BuyCard(i, reason=f"buy consumable: {label} (${cost}, value={value:.1f})")],
@@ -832,8 +859,14 @@ class ShopEvaluator:
             if "Buffoon" in label and not has_red_card and joker_count >= joker_limit:
                 continue
 
-            opp_cost = _money_opportunity_cost(cost, money, budget)
-            net = value * budget.aggression - opp_cost
+            # Celestial/Buffoon are scoring-power packs; Arcana/Spectral are
+            # speculative (random consumables with uncertain targeting value).
+            if "Celestial" in label or "Buffoon" in label:
+                pack_aggression = budget.scoring_aggression
+            else:
+                pack_aggression = budget.speculative_aggression
+            opp_cost = _money_opportunity_cost(cost, money, budget, pack_aggression)
+            net = value * pack_aggression - opp_cost
             if cost <= budget.spend_ceiling or value >= 6.0:
                 candidates.append(ActionPlan(
                     steps=[BuyPack(i, reason=f"buy pack: {label} (${cost}, value={value:.1f})")],
@@ -853,8 +886,9 @@ class ShopEvaluator:
             if cost > money:
                 continue
 
-            opp_cost = _money_opportunity_cost(cost, money, budget)
-            net = value * budget.aggression - opp_cost
+            opp_cost = _money_opportunity_cost(cost, money, budget,
+                                               budget.speculative_aggression)
+            net = value * budget.speculative_aggression - opp_cost
             if cost <= budget.spend_ceiling or value >= 8.0:
                 candidates.append(ActionPlan(
                     steps=[BuyVoucher(i, reason=f"buy voucher: {label} (${cost}, value={value:.1f})")],
@@ -867,7 +901,7 @@ class ShopEvaluator:
         for idx, label, feed_value in campfire_candidates:
             candidates.append(ActionPlan(
                 steps=[SellConsumable(idx, reason=f"Campfire: sell {label} (+X0.25 mult)")],
-                net_value=feed_value * budget.aggression,
+                net_value=feed_value * budget.scoring_aggression,
                 description=f"Campfire feed: {label}",
             ))
 
@@ -900,8 +934,9 @@ class ShopEvaluator:
             )
             # If nothing good in shop and we have slots, reroll is worth trying
             reroll_value = 2.0 if slots_open and best_shop_value < 3.0 else 0.5
-            opp_cost = _money_opportunity_cost(5, money, budget)
-            net = reroll_value * budget.aggression - opp_cost
+            opp_cost = _money_opportunity_cost(5, money, budget,
+                                               budget.speculative_aggression)
+            net = reroll_value * budget.speculative_aggression - opp_cost
             if net > 0:
                 candidates.append(ActionPlan(
                     steps=[Reroll(reason=f"reroll shop (${money}, reroll #{self._rerolls_this_shop + 1})")],
@@ -946,10 +981,11 @@ class ShopEvaluator:
         best = max(candidates, key=lambda c: c.net_value)
 
         log.info(
-            "[SHOP] %s (value=%.1f, budget=%s/$%d, aggression=%.1f) | "
+            "[SHOP] %s (value=%.1f, budget=%s/$%d, aggression scoring=%.1f/spec=%.1f) | "
             "top candidates: %s",
             best.description, best.net_value,
-            budget.phase, budget.spend_ceiling, budget.aggression,
+            budget.phase, budget.spend_ceiling,
+            budget.scoring_aggression, budget.speculative_aggression,
             ", ".join(f"{c.description}({c.net_value:.1f})" for c in
                       sorted(candidates, key=lambda c: -c.net_value)[:5]),
         )

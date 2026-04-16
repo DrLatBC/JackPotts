@@ -55,6 +55,8 @@ class GameLoopState:
     hand_scores: list = field(default_factory=list)  # [{seq, ante, hand_type, ...}]
     shop_events: list = field(default_factory=list)  # [{ante, event_type, item_name, ...}]
     hands_scored: int = 0  # sequence counter for hand_scores
+    packs_opened: int = 0  # incremented on transitions into a pack-opened state
+    in_pack_state: bool = False
 
 
 class WinCaptureHandler(logging.handlers.MemoryHandler):
@@ -286,6 +288,16 @@ def run_bot(
         if game_state == "SHOP":
             log_shop_state(gs, state)
 
+        # Detect entry into a pack-opened state (any *_PACK or SMODS_BOOSTER_OPENED).
+        # Counts every pack opened, whether bought, free from tags, or from effects.
+        _is_pack_state = game_state in (
+            "TAROT_PACK", "PLANET_PACK", "SPECTRAL_PACK",
+            "STANDARD_PACK", "BUFFOON_PACK", "SMODS_BOOSTER_OPENED",
+        )
+        if _is_pack_state and not gs.in_pack_state:
+            gs.packs_opened += 1
+        gs.in_pack_state = _is_pack_state
+
         if game_state == "BLIND_SELECT":
             log_blind_transition(gs, state)
 
@@ -344,6 +356,8 @@ def run_bot(
         # Capture joker/consumable label before buy RPC (state changes after call)
         _buying_joker_label = None
         _buying_consumable = None
+        _buying_pack_label = None
+        _picking_pack_card_label = None
         if method == "buy" and params and "card" in params:
             shop_cards = state.get("shop", {}).get("cards", [])
             idx = params["card"]
@@ -360,6 +374,18 @@ def run_bot(
             idx = params["voucher"]
             if idx < len(vouchers):
                 _buying_consumable = {"name": vouchers[idx].get("label", "?"), "type": "voucher"}
+        # Pack buys use {pack: i} indexing into state["packs"]["cards"]
+        if method == "buy" and params and "pack" in params:
+            packs_list = state.get("packs", {}).get("cards", [])
+            pidx = params["pack"]
+            if pidx < len(packs_list):
+                _buying_pack_label = packs_list[pidx].get("label", "?")
+        # Pack picks: {card: i} indexing into state["pack"]["cards"]
+        if method == "pack" and params and "card" in params:
+            pack_open = state.get("pack", {}).get("cards", [])
+            cidx = params["card"]
+            if cidx < len(pack_open):
+                _picking_pack_card_label = pack_open[cidx].get("label", "?")
 
         pre_play_chips = 0
         play_snapshot = None
@@ -497,6 +523,26 @@ def run_bot(
                     "item_name": None, "item_type": None,
                     "cost": _pre_money - _post_money, "money_after": _post_money,
                 })
+            if _buying_pack_label is not None:
+                gs.shop_events.append({
+                    "ante": _ante, "event_type": "buy",
+                    "item_name": _buying_pack_label, "item_type": "pack",
+                    "cost": _pre_money - _post_money, "money_after": _post_money,
+                })
+            if method == "pack" and params:
+                if params.get("skip"):
+                    gs.shop_events.append({
+                        "ante": _ante, "event_type": "skip",
+                        "item_name": None, "item_type": "pack",
+                        "cost": None, "money_after": _post_money,
+                    })
+                elif "card" in params:
+                    gs.shop_events.append({
+                        "ante": _ante, "event_type": "pick",
+                        "item_name": _picking_pack_card_label,
+                        "item_type": "pack",
+                        "cost": None, "money_after": _post_money,
+                    })
 
             detect_joker_changes(gs, state)
 
@@ -593,7 +639,8 @@ def run_bot(
         joker_cards = state.get("jokers", {}).get("cards", [])
         final_roster = {j.get("label", "?") for j in joker_cards}
         _rerolls = sum(1 for e in gs.shop_events if e.get("event_type") == "reroll")
-        _pack_picks = sum(1 for e in gs.shop_events if e.get("event_type") == "buy" and e.get("item_type") == "pack")
+        _packs_bought = sum(1 for e in gs.shop_events if e.get("event_type") == "buy" and e.get("item_type") == "pack")
+        _pack_picks = sum(1 for e in gs.shop_events if e.get("event_type") == "pick" and e.get("item_type") == "pack")
         _pack_skips = sum(1 for e in gs.shop_events if e.get("event_type") == "skip" and e.get("item_type") == "pack")
         dashboard_client.post_game(dashboard_batch_id, {
             "instance_port": client.port,
@@ -605,6 +652,8 @@ def run_bot(
             "final_round": state.get("round_num", 0),
             "actions": gs.actions_taken,
             "rerolls": _rerolls,
+            "packs_bought": _packs_bought,
+            "packs_opened": gs.packs_opened,
             "pack_picks": _pack_picks,
             "pack_skips": _pack_skips,
             "final_money": state.get("money", 0),
