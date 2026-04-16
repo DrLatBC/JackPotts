@@ -73,13 +73,20 @@ def log_ante_transition(gs: GameLoopState, state: dict) -> None:
     hand_levels = state.get("hands", {})
     money = state.get("money", 0)
 
-    # Roster with effect values
+    # Roster with effect values — also store scaling for dashboard
     from balatro_bot.joker_effects import parse_effect_value
     roster_parts = []
     for j in joker_cards:
         label = j.get("label", "?")
         effect_text = j.get("value", {}).get("effect", "")
         parsed = parse_effect_value(effect_text) if effect_text else {}
+        # Store latest scaling values for dashboard payload
+        if any(parsed.get(k) for k in ("chips", "mult", "xmult")):
+            gs.joker_scaling[label] = {
+                "chips": parsed.get("chips"),
+                "mult": parsed.get("mult"),
+                "xmult": parsed.get("xmult"),
+            }
         if parsed.get("xmult"):
             roster_parts.append(f"{label}(X{parsed['xmult']:.1f})")
         elif parsed.get("mult"):
@@ -117,6 +124,30 @@ def log_ante_transition(gs: GameLoopState, state: dict) -> None:
     _stream_log.info("Jokers: %s", ", ".join(joker_names) if joker_names else "(none)")
     _stream_log.info("Money: $%d", money)
 
+    # Capture ante snapshot for dashboard
+    joker_roster_data = []
+    for j in joker_cards:
+        label = j.get("label", "?")
+        scaling = gs.joker_scaling.get(label, {})
+        joker_roster_data.append({
+            "name": label,
+            "chips": scaling.get("chips"),
+            "mult": scaling.get("mult"),
+            "xmult": scaling.get("xmult"),
+        })
+    leveled_dict = {}
+    for ht, data in hand_levels.items():
+        if hasattr(data, "get") and data.get("level", 1) > 1:
+            leveled_dict[ht] = data["level"]
+    gs.ante_snapshots.append({
+        "ante": ante_num,
+        "money": money,
+        "joker_roster": joker_roster_data,
+        "hand_levels": leveled_dict or None,
+        "deck_size": len(deck_cards),
+        "strategy": strat.describes(),
+    })
+
     gs.last_ante = ante_num
 
 
@@ -148,6 +179,39 @@ def log_shop_state(gs: GameLoopState, state: dict) -> None:
         parts.append("vouchers: " + ", ".join(vouchers_avail))
     money = state.get("money", 0)
     log.info("Shop ($%d): %s", money, " | ".join(parts) if parts else "(empty)")
+
+    # Capture shop offers for dashboard
+    ante_num = state.get("ante_num")
+    for c in shop_cards:
+        card_set = c.get("set", "").lower()
+        item_type = card_set if card_set in ("joker", "tarot", "planet", "spectral") else card_set
+        gs.shop_events.append({
+            "ante": ante_num,
+            "event_type": "offer",
+            "item_name": c.get("label", "?"),
+            "item_type": item_type,
+            "cost": c.get("cost", {}).get("buy"),
+            "money_after": money,
+        })
+    for c in packs:
+        gs.shop_events.append({
+            "ante": ante_num,
+            "event_type": "offer",
+            "item_name": c.get("label", "?"),
+            "item_type": "pack",
+            "cost": c.get("cost", {}).get("buy"),
+            "money_after": money,
+        })
+    for c in vouchers:
+        gs.shop_events.append({
+            "ante": ante_num,
+            "event_type": "offer",
+            "item_name": c.get("label", "?"),
+            "item_type": "voucher",
+            "cost": c.get("cost", {}).get("buy"),
+            "money_after": money,
+        })
+
     gs.last_logged_shop = shop_id
 
 
@@ -388,8 +452,7 @@ def log_game_over(gs: GameLoopState, state: dict) -> None:
     if _win_handler:
         if gs.actually_won:
             _win_handler.flush_win(seed)
-        else:
-            _win_handler.reset()
+        # Don't reset on loss — bot.py captures log_text for dashboard first
 
 
 # ---------------------------------------------------------------------------
