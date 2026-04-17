@@ -50,6 +50,7 @@ SERVER_STARTUP_WAIT = cfg.server_startup_wait
 SERVER_STAGGER = cfg.server_stagger
 BOT_STAGGER = cfg.bot_stagger
 POLL_INTERVAL = cfg.poll_interval
+DEEP_RECOVERY_THRESHOLD = 5
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -127,6 +128,7 @@ class Slot:
     state: str = "stopped"
     restarts: int = 0
     restart_times: list[float] = field(default_factory=list)
+    consecutive_launch_failures: int = 0
     last_health: float = 0.0
     progress: str = ""
     wins: int = 0
@@ -135,6 +137,7 @@ class Slot:
     log_offset: int = 0
     recent_lines: deque = field(default_factory=lambda: deque(maxlen=40))
     loop_start: float = 0.0
+    bot_launch_time: float = 0.0
 
     def is_alive(self, proc: subprocess.Popen | None) -> bool:
         return proc is not None and proc.poll() is None
@@ -191,6 +194,7 @@ class Slot:
             pass
 
     _LOG_PREFIX = re.compile(r"^\d{2}:\d{2}:\d{2} \S+ ")
+    _ACTION_COUNTER = re.compile(r"\[#\d+\] ")
 
     def poll_log_for_softlock(self) -> bool:
         if not self.log_file:
@@ -206,7 +210,9 @@ class Slot:
         for line in raw.decode("utf-8", errors="replace").splitlines():
             line = line.strip()
             if line:
-                self.recent_lines.append(self._LOG_PREFIX.sub("", line))
+                stripped = self._LOG_PREFIX.sub("", line)
+                stripped = self._ACTION_COUNTER.sub("", stripped)
+                self.recent_lines.append(stripped)
 
         if len(self.recent_lines) < 20:
             return False
@@ -293,16 +299,25 @@ class Supervisor:
             print(f"Cleaned up {killed} orphan processes")
             time.sleep(2)
 
-        self.session_num = compute_session_number()
-        (LOG_DIR / "next_num.txt").write_text(str(self.session_num))
-
-        self.dashboard_batch_id = dashboard_client.post_batch_start(
-            batch_number=self.session_num,
+        # Session number now comes from the dashboard (MAX(batch_number)+1),
+        # not from scanning local log files. Fall back to the local scan only
+        # when the dashboard is unreachable / unconfigured, so an offline run
+        # still gets a plausible number for log filenames.
+        result = dashboard_client.post_batch_start(
             num_instances=len(self.slots),
             games_per_inst=self.games,
             decks=",".join(self.decks),
             stake=self.stake,
         )
+        if result is not None:
+            self.dashboard_batch_id, self.session_num = result
+        else:
+            self.dashboard_batch_id = None
+            self.session_num = compute_session_number()
+            log.warning("Dashboard unavailable — using local session number %d", self.session_num)
+
+        # cli.py reads next_num.txt per-bot to name its log files.
+        (LOG_DIR / "next_num.txt").write_text(str(self.session_num))
 
         # Clear stale progress files from previous sessions
         for slot in self.slots:
@@ -375,6 +390,7 @@ class Supervisor:
         slot.log_offset = 0
         slot.recent_lines.clear()
         slot.loop_start = 0.0
+        slot.bot_launch_time = time.time()
         log.info("%s (port %d): launching with %d games remaining [%s deck]", slot.name, slot.port, games, deck)
 
     def wait_for_health(self, slot: Slot, timeout: float = 30.0) -> bool:
@@ -425,7 +441,18 @@ class Supervisor:
                     old_name, slot.port, slot.restarts, slot.name, reason)
 
         slot.kill_pair()
-        time.sleep(2)
+
+        # Deep recovery: if the bot has been failing to launch repeatedly, a
+        # bare kill_pair() isn't enough — there's likely a zombie Balatro.exe
+        # still holding resources. Nuke anything on the port and wait longer.
+        if slot.consecutive_launch_failures >= DEEP_RECOVERY_THRESHOLD:
+            log.warning("%s (port %d): deep recovery — %d consecutive launch failures, killing port processes",
+                        slot.name, slot.port, slot.consecutive_launch_failures)
+            kill_port_processes([slot.port])
+            slot.consecutive_launch_failures = 0
+            time.sleep(10)
+        else:
+            time.sleep(2)
         self.start_slot(slot)
 
     def check_slot(self, slot: Slot) -> None:
@@ -452,7 +479,15 @@ class Supervisor:
                 slot.kill_pair()
                 return
             else:
-                log.error("%s (port %d): bot exited rc=%d", slot.name, slot.port, rc)
+                alive_for = time.time() - slot.bot_launch_time if slot.bot_launch_time else 0.0
+                # A bot that ran >120s before crashing is considered "healthy launch";
+                # reset the consecutive-failure counter. Fast failures accumulate.
+                if alive_for > 120.0:
+                    slot.consecutive_launch_failures = 0
+                else:
+                    slot.consecutive_launch_failures += 1
+                log.error("%s (port %d): bot exited rc=%d (alive=%.0fs, consec_fails=%d)",
+                          slot.name, slot.port, rc, alive_for, slot.consecutive_launch_failures)
                 self.restart_slot(slot, reason=f"bot exited rc={rc}")
                 return
 

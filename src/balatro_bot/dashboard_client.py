@@ -137,22 +137,28 @@ def _stop_flush_timer() -> None:
 
 
 def post_batch_start(
-    batch_number: int,
     num_instances: int,
     games_per_inst: int,
     decks: str,
     stake: str = "WHITE",
-) -> Optional[int]:
-    """Create a new batch. Returns batch_id or None on failure."""
-    result = _post("/api/ingest/batch/start", {
-        "batch_number": batch_number,
+    batch_number: Optional[int] = None,
+) -> Optional[tuple[int, int]]:
+    """Create a new batch. Server auto-assigns batch_number when not supplied.
+
+    Returns (batch_id, batch_number) or None on failure.
+    """
+    payload: dict = {
         "num_instances": num_instances,
         "games_per_instance": games_per_inst,
         "decks": decks,
         "stake": stake,
-    })
-    if result:
-        return result.get("batch_id")
+    }
+    if batch_number is not None:
+        payload["batch_number"] = batch_number
+
+    result = _post("/api/ingest/batch/start", payload)
+    if result and "batch_id" in result and "batch_number" in result:
+        return result["batch_id"], result["batch_number"]
     return None
 
 
