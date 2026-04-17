@@ -18,6 +18,7 @@ from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.card import Card, CardValue
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
+from balatro_bot.scaling import SCALING_REGISTRY
 from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,
     JOKER_HAND_AFFINITY,
@@ -642,6 +643,22 @@ def evaluate_joker_value(
         parsed = parse_effect_value(effect_text)
         dp = _dynamic_power(parsed)
         base_value = max(base_value, dp)
+
+    # Scaling runway floor: cheap scalers read at near-zero current power but
+    # grow substantially over remaining rounds. Floor them early so they don't
+    # get skipped in favor of one-shot static mults (Swashbuckler etc).
+    # Decays with ante — at ante 6+ there's no runway left to justify a floor.
+    if ante <= 5:
+        profile = SCALING_REGISTRY.get(key)
+        if profile and profile.milk_priority >= 1:
+            if profile.milk_priority >= 3:
+                floor = 4.0
+            elif profile.milk_priority >= 2:
+                floor = 3.0
+            else:
+                floor = 2.0
+            floor *= max(0.4, (6 - ante) / 5.0)
+            base_value = max(base_value, floor)
 
     # Deck composition adjustment — boost/gate jokers based on deck contents
     if deck_profile is not None:

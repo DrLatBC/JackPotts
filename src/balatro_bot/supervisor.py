@@ -7,6 +7,7 @@ automatic restart, and clean shutdown.
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
 import os
 import random
@@ -286,6 +287,7 @@ class Supervisor:
         self.session_num = 0
         self.session_start: float = 0.0
         self._shutdown_done = False
+        self._finish_posted = False
         self.dashboard_batch_id: int | None = None
 
     def setup(self) -> None:
@@ -311,6 +313,13 @@ class Supervisor:
         )
         if result is not None:
             self.dashboard_batch_id, self.session_num = result
+            # Last-resort safety net: if the process is torn down without
+            # reaching shutdown() (e.g. uncaught crash), atexit still fires
+            # and marks the batch as abandoned on the dashboard. shutdown()'s
+            # own path is idempotent — post_run()'s post_batch_finish will
+            # have already set the status and this becomes a no-op-ish
+            # second call.
+            atexit.register(self._atexit_abandon)
         else:
             self.dashboard_batch_id = None
             self.session_num = compute_session_number()
@@ -618,7 +627,26 @@ class Supervisor:
             self.post_run()
         print("  All princesses recalled.")
 
+    def _atexit_abandon(self) -> None:
+        """Last-resort fallback if the process dies before post_run runs.
+
+        No-op once a clean finish has been posted.
+        """
+        if self._finish_posted or self.dashboard_batch_id is None:
+            return
+        try:
+            dashboard_client.post_batch_finish(self.dashboard_batch_id, status="abandoned")
+        except Exception:
+            pass
+
     def post_run(self) -> None:
+        # Mark the batch finished FIRST — stats/rotate below can crash (shared
+        # FS, stats script bugs, etc.) and we don't want that to orphan the
+        # batch at "running" on the dashboard.
+        if self.dashboard_batch_id:
+            dashboard_client.post_batch_finish(self.dashboard_batch_id)
+            self._finish_posted = True
+
         batch = f"{self.session_num:03d}"
         print(f"\n  Running stats for batch {batch}...")
         try:
@@ -631,8 +659,6 @@ class Supervisor:
                 log.warning("stats exited with rc=%d", result.returncode)
         except Exception as e:
             log.warning("Failed to run stats: %s", e)
-        if self.dashboard_batch_id:
-            dashboard_client.post_batch_finish(self.dashboard_batch_id)
         self._rotate_logs()
 
     def _rotate_logs(self, keep: int = 10) -> None:

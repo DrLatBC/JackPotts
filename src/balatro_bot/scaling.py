@@ -31,6 +31,7 @@ class ScalingProfile:
     - discard_jack: discard a Jack
     - sell: sell a card in shop
     - planet: use a Planet consumable
+    - tarot_use: use a Tarot consumable
     - skip_pack: skip a booster pack
     - reroll: reroll the shop
     - final_hand: last hand of the round
@@ -69,7 +70,7 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
         "Every milk hand should be exactly 4 cards.",
     ),
     "j_runner": ScalingProfile(
-        "j_runner", "play_straight", "chips", 15, True, 1,
+        "j_runner", "play_straight", "chips", 15, True, 2,
         "Only scales on Straights. Chase Straight milk hands when possible.",
     ),
     "j_trousers": ScalingProfile(
@@ -173,6 +174,10 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
     "j_flash": ScalingProfile(
         "j_flash", "reroll", "mult", 2, False, 1,
         "Rerolling is +2 mult investment, not waste.",
+    ),
+    "j_fortune_teller": ScalingProfile(
+        "j_fortune_teller", "tarot_use", "mult", 1, True, 1,
+        "+1 mult per Tarot used this run. Passively scales with Arcana packs and tarot buys.",
     ),
 
     # --- Passive scalers (not directly triggerable) ---
@@ -323,6 +328,17 @@ ANTI_SYNERGY: dict[str, frozenset[str]] = {
     "j_obelisk":        frozenset({"j_supernova"}),
     "j_supernova":      frozenset({"j_obelisk"}),
 }
+
+
+def red_card_skip_value(ante: int) -> float:
+    """Value of one Red Card pack-skip (+3 mult), scaled by remaining runway.
+
+    Mirrors the scaling runway floor in shop_valuation — +3 mult is worth more
+    with many rounds ahead to use it, less when scoring needs are already huge.
+    """
+    if ante <= 5:
+        return max(1.0, 3.0 * (6 - ante) / 5.0)
+    return 1.0
 
 
 def check_anti_synergy(candidate_key: str, owned_keys: set[str]) -> str | None:

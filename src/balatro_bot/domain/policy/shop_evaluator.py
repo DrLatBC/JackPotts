@@ -320,25 +320,33 @@ def _score_pack(
     joker_limit: int = 5,
 ) -> float:
     """Heuristic value for a pack."""
+    from balatro_bot.scaling import red_card_skip_value
+
     has_red_card = any(joker_key(j) == "j_red_card" for j in owned_jokers)
     has_constellation = any(joker_key(j) == "j_constellation" for j in owned_jokers)
 
-    if has_red_card:
-        return 8.0  # Red Card: +3 mult per skip, packs always good
+    # Celestial and Buffoon: SkipPackForRedCard exempts these (planets/jokers),
+    # so Red Card never fires — no skip bonus.
     if "Celestial" in label:
-        base = 6.0
-        if has_constellation:
-            base = 9.0  # Constellation + planets = xMult growth
-        return base
+        return 9.0 if has_constellation else 6.0
     if "Buffoon" in label:
         if len(owned_jokers) >= joker_limit:
-            return 0.0  # can't use joker from pack
+            return 0.0
         return 4.0
+
+    # Packs Red Card will skip — add skip bonus on top of pick value.
     if "Arcana" in label:
-        return 3.0
-    if "Spectral" in label:
-        return 2.0 if ante >= 3 else 0.5
-    return 0.0
+        base = 3.0
+    elif "Spectral" in label:
+        base = 2.0 if ante >= 3 else 0.5
+    elif "Standard" in label:
+        base = 1.0
+    else:
+        return 0.0
+
+    if has_red_card:
+        base += red_card_skip_value(ante)
+    return base
 
 
 _VOUCHER_ROI: dict[str, float] = {
@@ -798,10 +806,15 @@ class ShopEvaluator:
                         ))
 
         # 4. General reorder (scoring optimization)
-        # Skip if dagger fodder plan exists — feeding a joker to Dagger for
-        # permanent mult is more valuable than phase ordering, and the two
-        # plans produce incompatible orders that cause an infinite loop.
-        has_dagger_fodder = any("feed" in c.description for c in candidates)
+        # Skip whenever a Dagger+fodder pairing exists on the roster, even if
+        # no feed plan is live this tick. After a feed the fodder sits right of
+        # Dagger and the plan goes silent (new_order == _last_order), but a
+        # scoring reorder would shuffle the fodder back left of Dagger, which
+        # re-triggers the feed plan next tick — infinite loop.
+        has_dagger_fodder = dagger_owned and any(
+            r.key != "j_ceremonial" and r.ev_delta < 1.0 and r.fodder_mult > 0
+            for r in roster
+        )
         if owned and not has_dagger_fodder:
             new_order = _compute_optimal_order(owned)
             if new_order is not None and new_order != self._last_order:

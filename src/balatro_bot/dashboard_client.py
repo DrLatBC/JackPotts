@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import List, Optional
 
 import httpx
@@ -187,11 +188,37 @@ def flush_games() -> None:
 
 
 def post_batch_finish(batch_id: int, status: str = "finished") -> None:
-    """Mark a batch as finished. Flushes buffered games first."""
+    """Mark a batch as finished. Flushes buffered games first.
+
+    Retries on transient network failure. An orphaned "running" batch is much
+    worse than a brief delay here — the dashboard has a stale-batch sweep as
+    a backstop, but we still want the explicit status (finished vs abandoned)
+    to land whenever possible.
+    """
     flush_games()
-    _post(f"/api/ingest/batch/{batch_id}/finish", {
-        "status": status,
-    })
+    url = _url()
+    if not url:
+        return
+    payload = {"status": status}
+    path = f"/api/ingest/batch/{batch_id}/finish"
+    for attempt in range(3):
+        try:
+            resp = httpx.post(
+                f"{url}{path}",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {_key()}",
+                    "Content-Type": "application/json",
+                },
+                timeout=_TIMEOUT,
+            )
+            resp.raise_for_status()
+            return
+        except Exception:
+            if attempt == 2:
+                logger.error("post_batch_finish failed after 3 attempts: %s", path, exc_info=True)
+                return
+            time.sleep(2 ** attempt)
 
 
 # Flush on process exit so no games are lost
