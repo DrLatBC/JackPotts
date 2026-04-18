@@ -38,6 +38,8 @@ class ScoreContext:
     ancient_suit: str | None = None
     vampire_xmult: float | None = None  # Pre-computed Vampire xmult (after before-phase increment)
     blind_name: str = ""
+    idol_rank: str | None = None
+    idol_suit: str | None = None
 
 
 def _count_suit_in_scoring(ctx: ScoreContext, suit: str) -> int:

@@ -345,7 +345,17 @@ def _stuntman(ctx: ScoreContext, j: dict) -> None:
     ctx.chips += _ability(j).get("chip_mod", 250)
 
 def _idol(ctx: ScoreContext, j: dict) -> None:
-    ctx.mult *= _ability(j).get("extra", 2.0) ** 0.2
+    xmult = _ability(j).get("extra", 2.0)
+    if not ctx.idol_rank or not ctx.idol_suit:
+        return
+    for c in ctx.scoring_cards:
+        if is_debuffed(c):
+            continue
+        if card_rank(c) != ctx.idol_rank:
+            continue
+        suits = card_suits(c, smeared=ctx.smeared)
+        if ctx.idol_suit in suits:
+            ctx.mult *= xmult ** retrigger_count(c, ctx)
 
 def _wee(ctx: ScoreContext, j: dict) -> None:
     # Wee Joker gains +chip_mod chips per scored 2.  The API snapshot shows

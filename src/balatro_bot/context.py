@@ -50,6 +50,8 @@ class RoundContext:
     score_discount: float = 1.0
     forced_card_idx: int | None = None
     ancient_suit: str | None = None
+    idol_rank: str | None = None
+    idol_suit: str | None = None
     eye_used_hands: set[str] | None = None
     scoring_suit: str | None = None
     best_as_finisher: HandCandidate | None = None
@@ -161,6 +163,8 @@ class RoundContext:
                     break
 
         ancient_suit = snapshot.round.ancient_suit
+        idol_rank = snapshot.round.idol_rank
+        idol_suit = snapshot.round.idol_suit
         ox_most_played = snapshot.round.most_played_poker_hand if blind_name == "The Ox" and not boss_disabled else None
         strat = compute_strategy(jokers, hand_levels)
         deck_profile = DeckProfile.from_cards(list(deck_cards) + list(hand_cards))
@@ -181,6 +185,8 @@ class RoundContext:
             deck_cards=deck_cards,
             blind_name=effective_blind,
             ox_most_played=ox_most_played,
+            idol_rank=idol_rank,
+            idol_suit=idol_suit,
         )
 
         # Score best hand as if it were the final hand (hands_left=1) so the
@@ -220,6 +226,8 @@ class RoundContext:
             score_discount=score_discount,
             forced_card_idx=forced_card_idx,
             ancient_suit=ancient_suit,
+            idol_rank=idol_rank,
+            idol_suit=idol_suit,
             eye_used_hands=eye_used_hands,
             scoring_suit=scoring_suit,
             money=money,

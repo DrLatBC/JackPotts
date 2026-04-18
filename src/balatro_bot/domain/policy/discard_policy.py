@@ -146,6 +146,8 @@ def _sample_miss_ev(keep_indices: list[int], ctx: RoundContext) -> float:
             discards_left=max(0, ctx.discards_left - 1),
             hands_left=ctx.hands_left,
             ancient_suit=ctx.ancient_suit,
+            idol_rank=ctx.idol_rank,
+            idol_suit=ctx.idol_suit,
         )
         total += result.total if result else 0
     return total / N_SAMPLES
@@ -173,6 +175,8 @@ def _chase_ev(candidate: ChaseCandidate, ctx: RoundContext, miss_ev: float) -> f
         discards_left=max(0, ctx.discards_left - 1),
         hands_left=ctx.hands_left,
         ancient_suit=ctx.ancient_suit,
+        idol_rank=ctx.idol_rank,
+        idol_suit=ctx.idol_suit,
     )
 
     risk_factor = 1.0 - candidate.hit_prob

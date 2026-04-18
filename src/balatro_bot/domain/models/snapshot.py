@@ -25,6 +25,8 @@ class RoundSnapshot:
     discards_left: int
     ancient_suit: str | None
     most_played_poker_hand: str | None = None
+    idol_rank: str | None = None
+    idol_suit: str | None = None
 
 
 @dataclass(frozen=True)

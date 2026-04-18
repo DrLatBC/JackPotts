@@ -373,6 +373,8 @@ def score_hand(
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
     ox_most_played: str | None = None,
+    idol_rank: str | None = None,
+    idol_suit: str | None = None,
 ) -> tuple[int, int, int]:
     """Compute (chips, mult, total) for a hand."""
     base_chips, base_mult, _ = HAND_INFO[hand_name]
@@ -431,6 +433,8 @@ def score_hand(
         smeared="j_smeared" in joker_keys_set,
         ancient_suit=ancient_suit,
         blind_name=blind_name,
+        idol_rank=idol_rank,
+        idol_suit=idol_suit,
     )
 
     effective_scoring, effective_played, vampire_xmult = _apply_before_phase(
@@ -467,6 +471,8 @@ def score_hand_detailed(
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
     ox_most_played: str | None = None,
+    idol_rank: str | None = None,
+    idol_suit: str | None = None,
 ) -> dict:
     """Like score_hand but returns a full breakdown dict for logging."""
     from balatro_bot.joker_effects import ScoreContext, apply_joker_effects_detailed, retrigger_count
@@ -548,6 +554,8 @@ def score_hand_detailed(
         smeared="j_smeared" in joker_keys_set,
         ancient_suit=ancient_suit,
         blind_name=blind_name,
+        idol_rank=idol_rank,
+        idol_suit=idol_suit,
     )
 
     effective_scoring, effective_played, vampire_xmult = _apply_before_phase(

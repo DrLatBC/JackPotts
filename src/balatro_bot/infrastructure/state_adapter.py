@@ -33,6 +33,8 @@ def adapt_state(state: dict) -> Snapshot:
         discards_left=rnd.get("discards_left", 0),
         ancient_suit=rnd.get("ancient_suit"),
         most_played_poker_hand=rnd.get("most_played_poker_hand"),
+        idol_rank=(rnd.get("idol_card") or {}).get("rank"),
+        idol_suit=(rnd.get("idol_card") or {}).get("suit"),
     )
 
     return Snapshot(

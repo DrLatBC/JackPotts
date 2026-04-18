@@ -78,6 +78,8 @@ def enumerate_hands(
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
     ox_most_played: str | None = None,
+    idol_rank: str | None = None,
+    idol_suit: str | None = None,
 ) -> list[HandCandidate]:
     """Enumerate all valid poker hands from the cards in hand."""
     candidates: list[HandCandidate] = []
@@ -121,6 +123,8 @@ def enumerate_hands(
                 deck_count=deck_count, deck_cards=deck_cards,
                 blind_name=blind_name,
                 ox_most_played=_ox_mp,
+                idol_rank=idol_rank,
+                idol_suit=idol_suit,
             )
 
             candidates.append(HandCandidate(
@@ -163,6 +167,8 @@ def best_hand(
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
     ox_most_played: str | None = None,
+    idol_rank: str | None = None,
+    idol_suit: str | None = None,
 ) -> HandCandidate | None:
     """Return the single best hand playable from the given cards."""
     candidates = enumerate_hands(
@@ -178,6 +184,8 @@ def best_hand(
         deck_count=deck_count, deck_cards=deck_cards,
         blind_name=blind_name,
         ox_most_played=ox_most_played,
+        idol_rank=idol_rank,
+        idol_suit=idol_suit,
     )
     return candidates[0] if candidates else None
 
