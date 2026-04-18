@@ -108,6 +108,23 @@ ARCHETYPE_REGISTRY: dict[str, ArchetypeProfile] = {
         suit_contributions={},
         anti_jokers=frozenset(),
     ),
+    "probability": ArchetypeProfile(
+        name="probability",
+        display_name="Probability",
+        joker_weights={
+            "j_lucky_cat":   5,  # scales xMult on Lucky triggers
+            "j_bloodstone":  4,  # chance of xMult on Heart scoring
+            "j_8_ball":      3,  # chance of tarot on scored 8
+            "j_space":       3,  # chance to level hand
+            "j_sixth_sense": 3,  # chance of spectral on played 6
+            "j_oops":        5,  # doubles all probabilities — amplifier itself counts
+        },
+        amplifiers=frozenset({"j_oops"}),
+        hand_contributions={},
+        rank_contributions={"8": 1.0, "6": 1.0},
+        suit_contributions={"H": 1.0},
+        anti_jokers=frozenset(),
+    ),
     "fibonacci": ArchetypeProfile(
         name="fibonacci",
         display_name="Fibonacci",

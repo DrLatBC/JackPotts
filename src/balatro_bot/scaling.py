@@ -324,6 +324,12 @@ ANTI_SYNERGY: dict[str, frozenset[str]] = {
     "j_riff_raff":      frozenset({"j_stencil"}),
     # Enhancement conflicts
     "j_vampire":        frozenset({"j_glass", "j_lucky_cat"}),
+    # Oops doubles ALL probabilities — including destruction chances.
+    # Glass shatters 2x faster, Cavendish/Gros Michel get destroyed 2x faster.
+    "j_oops":           frozenset({"j_glass", "j_cavendish", "j_gros_michel"}),
+    "j_glass":          frozenset({"j_oops"}),
+    "j_cavendish":      frozenset({"j_oops"}),
+    "j_gros_michel":    frozenset({"j_oops"}),
     # Strategy conflicts
     "j_obelisk":        frozenset({"j_supernova"}),
     "j_supernova":      frozenset({"j_obelisk"}),

@@ -260,6 +260,9 @@ def _score_targeting_tarot(
                 base += _LUCKY_CAT_BONUS
             if "j_oops" in joker_keys:
                 base += _OOPS_BONUS
+            # Oops + Lucky Cat is a self-reinforcing engine — bump multiplicatively
+            if "j_lucky_cat" in joker_keys and "j_oops" in joker_keys:
+                base *= 1.3
         elif extra == "Steel":
             if "j_steel_joker" in joker_keys:
                 base += _STEEL_JOKER_BONUS

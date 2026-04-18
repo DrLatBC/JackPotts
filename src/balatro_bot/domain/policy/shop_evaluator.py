@@ -562,40 +562,8 @@ def _campfire_sell_candidates(
 # SellInvisible logic (multi-tick)
 # ---------------------------------------------------------------------------
 
-_COPY_JOKERS = frozenset({"j_blueprint", "j_brainstorm"})
-_DUPE_EXTRA = frozenset({
-    "j_vampire", "j_hologram", "j_lucky_cat", "j_canio", "j_obelisk",
-    "j_yorick", "j_hit_the_road",
-    "j_card_sharp", "j_seeing_double",
-    "j_blueprint", "j_brainstorm",
-})
-# Previous ALWAYS_BUY / HIGH_PRIORITY sets — used only for dupe worthiness
-_DUPE_WORTHY = frozenset({
-    "j_cavendish", "j_stencil",
-    "j_duo", "j_trio", "j_family", "j_order", "j_tribe",
-    "j_gros_michel", "j_popcorn",
-    "j_acrobat", "j_blackboard", "j_flower_pot",
-    "j_madness",
-    "j_constellation", "j_campfire",
-}) | _DUPE_EXTRA
-
-
-def _score_dupe_target(joker: dict) -> float:
-    """Score how valuable this joker is as a dupe target."""
-    key = joker_key(joker)
-    if key in _COPY_JOKERS:
-        return 15.0
-    effect_text = joker.get("value", {}).get("effect", "")
-    parsed = parse_effect_value(effect_text) if effect_text else {}
-    if parsed.get("xmult"):
-        return parsed["xmult"] * 3.0
-    if parsed.get("mult"):
-        return parsed["mult"] / 5.0
-    return 2.0
-
-
 def _invisible_plan(
-    owned: list[dict],
+    roster: list[JokerScore],
     ante: int,
     round_num: int,
     first_seen_round: int | None,
@@ -603,10 +571,14 @@ def _invisible_plan(
 ) -> tuple[ActionPlan | None, int | None, bool]:
     """Evaluate SellInvisible opportunity.
 
+    Ranks dupe targets by live `ev_delta` from the unified roster scorer —
+    no hardcoded whitelist — so any joker (including odd utility picks)
+    that currently carries the build becomes eligible.
+
     Returns (plan_or_None, updated_first_seen_round, updated_selling_down).
     """
     invisible_idx = next(
-        (i for i, j in enumerate(owned) if joker_key(j) == "j_invisible"), None
+        (s.index for s in roster if s.key == "j_invisible"), None
     )
     if invisible_idx is None:
         return None, None, False
@@ -617,28 +589,21 @@ def _invisible_plan(
     if round_num - first_seen_round < 2:
         return None, first_seen_round, False
 
-    if len(owned) < 2:
+    if len(roster) < 2:
         return None, first_seen_round, False
 
-    # Find best dupe target
-    best_idx = None
-    best_score = -1.0
-    for i, j in enumerate(owned):
-        if i == invisible_idx:
-            continue
-        if joker_key(j) not in _DUPE_WORTHY:
-            continue
-        score = _score_dupe_target(j)
-        if score > best_score:
-            best_score = score
-            best_idx = i
-
-    if best_idx is None:
+    # Rank dupe targets by current EV contribution.
+    best = max(
+        (s for s in roster if s.index != invisible_idx),
+        key=lambda s: s.ev_delta,
+        default=None,
+    )
+    if best is None:
         return None, first_seen_round, False
 
-    # Ante-scaled threshold
+    # Ante-scaled threshold on the same ~0-15 scale evaluate_joker_value uses.
     threshold = 3.0 if ante <= 3 else 3.0 + (ante - 3) * 1.5
-    if best_score < threshold:
+    if best.ev_delta < threshold:
         return None, first_seen_round, False
 
     # Don't start selling before boss blind
@@ -647,49 +612,35 @@ def _invisible_plan(
     if not selling_down and boss_next:
         return None, first_seen_round, False
 
-    target_label = owned[best_idx].get("label", "?")
-
     # Final step: sell Invisible
-    if len(owned) == 2:
+    if len(roster) == 2:
         plan = ActionPlan(
             steps=[SellJoker(invisible_idx,
-                             reason=f"Invisible: guaranteed dupe of {target_label} "
-                                    f"(score={best_score:.1f}, ante {ante})")],
-            net_value=best_score * 10,  # duping is extremely high value
-            description=f"Invisible dupe: {target_label}",
+                             reason=f"Invisible: guaranteed dupe of {best.label} "
+                                    f"(ev={best.ev_delta:.1f}, ante {ante})")],
+            net_value=best.ev_delta * 10,  # duping is extremely high value
+            description=f"Invisible dupe: {best.label}",
         )
         return plan, first_seen_round, False
 
-    # Sell worst non-target non-Invisible joker
-    worst_idx = None
-    worst_score = float("inf")
-    for i, j in enumerate(owned):
-        if i in (invisible_idx, best_idx):
-            continue
-        sell_val = j.get("cost", {}).get("sell", 0)
-        effect_text = j.get("value", {}).get("effect", "")
-        parsed = parse_effect_value(effect_text) if effect_text else {}
-        score = float(sell_val)
-        if parsed.get("xmult") and parsed["xmult"] > 1.0:
-            score += parsed["xmult"] * 10
-        elif parsed.get("mult") and parsed["mult"] > 0:
-            score += parsed["mult"]
-        if score < worst_score:
-            worst_score = score
-            worst_idx = i
-
-    if worst_idx is None:
+    # Sell the roster member we'd miss least (lowest ev_delta, tiebreak by
+    # highest sell_value so we also bank more cash on the way down).
+    fodder = min(
+        (s for s in roster if s.index not in (invisible_idx, best.index)),
+        key=lambda s: (s.ev_delta, -s.sell_value),
+        default=None,
+    )
+    if fodder is None:
         return None, first_seen_round, selling_down
 
-    fodder_label = owned[worst_idx].get("label", "?")
-    remaining = len(owned) - 2
+    remaining = len(roster) - 2
     plan = ActionPlan(
-        steps=[SellJoker(worst_idx,
-                         reason=f"Invisible setup: sell {fodder_label} to isolate "
-                                f"{target_label} ({remaining} more to go, "
-                                f"score={best_score:.1f})")],
-        net_value=best_score * 5,  # high priority — commit to sequence
-        description=f"Invisible sell-down: selling {fodder_label}",
+        steps=[SellJoker(fodder.index,
+                         reason=f"Invisible setup: sell {fodder.label} to isolate "
+                                f"{best.label} ({remaining} more to go, "
+                                f"target ev={best.ev_delta:.1f})")],
+        net_value=best.ev_delta * 5,  # high priority — commit to sequence
+        description=f"Invisible sell-down: selling {fodder.label}",
     )
     return plan, first_seen_round, True
 
@@ -808,7 +759,7 @@ class ShopEvaluator:
 
         # 0. SellInvisible (highest priority multi-tick sequence)
         inv_plan, inv_first, inv_selling = _invisible_plan(
-            owned, ante, round_num,
+            roster, ante, round_num,
             self._invisible_first_seen, self._invisible_selling_down,
         )
         self._invisible_first_seen = inv_first

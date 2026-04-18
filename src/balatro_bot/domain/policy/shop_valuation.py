@@ -358,6 +358,10 @@ _AMPLIFICATION_PAIRS: list[tuple[str, frozenset[str], float]] = [
 
 # Blueprint/Brainstorm copy targets
 _COPY_JOKERS = frozenset({"j_blueprint", "j_brainstorm"})
+_PROBABILITY_JOKERS = frozenset({
+    "j_oops", "j_lucky_cat", "j_bloodstone", "j_8_ball",
+    "j_space", "j_sixth_sense",
+})
 _XMULT_COPY_TARGETS = frozenset({
     "j_cavendish", "j_stencil", "j_duo", "j_trio", "j_family",
     "j_order", "j_tribe", "j_acrobat", "j_blackboard", "j_flower_pot",
@@ -384,10 +388,11 @@ def _utility_synergy_bonus(key: str, owned_keys: set[str], strat: Strategy) -> f
         bonus += len(owned_keys & face_jokers) * 2.0
     elif key == "j_8_ball" and strat.rank_affinity("8") > 0:
         bonus += 2.0
-    elif key == "j_oops":
-        prob_jokers = {"j_8_ball", "j_space", "j_sixth_sense",
-                       "j_bloodstone", "j_lucky_cat"}
-        bonus += len(owned_keys & prob_jokers) * 1.5
+    elif key in _PROBABILITY_JOKERS:
+        partners = (owned_keys & _PROBABILITY_JOKERS) - {key}
+        bonus += len(partners) * 1.5
+        if key != "j_oops" and "j_oops" in owned_keys:
+            bonus += 1.0  # Oops explicitly doubles this joker's proc rate
     elif key == "j_space" and strat.top_hand():
         bonus += 1.0
     elif key == "j_merry_andy":
