@@ -60,6 +60,130 @@ DEEP_RECOVERY_THRESHOLD = 5
 log = logging.getLogger("supervisor")
 
 
+BALATROBOT_LOGS_DIR = BASE_DIR / "logs"
+BALATROBOT_LOGS_KEEP = 10
+
+# Per-instance Balatro save directories. Each instance gets its own APPDATA
+# override so Love2D writes meta.jkr/profile.jkr/save.jkr/settings.jkr into
+# a dedicated folder — concurrent writes to the same .jkr files across 4
+# instances was corrupting meta.jkr (tutorial flag, unlocks).
+PROFILES_DIR = BASE_DIR / "profiles"
+REAL_APPDATA = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+REAL_BALATRO_DIR = REAL_APPDATA / "Balatro"
+GRACEFUL_EXIT_TIMEOUT = 8.0  # seconds to wait for Balatro to finish saving on shutdown
+
+
+def ensure_isolated_profile(port: int) -> str:
+    """Create a per-port APPDATA override and return its path.
+
+    Layout created:
+        profiles/<port>/Balatro/Mods      -> junction to real %APPDATA%/Balatro/Mods
+        profiles/<port>/Balatro/config    -> junction to real %APPDATA%/Balatro/config (if exists)
+        profiles/<port>/Balatro/settings.jkr   (copied once from real)
+        profiles/<port>/Balatro/1/meta.jkr     (copied once from real)
+        profiles/<port>/Balatro/1/profile.jkr  (copied once from real)
+        profiles/<port>/Balatro/1/save.jkr     (copied once from real)
+
+    Mods is a junction so mod updates propagate; .jkr files are real copies
+    so each instance writes independently.
+    """
+    port_dir = PROFILES_DIR / str(port)
+    balatro_dir = port_dir / "Balatro"
+    balatro_dir.mkdir(parents=True, exist_ok=True)
+
+    # Junction Mods/ (and config/) to the real install — these are shared.
+    for shared in ("Mods", "config"):
+        link = balatro_dir / shared
+        target = REAL_BALATRO_DIR / shared
+        if not target.exists():
+            continue
+        if link.exists() or link.is_symlink():
+            continue
+        # mklink /J creates a directory junction (no admin required on Windows)
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True, check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as e:
+            log.warning("Could not junction %s -> %s: %s", link, target, e)
+
+    # Seed the save files once — copies tutorial-done state, unlocks, etc.
+    for name in ("settings.jkr",):
+        src = REAL_BALATRO_DIR / name
+        dst = balatro_dir / name
+        if src.exists() and not dst.exists():
+            shutil.copy2(src, dst)
+
+    profile_sub = balatro_dir / "1"
+    profile_sub.mkdir(exist_ok=True)
+    for name in ("meta.jkr", "profile.jkr", "save.jkr"):
+        src = REAL_BALATRO_DIR / "1" / name
+        dst = profile_sub / name
+        if src.exists() and not dst.exists():
+            shutil.copy2(src, dst)
+
+    return str(port_dir)
+
+
+def graceful_kill(proc: subprocess.Popen, timeout: float = GRACEFUL_EXIT_TIMEOUT) -> None:
+    """Ask the process tree to close, then force-kill after `timeout`.
+
+    Prevents corrupting Balatro's .jkr save files by force-killing mid-write.
+    `taskkill /T` (without /F) sends WM_CLOSE to GUI processes, letting
+    Love2D run its quit handler and finish any pending save.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+        )
+    except OSError:
+        pass
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return
+        time.sleep(0.25)
+
+    # Timed out — force-kill
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+        )
+    except OSError:
+        pass
+
+
+def prune_balatrobot_logs(keep: int = BALATROBOT_LOGS_KEEP) -> None:
+    """Delete oldest session dirs in ./logs when count exceeds `keep`.
+
+    Upstream `balatrobot serve` pipes Balatro+mod stdout/stderr into
+    logs/<session>/<port>.log and never rotates — it can hit tens of GB
+    over long batch runs. We only touch sessions not currently being
+    written to (oldest first), so in-flight runs are safe.
+    """
+    if not BALATROBOT_LOGS_DIR.exists():
+        return
+    sessions = sorted(
+        (p for p in BALATROBOT_LOGS_DIR.iterdir() if p.is_dir()),
+        key=lambda p: p.stat().st_mtime,
+    )
+    excess = len(sessions) - keep
+    if excess <= 0:
+        return
+    for old in sessions[:excess]:
+        try:
+            shutil.rmtree(old)
+            log.info("Pruned old balatrobot log dir: %s", old.name)
+        except OSError as e:
+            log.warning("Could not prune %s: %s", old, e)
+
+
 def setup_supervisor_logging() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log.setLevel(logging.DEBUG)
@@ -144,26 +268,24 @@ class Slot:
         return proc is not None and proc.poll() is None
 
     def kill_pair(self) -> None:
-        """Kill both server and bot process trees, including child consoles."""
-        for proc in (self.bot_proc, self.server_proc):
-            if proc and proc.poll() is None:
-                # taskkill /F /T kills the entire process tree (including
-                # Balatro.exe spawned by uvx in a separate console window)
-                try:
-                    subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                        capture_output=True,
-                    )
-                except OSError:
-                    pass
-        # Give processes a moment to die, then force-kill any stragglers
-        time.sleep(1.0)
-        for proc in (self.bot_proc, self.server_proc):
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
+        """Kill both server and bot process trees, including child consoles.
+
+        Bot is force-killed (it doesn't write save files). Server is closed
+        gracefully so Balatro can finish any in-flight save to disk before
+        exiting — force-kill during save was corrupting meta.jkr.
+        """
+        # Bot first, force — it holds no on-disk state worth preserving.
+        if self.bot_proc and self.bot_proc.poll() is None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self.bot_proc.pid)],
+                    capture_output=True,
+                )
+            except OSError:
+                pass
+        # Server (uvx -> Balatro.exe): graceful, then escalate.
+        if self.server_proc and self.server_proc.poll() is None:
+            graceful_kill(self.server_proc)
         self.server_proc = None
         self.bot_proc = None
 
@@ -334,6 +456,8 @@ class Supervisor:
             if p.exists():
                 p.unlink()
 
+        prune_balatrobot_logs()
+
     def launch_server(self, slot: Slot) -> None:
         cmd = [
             UVX, "balatrobot", "serve",
@@ -343,8 +467,16 @@ class Supervisor:
         ]
         if not self.stream:
             cmd.extend(["--headless", "--fast"])
+
+        # Point Love2D at a per-port APPDATA so each instance has its own
+        # Balatro/ save folder (meta.jkr, profile.jkr, save.jkr, settings.jkr).
+        # Shared concurrent writes to the global profile were corrupting it.
+        env = os.environ.copy()
+        env["APPDATA"] = ensure_isolated_profile(slot.port)
+
         slot.server_proc = subprocess.Popen(
             cmd,
+            env=env,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         slot.state = "starting"
