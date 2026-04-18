@@ -388,6 +388,87 @@ class TestDeckCompositionAdjustment:
         assert adjusted == base  # plain Joker not in any deck-comp list
 
 
+class TestHeldCardJokerValuation:
+    """Held-card jokers (Baron, Shoot the Moon, Raised Fist) need explicit
+    deck-composition bonuses because _scoring_delta runs the synthetic hand
+    with no held_cards and their effects never trigger in the simulation."""
+
+    def _deck_with_ranks(self, **rank_counts):
+        """Build a 52-card DeckProfile with specific rank counts."""
+        cards = []
+        for rank, count in rank_counts.items():
+            for _ in range(count):
+                cards.append(card(rank, "H"))
+        for _ in range(52 - len(cards)):
+            cards.append(card("2", "S"))
+        return DeckProfile.from_cards(cards)
+
+    def _deck_with_steel(self, steel_count):
+        cards = [card("A", "H", enhancement="STEEL") for _ in range(steel_count)]
+        for _ in range(52 - steel_count):
+            cards.append(card("2", "S"))
+        return DeckProfile.from_cards(cards)
+
+    # --- Baron ---
+    def test_baron_scales_with_king_count(self):
+        dp4 = self._deck_with_ranks(K=4)
+        dp8 = self._deck_with_ranks(K=8)
+        adj4 = _deck_composition_adjustment("j_baron", 0.0, dp4, None)
+        adj8 = _deck_composition_adjustment("j_baron", 0.0, dp8, None)
+        assert adj4 > 0, "Baron with 4 Kings should have nonzero value"
+        assert adj8 > adj4, "More Kings → more value"
+
+    def test_baron_caps(self):
+        dp20 = self._deck_with_ranks(K=20)
+        adj = _deck_composition_adjustment("j_baron", 0.0, dp20, None)
+        assert adj <= 8.0, "Baron bonus should cap at 8.0"
+
+    # --- Shoot the Moon ---
+    def test_shoot_the_moon_scales_with_queen_count(self):
+        dp4 = self._deck_with_ranks(Q=4)
+        dp8 = self._deck_with_ranks(Q=8)
+        adj4 = _deck_composition_adjustment("j_shoot_the_moon", 0.0, dp4, None)
+        adj8 = _deck_composition_adjustment("j_shoot_the_moon", 0.0, dp8, None)
+        assert adj4 > 0
+        assert adj8 > adj4
+
+    # --- Raised Fist ---
+    def test_raised_fist_early_ante_decent(self):
+        dp = self._deck_with_steel(0)
+        adj = _deck_composition_adjustment("j_raised_fist", 0.0, dp, None, ante=2)
+        assert adj >= 1.5, f"RF at ante 2 no Steel should be decent, got {adj}"
+
+    def test_raised_fist_mid_ante_weak(self):
+        dp = self._deck_with_steel(0)
+        adj_mid = _deck_composition_adjustment("j_raised_fist", 0.0, dp, None, ante=4)
+        assert adj_mid == 0.0, f"RF at ante 4 no Steel should be 0, got {adj_mid}"
+
+    def test_raised_fist_late_ante_bad_without_steel(self):
+        dp = self._deck_with_steel(0)
+        adj = _deck_composition_adjustment("j_raised_fist", 0.0, dp, None, ante=6)
+        assert adj == 0.0
+
+    def test_raised_fist_steel_overrides_ante_decay(self):
+        """With Steel deck rolling, RF retains value even at late ante."""
+        dp = self._deck_with_steel(6)
+        adj_late = _deck_composition_adjustment("j_raised_fist", 0.0, dp, None, ante=6)
+        assert adj_late >= 3.0, (
+            f"RF + 6 Steel at ante 6 should be solid, got {adj_late}"
+        )
+
+    def test_raised_fist_monotonic_in_steel_count(self):
+        adj_0 = _deck_composition_adjustment(
+            "j_raised_fist", 0.0, self._deck_with_steel(0), None, ante=3,
+        )
+        adj_2 = _deck_composition_adjustment(
+            "j_raised_fist", 0.0, self._deck_with_steel(2), None, ante=3,
+        )
+        adj_4 = _deck_composition_adjustment(
+            "j_raised_fist", 0.0, self._deck_with_steel(4), None, ante=3,
+        )
+        assert adj_0 < adj_2 < adj_4
+
+
 class TestEvaluateJokerWithDeckProfile:
     """Integration: evaluate_joker_value respects deck_profile."""
 

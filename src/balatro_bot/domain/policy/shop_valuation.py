@@ -495,6 +495,26 @@ def _context_scale(
         )
         factor *= 1.0 / (1.0 + same_count * 0.25)
 
+    # Cross-category saturation: once multiple scoring phases are covered,
+    # the next scoring joker is marginal. Matches the tune signal that ~65%
+    # of ante 1-2 joker buys after chip+mult coverage were more scorers.
+    # Only applies to scoring jokers (chips/mult/xmult).
+    if cat in ("chips", "mult", "xmult"):
+        owned_cats = {
+            _KEY_TO_CATEGORY.get(joker_key(j))
+            for j in owned_jokers
+        }
+        covered = owned_cats & {"chips", "mult", "xmult"}
+        if len(covered) >= 3:
+            factor *= 0.4
+        elif len(covered) == 2 and cat in covered:
+            # Candidate adds a third of an already-covered category
+            factor *= 0.6
+        elif len(covered) == 2:
+            # Candidate completes the trio (e.g. has chip+mult, buying xmult)
+            # — still valuable, small damp only
+            factor *= 0.9
+
     return factor
 
 
@@ -529,6 +549,7 @@ def _deck_composition_adjustment(
     base_value: float,
     deck_profile: DeckProfile,
     strategy: Strategy | None,
+    ante: int = 1,
 ) -> float:
     """Adjust base_value based on deck composition."""
     # --- Enhancement-count jokers (Steel Joker, Lucky Cat, Glass Joker) ---
@@ -580,6 +601,32 @@ def _deck_composition_adjustment(
         if enh_total > 0:
             # Enhanced cards in the suit retrigger/score extra → suit joker more valuable
             base_value += min(enh_total * 0.3, 2.0)
+
+    # --- Held-card jokers: value scales with deck composition ---
+    # These contribute nothing in _scoring_delta because the synthetic hand
+    # has no held_cards, so we need an explicit bonus tied to the deck.
+    if key == "j_baron":
+        kings = deck_profile.rank_counts.get("K", 0)
+        # 4 Kings (vanilla) → +3.0; each additional King adds xmult ceiling.
+        base_value += min(kings * 0.75, 8.0)
+    elif key == "j_shoot_the_moon":
+        queens = deck_profile.rank_counts.get("Q", 0)
+        # Additive mult — caps sooner than Baron's multiplicative stack.
+        base_value += min(queens * 0.65, 6.0)
+    elif key == "j_raised_fist":
+        steel = deck_profile.enhancement_counts.get("STEEL", 0)
+        if steel >= 4:
+            # Steel deck rolling — RF's held-mult stacks with Steel's held-xmult.
+            base_value += 3.0 + min((steel - 4) * 0.4, 2.0)
+        elif steel >= 2:
+            # Steel build plausibly in progress.
+            base_value += 1.5 + (steel - 2) * 0.4
+        else:
+            # No Steel plan — RF arc: decent early, rapidly obsolete after.
+            if ante <= 2:
+                base_value += 2.0
+            elif ante == 3:
+                base_value += 0.5
 
     return base_value
 
@@ -672,7 +719,7 @@ def evaluate_joker_value(
 
     # Deck composition adjustment — boost/gate jokers based on deck contents
     if deck_profile is not None:
-        base_value = _deck_composition_adjustment(key, base_value, deck_profile, strategy)
+        base_value = _deck_composition_adjustment(key, base_value, deck_profile, strategy, ante)
 
     # Layer 2: synergy
     synergy = _synergy_multiplier(key, owned_keys, strategy, owned_jokers, candidate)

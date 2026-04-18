@@ -173,7 +173,6 @@ def test_pad_high_card_no_higher_rank_junk():
     assert 1 not in padded, "Queen should not be added as junk (outranks 3)"
     assert 2 in padded, "Scoring card must be in padded"
     assert 3 in padded, "2♣ is safe junk"
-    assert 4 not in padded or 4 in padded, "4♥ may or may not be added"
 
 
 def test_pad_high_card_allows_lower_rank():
@@ -202,3 +201,52 @@ def test_pad_non_high_card_allows_any_rank():
     padded = _pad_with_junk([0, 1], hand, [], intended_hand="Pair", max_cards=5)
     # For Pair, high-rank junk is fine
     assert len(padded) == 5, "Should pad to 5 for Pair"
+
+
+# ---------------------------------------------------------------------------
+# _pad_with_junk — Splash (ALL_SCORE_JOKERS) exploitation
+# ---------------------------------------------------------------------------
+
+def test_pad_with_splash_pads_high_card_to_five():
+    """With Splash owned, High Card plays should fill all 5 slots —
+    every played card scores, so unused slots are wasted chips."""
+    hand = [
+        card("A", "S"),  # 0: scoring
+        card("K", "H"),  # 1: higher rank — without Splash, blocked by rank cap
+        card("2", "C"),  # 2: junk
+        card("5", "D"),  # 3: junk
+        card("7", "H"),  # 4: junk
+    ]
+    splash = joker("j_splash", "Splash")
+    padded = _pad_with_junk([0], hand, [splash], intended_hand="High Card", max_cards=5)
+    assert len(padded) == 5, f"Splash should pad High Card to 5 (got {padded})"
+    assert 0 in padded, "Original scoring card must remain"
+
+
+def test_pad_with_splash_preserves_pair_classification():
+    """Splash must NOT let padding upgrade a Pair into Two Pair / Three of a
+    Kind — the bot may have picked Pair intentionally (joker milking, etc.)."""
+    hand = [
+        card("3", "S"),  # 0: scoring pair
+        card("3", "H"),  # 1: scoring pair
+        card("K", "D"),  # 2: junk — would form Pair of Kings with idx 3
+        card("K", "C"),  # 3: junk — would form Two Pair if both added
+        card("7", "H"),  # 4: safe junk
+    ]
+    splash = joker("j_splash", "Splash")
+    padded = _pad_with_junk([0, 1], hand, [splash], intended_hand="Pair", max_cards=5)
+    # Two Pair would break the decided hand type — block at most one K.
+    assert not (2 in padded and 3 in padded), (
+        f"Splash padding must not upgrade Pair → Two Pair (got {padded})"
+    )
+
+
+def test_pad_without_splash_still_respects_high_card_rank_cap():
+    """Regression guard: without Splash, the original rank cap still applies."""
+    hand = [
+        card("3", "S"),  # 0: scoring High Card
+        card("K", "H"),  # 1: outranks scoring card
+        card("2", "C"),  # 2: safe junk
+    ]
+    padded = _pad_with_junk([0], hand, [], intended_hand="High Card", max_cards=5)
+    assert 1 not in padded, "Without Splash, K should still be rejected as junk"

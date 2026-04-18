@@ -108,7 +108,11 @@ def enumerate_hands(
             )
 
             if jokers:
-                play_order = _sort_play_order(list(indices), hand_cards, jokers)
+                play_order = _sort_play_order(
+                    list(indices), hand_cards, jokers,
+                    idol_rank=idol_rank, idol_suit=idol_suit,
+                    ancient_suit=ancient_suit,
+                )
                 played_in_order = [hand_cards[i] for i in play_order]
             else:
                 played_in_order = subset

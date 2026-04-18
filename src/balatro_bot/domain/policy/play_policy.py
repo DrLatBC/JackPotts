@@ -43,7 +43,7 @@ def choose_winning_play(ctx: RoundContext) -> Action | None:
     effective_score = ctx.best.total * ctx.score_discount
     if effective_score >= ctx.chips_remaining:
         indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
-        indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
+        indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         return PlayCards(
             indices,
             reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}) >= {ctx.chips_remaining} needed",
@@ -117,7 +117,7 @@ def choose_high_value_play(ctx: RoundContext) -> Action | None:
         return None
 
     indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
-    indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
+    indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
     return PlayCards(
         indices,
         reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}), outlook={outlook}, {ctx.chips_remaining} remaining",
@@ -152,7 +152,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
 
     if ctx.best:
         indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
-        indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
+        indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         return PlayCards(
             indices,
             reason=f"best available: {ctx.best.hand_name} for {ctx.best.total}",
@@ -188,7 +188,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
         )
         if unconstrained:
             indices = _pad_with_junk(unconstrained.card_indices, ctx.hand_cards, ctx.jokers, unconstrained.hand_name, protection=ctx.card_protection)
-            indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
+            indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             return PlayCards(
                 indices,
                 reason=f"mouth locked ({ctx.mouth_locked_hand}) but can't form it (no discards): "
@@ -203,10 +203,10 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
             ranked = sorted(range(len(ctx.hand_cards)),
                             key=lambda i: rank_value(card_rank(ctx.hand_cards[i]) or "2"),
                             reverse=True)
-            indices = _sort_play_order(ranked[:5], ctx.hand_cards, ctx.jokers, ctx.strategy)
+            indices = _sort_play_order(ranked[:5], ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             return PlayCards(indices, reason="fallback: play 5 highest cards", hand_name="High Card",
                             total=ctx.best.total if ctx.best else 0)
-        indices = _sort_play_order(list(range(len(ctx.hand_cards))), ctx.hand_cards, ctx.jokers, ctx.strategy)
+        indices = _sort_play_order(list(range(len(ctx.hand_cards))), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         return PlayCards(indices, reason="fallback: play all remaining cards", hand_name="High Card",
                          total=ctx.best.total if ctx.best else 0)
     return None
@@ -356,7 +356,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
 
     # Square Joker: exactly 4 junk cards
     if "j_square" in play_scalers and len(junk) >= 4:
-        indices = _sort_play_order([i for i, _ in junk[:4]], ctx.hand_cards, ctx.jokers, ctx.strategy)
+        indices = _sort_play_order([i for i, _ in junk[:4]], ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         return PlayCards(
             indices,
             reason=f"milk: cycle 4 junk for Square (+4 chips) ({hands_after} hands left)",
@@ -372,7 +372,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if enhanced:
             required = enhanced[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy)
+            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -386,7 +386,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if twos:
             required = twos[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy)
+            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -400,7 +400,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if eights:
             required = eights[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy)
+            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -415,7 +415,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if faces:
             required = faces[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy)
+            indices = _sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -457,7 +457,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         for ht, jname in targets:
             match = next((c for c in candidates if c.hand_name == ht), None)
             if match:
-                indices = _sort_play_order(match.card_indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
+                indices = _sort_play_order(match.card_indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
                 return PlayCards(
                     indices,
                     reason=f"milk: {ht} for {jname} ({hands_after} hands left)",
@@ -490,7 +490,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
 
     if generic:
         dump = junk[:5] if junk else playable[:1]
-        indices = _sort_play_order([i for i, _ in dump], ctx.hand_cards, ctx.jokers, ctx.strategy)
+        indices = _sort_play_order([i for i, _ in dump], ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
         return PlayCards(
             indices,

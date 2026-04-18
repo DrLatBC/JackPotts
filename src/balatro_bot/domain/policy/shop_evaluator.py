@@ -23,7 +23,7 @@ from balatro_bot.constants import (
 )
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.shop_valuation import (
-    evaluate_joker_value, parse_effect_value,
+    _KEY_TO_CATEGORY, evaluate_joker_value, parse_effect_value,
 )
 from balatro_bot.joker_effects.scoring_phase import (
     get_joker_phase, get_joker_edition_phase,
@@ -64,7 +64,10 @@ class Budget:
     rounds_est: int                  # estimated rounds remaining
 
 
-def compute_budget(money: int, ante: int, joker_count: int = 0) -> Budget:
+def compute_budget(
+    money: int, ante: int, joker_count: int = 0,
+    owned_jokers: list[dict] | None = None,
+) -> Budget:
     """Determine economy phase and spending limits.
 
     The reserve is a *soft target*, not a hard floor. The spend_ceiling
@@ -94,8 +97,18 @@ def compute_budget(money: int, ante: int, joker_count: int = 0) -> Budget:
     # Each empty slot below 3 owned pushes scoring aggression toward 1.0.
     # Speculative aggression is NOT boosted — empty slots don't make rerolls
     # or vouchers any better.
+    #
+    # Exception: if chip AND mult phases are already covered at ante ≤2,
+    # empty slots don't justify max aggression — the roster is already
+    # sufficient for early blinds. Cap slot aggression at 0.85 in that case.
     if joker_count < 3:
         slot_aggression = 1.0 - joker_count * 0.15  # 1.0, 0.85, 0.7
+        if ante <= 2 and owned_jokers:
+            owned_cats = {
+                _KEY_TO_CATEGORY.get(joker_key(j)) for j in owned_jokers
+            }
+            if "chips" in owned_cats and ("mult" in owned_cats or "xmult" in owned_cats):
+                slot_aggression = min(slot_aggression, 0.85)
         scoring_agg = max(scoring_agg, slot_aggression)
         reserve = min(reserve, 5)  # relax reserve when roster is thin
 
@@ -325,20 +338,28 @@ def _score_pack(
     has_red_card = any(joker_key(j) == "j_red_card" for j in owned_jokers)
     has_constellation = any(joker_key(j) == "j_constellation" for j in owned_jokers)
 
+    # Early-ante pack deflator: at ante ≤2 the bot has little scoring roster to
+    # amplify pack picks, so realized value of a random planet/tarot is much
+    # lower than the raw heuristic suggests. Packs were the biggest cash leak
+    # in the ante 1-2 data (1.8/ante vs 1.4 jokers/ante).
+    early = ante <= 2
+
     # Celestial and Buffoon: SkipPackForRedCard exempts these (planets/jokers),
     # so Red Card never fires — no skip bonus.
     if "Celestial" in label:
-        return 9.0 if has_constellation else 6.0
+        if has_constellation:
+            return 9.0
+        return 3.0 if early else 6.0
     if "Buffoon" in label:
         if len(owned_jokers) >= joker_limit:
             return 0.0
-        return 4.0
+        return 2.5 if early else 4.0
 
     # Packs Red Card will skip — add skip bonus on top of pick value.
     if "Arcana" in label:
-        base = 3.0
+        base = 1.5 if early else 3.0
     elif "Spectral" in label:
-        base = 2.0 if ante >= 3 else 0.5
+        base = 2.0 if ante >= 3 else 0.3
     elif "Standard" in label:
         base = 1.0
     else:
@@ -599,7 +620,11 @@ def _money_opportunity_cost(cost: int, money: int, budget: Budget,
     after_interest = min((money - cost) // 5, 5)
     lost_per_round = current_interest - after_interest
 
-    cost_factor = max(0.0, 1.0 - category_aggression)
+    # Minimum 0.2 floor so even at full aggression interest-breaking
+    # buys pay a small tax. Without this, ante 1-2 buys are literally
+    # free (cost_factor = 1 - 1.0 = 0) and the bot never banks cash —
+    # tune data shows ~0% of ante 1-2 rounds start at interest cap.
+    cost_factor = max(0.2, 1.0 - category_aggression)
     return lost_per_round * budget.rounds_est * cost_factor
 
 
@@ -662,7 +687,7 @@ class ShopEvaluator:
 
         strat = compute_strategy(owned, hand_levels)
         deck_profile = self._get_deck_profile(state)
-        budget = compute_budget(money, ante, joker_count)
+        budget = compute_budget(money, ante, joker_count, owned_jokers=owned)
 
         # ── Score roster ──
         roster = score_roster(
@@ -758,25 +783,35 @@ class ShopEvaluator:
                 for sc in sell_candidates:
                     if _get_edition(owned[sc.index]) == "POLYCHROME":
                         continue
+                    sell_cash = sc.sell_value
+                    effective_cost = cost - sell_cash
+                    if effective_cost > money:
+                        continue
                     if is_negative:
                         # Negative: sell weakest then buy = net +1 joker.
                         # Value = the Negative's value (we keep everything
                         # except the sold joker, which comes back as a free
                         # slot once the Negative lands).
                         upgrade_delta = shop_value
+                        shop_value_post = shop_value
                     else:
-                        upgrade_delta = shop_value - sc.ev_delta
-                    sell_cash = sc.sell_value
-                    effective_cost = cost - sell_cash
-                    if effective_cost > money:
-                        continue
+                        # Re-score the shop candidate against the post-sell
+                        # roster so synergies/amplification from the joker
+                        # we're about to sell don't inflate the buyer.
+                        post_sell_owned = owned[:sc.index] + owned[sc.index + 1:]
+                        post_sell_strategy = compute_strategy(post_sell_owned, hand_levels)
+                        shop_value_post = _score_shop_joker(
+                            card, post_sell_owned, hand_levels,
+                            post_sell_strategy, ante, joker_limit, deck_profile,
+                        )
+                        upgrade_delta = shop_value_post - sc.ev_delta
                     opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
                                                        budget.scoring_aggression)
                     # Discount 30%: only the sell emits this tick, buy is uncertain
                     net = upgrade_delta * budget.scoring_aggression * 0.7 - opp_cost
                     if net > 0:
                         steps = [
-                            SellJoker(sc.index, reason=f"sell {sc.label} (ev={sc.ev_delta:.1f}) for {'Negative buy' if is_negative else 'upgrade'}"),
+                            SellJoker(sc.index, reason=f"sell {sc.label} (ev={sc.ev_delta:.1f}) for {'Negative buy' if is_negative else f'{label} (post-sell value={shop_value_post:.1f})'}"),
                         ]
                         # After sell, the shop card index is still i but joker indices shift
                         # The engine re-evaluates each tick, so we just emit the sell

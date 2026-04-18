@@ -185,6 +185,9 @@ def flush_games() -> None:
     """Force-flush any buffered games. Call before process exit."""
     _stop_flush_timer()
     _flush_buffer()
+    # _flush_buffer always re-arms the periodic timer; cancel it again so
+    # the daemon thread doesn't keep firing after shutdown.
+    _stop_flush_timer()
 
 
 def post_batch_finish(batch_id: int, status: str = "finished") -> None:

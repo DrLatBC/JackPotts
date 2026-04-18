@@ -7,7 +7,7 @@ from balatro_bot.domain.scoring.estimate import score_hand, score_hand_detailed
 from balatro_bot.domain.scoring.base import arm_reduce_hand_levels, flint_halve_hand_levels
 from balatro_bot.cards import card_chip_value
 from dataclasses import replace as dc_replace
-from tests.conftest import card, wild_card, stone_card, card_with_perma, debuffed_card, joker
+from tests.conftest import card, wild_card, stone_card, debuffed_card, joker
 
 
 def _joker_with_ability(key: str, ability: dict, **extra) -> dict:

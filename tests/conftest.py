@@ -52,20 +52,6 @@ def debuffed_card(rank: str, suit: str, enhancement: str | None = None) -> Card:
     )
 
 
-def card_with_perma(rank: str, suit: str, perma_bonus: int, enhancement: str | None = None) -> Card:
-    """Build a Card with perma_bonus."""
-    return Card(
-        id=0,
-        key=f"{suit}_{rank}",
-        set_="DEFAULT",
-        label=f"{rank} of {suit}",
-        value=CardValue(rank=rank, suit=suit, perma_bonus=perma_bonus),
-        modifier=CardModifier(enhancement=enhancement),
-        state=CardState(),
-        cost={},
-    )
-
-
 def joker(key: str, label: str = "", rarity: int | str | None = None) -> dict:
     """Build a minimal joker dict."""
     j: dict = {"key": key, "label": label or key, "set": "JOKER", "cost": {"sell": 3}}

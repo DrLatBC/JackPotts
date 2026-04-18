@@ -134,7 +134,11 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
     Per-card jokers ("when scored") fire WITHIN each trigger, not after.
     """
     from balatro_bot.joker_effects import retrigger_count
-    from balatro_bot.constants import FACE_RANKS, FIBONACCI_RANKS, EVEN_RANKS, ODD_RANKS
+    from balatro_bot.constants import FACE_RANKS
+    from balatro_bot.joker_effects.per_card import (
+        PerCardCtx,
+        build_per_card_effects,
+    )
 
     scored_in_play_order = [c for c in (played_cards or scoring_cards)
                             if any(c is s for s in scoring_cards)]
@@ -142,70 +146,18 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
         if not any(c is p for p in scored_in_play_order):
             scored_in_play_order.append(c)
 
-    _per_card = []
     _first_face_found = False
-
-    def _add_per_card_effect(key: str, joker: dict) -> None:
-        """Add per-card scoring effects for a joker key, using joker's ability data."""
-        ab = _ability(joker)
-        if key == "j_greedy_joker":
-            _per_card.append(("suit_mult", "D", ab.get("s_mult", 3)))
-        elif key == "j_lusty_joker":
-            _per_card.append(("suit_mult", "H", ab.get("s_mult", 3)))
-        elif key == "j_wrathful_joker":
-            _per_card.append(("suit_mult", "S", ab.get("s_mult", 3)))
-        elif key == "j_gluttenous_joker":
-            _per_card.append(("suit_mult", "C", ab.get("s_mult", 3)))
-        elif key == "j_fibonacci":
-            _per_card.append(("ranks_mult", FIBONACCI_RANKS, ab.get("extra", 8)))
-        elif key == "j_even_steven":
-            _per_card.append(("ranks_mult", EVEN_RANKS, ab.get("extra", 4)))
-        elif key == "j_odd_todd":
-            _per_card.append(("ranks_chips", ODD_RANKS, ab.get("extra", 31)))
-        elif key == "j_scholar":
-            _per_card.append(("ranks_cm", frozenset({"A"}), ab.get("chips", 20), ab.get("mult", 4)))
-        elif key == "j_smiley":
-            _per_card.append(("face_mult", ab.get("extra", 5)))
-        elif key == "j_scary_face":
-            _per_card.append(("face_chips", ab.get("extra", 30)))
-        elif key == "j_walkie_talkie":
-            _per_card.append(("ranks_cm", frozenset({"T", "4"}), ab.get("chips", 10), ab.get("mult", 4)))
-        elif key == "j_photograph":
-            _per_card.append(("first_face_xmult", ab.get("extra", 2.0)))
-        elif key == "j_triboulet":
-            _per_card.append(("ranks_xmult", frozenset({"K", "Q"}), ab.get("extra", 2.0)))
-        elif key == "j_ancient":
-            _per_card.append(("suit_xmult", ancient_suit, 1.5))
-        elif key == "j_arrowhead":
-            _per_card.append(("suit_chips", "S", ab.get("extra", 50)))
-        elif key == "j_onyx_agate":
-            _per_card.append(("suit_mult", "C", ab.get("extra", 7)))
-        elif key == "j_bloodstone":
-            xm = ab.get("Xmult", 1.5)
-            odds = ab.get("odds", 2)
-            _per_card.append(("suit_expected_xmult", "H", xm, odds))
-        elif key == "j_hiker":
-            _per_card.append(("all_chips", ab.get("extra", 5)))
-
+    _per_card = build_per_card_effects(
+        jokers,
+        PerCardCtx(
+            smeared=ctx.smeared,
+            pareidolia=ctx.pareidolia,
+            idol_rank=ctx.idol_rank,
+            idol_suit=ctx.idol_suit,
+            ancient_suit=ancient_suit,
+        ),
+    )
     joker_list = jokers or []
-    for i, j in enumerate(joker_list):
-        if is_joker_debuffed(j):
-            continue
-        k = joker_key(j)
-        if k == "j_blueprint":
-            # Blueprint copies the joker to its right
-            if i + 1 < len(joker_list):
-                target = joker_list[i + 1]
-                if not is_joker_debuffed(target):
-                    _add_per_card_effect(joker_key(target), target)
-        elif k == "j_brainstorm":
-            # Brainstorm copies the leftmost joker
-            if joker_list and joker_list[0] is not j:
-                target = joker_list[0]
-                if not is_joker_debuffed(target):
-                    _add_per_card_effect(joker_key(target), target)
-        else:
-            _add_per_card_effect(k, j)
 
     for card in scored_in_play_order:
         triggers = retrigger_count(card, ctx)
@@ -253,6 +205,8 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
                         ctx.mult *= eff[2] ** (1.0 / eff[3])
                     elif kind == "ranks_xmult" and rank in eff[1]:
                         ctx.mult *= eff[2]
+                    elif kind == "rank_suit_xmult" and rank == eff[1] and eff[2] in suits:
+                        ctx.mult *= eff[3]
                     elif kind == "first_face_xmult":
                         if _is_first_face_card:
                             ctx.mult *= eff[1]

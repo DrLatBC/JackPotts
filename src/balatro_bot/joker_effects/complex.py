@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, _modifier, joker_key, rank_value
+from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, _modifier, joker_key
 from balatro_bot.domain.models.joker import Joker
-from balatro_bot.constants import FACE_RANKS, FIBONACCI_RANKS, EVEN_RANKS, ODD_RANKS, RANK_CHIPS
+from balatro_bot.constants import FACE_RANKS
 from balatro_bot.domain.models.card import Card
 from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult, _get_parsed_value, _parse_bracket_counter
-from balatro_bot.joker_effects.context import ScoreContext, retrigger_count, _count_suit_in_scoring, _count_face_in_scoring, _hand_contains
+from balatro_bot.joker_effects.context import ScoreContext, _hand_contains
 
 if TYPE_CHECKING:
     from typing import Any
@@ -64,46 +64,8 @@ def _misprint(ctx: ScoreContext, j: dict) -> None:
     pct = min(ctx.hands_left / 4, 1.0) * 0.5
     ctx.mult += lo + (hi - lo) * pct
 
-def _raised_fist(ctx: ScoreContext, j: dict) -> None:
-    # Raised Fist uses chip values (J/Q/K=10, A=11), not rank order (J=11..A=14)
-    # The game picks the lowest-ranked card INCLUDING debuffed ones.
-    # If that card is debuffed, the effect returns 0 mult.
-    from balatro_bot.cards import rank_value
-    best_card = None
-    best_rv = 15
-    for c in ctx.held_cards:
-        r = card_rank(c)
-        if r:
-            rv = rank_value(r)
-            if rv <= best_rv:
-                best_rv = rv
-                best_card = c
-    if best_card is not None and not is_debuffed(best_card):
-        ctx.mult += 2 * RANK_CHIPS.get(card_rank(best_card), 0)
-
-def _fibonacci(ctx: ScoreContext, j: dict) -> None:
-    count = sum(retrigger_count(c, ctx) for c in ctx.scoring_cards if not is_debuffed(c) and card_rank(c) in FIBONACCI_RANKS)
-    ctx.mult += _ability(j).get("extra", 8) * count
-
-def _scary_face(ctx: ScoreContext, j: dict) -> None:
-    ctx.chips += _ability(j).get("extra", 30) * _count_face_in_scoring(ctx)
-
 def _abstract(ctx: ScoreContext, j: dict) -> None:
     ctx.mult += _ability(j).get("extra", 3) * len(ctx.jokers)
-
-def _even_steven(ctx: ScoreContext, j: dict) -> None:
-    count = sum(retrigger_count(c, ctx) for c in ctx.scoring_cards if not is_debuffed(c) and card_rank(c) in EVEN_RANKS)
-    ctx.mult += _ability(j).get("extra", 4) * count
-
-def _odd_todd(ctx: ScoreContext, j: dict) -> None:
-    count = sum(retrigger_count(c, ctx) for c in ctx.scoring_cards if not is_debuffed(c) and card_rank(c) in ODD_RANKS)
-    ctx.chips += _ability(j).get("extra", 31) * count
-
-def _scholar(ctx: ScoreContext, j: dict) -> None:
-    ab = _ability(j)
-    count = sum(retrigger_count(c, ctx) for c in ctx.scoring_cards if not is_debuffed(c) and card_rank(c) == "A")
-    ctx.chips += ab.get("chips", 20) * count
-    ctx.mult += ab.get("mult", 4) * count
 
 def _supernova(ctx: ScoreContext, j: dict) -> None:
     played = ctx.hand_levels.get(ctx.hand_name, {}).get("played", 0) + 1
@@ -185,19 +147,6 @@ def _blackboard(ctx: ScoreContext, j: dict) -> None:
     ):
         ctx.mult *= _ability(j).get("extra", 3.0)
 
-def _baron(ctx: ScoreContext, j: dict) -> None:
-    kings = sum(1 for c in ctx.held_cards if not is_debuffed(c) and card_rank(c) == "K")
-    if kings > 0:
-        ctx.mult *= _ability(j).get("extra", 1.5) ** kings
-
-def _photograph(ctx: ScoreContext, j: dict) -> None:
-    # Per-card xmult: handled in score_hand's card scoring loop (fires per retrigger,
-    # before independent joker effects). This is a noop here to avoid double-counting.
-    pass
-
-def _smiley(ctx: ScoreContext, j: dict) -> None:
-    ctx.mult += _ability(j).get("extra", 5) * _count_face_in_scoring(ctx)
-
 def _acrobat(ctx: ScoreContext, j: dict) -> None:
     if ctx.hands_left == 1:
         ctx.mult *= _ability(j).get("extra", 3.0)
@@ -206,19 +155,6 @@ def _card_sharp(ctx: ScoreContext, j: dict) -> None:
     played_count = ctx.hand_levels.get(ctx.hand_name, {}).get("played_this_round", 0)
     if played_count > 0:
         ctx.mult *= _ab_xmult(j, fallback=3.0)
-
-def _ancient(ctx: ScoreContext, j: dict) -> None:
-    # Per-card xmult: handled in score_hand's card scoring loop (fires per retrigger,
-    # before independent joker effects). This is a noop here to avoid double-counting.
-    # Fallback: if no ancient_suit data, apply a flat x2 estimate.
-    if not ctx.ancient_suit:
-        ctx.mult *= 2.0
-
-def _walkie_talkie(ctx: ScoreContext, j: dict) -> None:
-    ab = _ability(j)
-    count = sum(retrigger_count(c, ctx) for c in ctx.scoring_cards if not is_debuffed(c) and card_rank(c) in ("T", "4"))
-    ctx.chips += ab.get("chips", 10) * count
-    ctx.mult += ab.get("mult", 4) * count
 
 def _seeing_double(ctx: ScoreContext, j: dict) -> None:
     has_club  = any("C" in card_suits(c, smeared=ctx.smeared) for c in ctx.scoring_cards if not is_debuffed(c))
@@ -291,10 +227,6 @@ def _brainstorm(ctx: ScoreContext, j: dict) -> None:
             if effect and effect is not _brainstorm and effect is not _blueprint:
                 effect(ctx, left)
 
-def _shoot_the_moon(ctx: ScoreContext, j: dict) -> None:
-    queens = sum(1 for c in ctx.held_cards if not is_debuffed(c) and card_rank(c) == "Q")
-    ctx.mult += _ability(j).get("extra", 13) * queens
-
 def _drivers_license(ctx: ScoreContext, j: dict) -> None:
     ab = _ability(j)
     tally = ab.get("driver_tally")
@@ -313,25 +245,6 @@ def _swashbuckler(ctx: ScoreContext, j: dict) -> None:
     )
     ctx.mult += total_sell
 
-def _bloodstone(ctx: ScoreContext, j: dict) -> None:
-    ab = _ability(j)
-    xm = ab.get("Xmult", 1.5)
-    odds = ab.get("odds", 2)
-    hearts = _count_suit_in_scoring(ctx, "H")
-    if hearts > 0:
-        ctx.mult *= xm ** (hearts * (1.0 / odds))
-
-def _arrowhead(ctx: ScoreContext, j: dict) -> None:
-    ctx.chips += _ability(j).get("extra", 50) * _count_suit_in_scoring(ctx, "S")
-
-def _onyx_agate(ctx: ScoreContext, j: dict) -> None:
-    ctx.mult += _ability(j).get("extra", 7) * _count_suit_in_scoring(ctx, "C")
-
-def _triboulet(ctx: ScoreContext, j: dict) -> None:
-    # Per-card xmult: handled in score_hand's card scoring loop (fires per retrigger,
-    # before independent joker effects). This is a noop here to avoid double-counting.
-    pass
-
 def _baseball(ctx: ScoreContext, j: dict) -> None:
     # Baseball Card is a modifier, not a standalone effect.
     # It causes each Uncommon joker to trigger an additional x1.5 after their own
@@ -343,19 +256,6 @@ def _bull(ctx: ScoreContext, j: dict) -> None:
 
 def _stuntman(ctx: ScoreContext, j: dict) -> None:
     ctx.chips += _ability(j).get("chip_mod", 250)
-
-def _idol(ctx: ScoreContext, j: dict) -> None:
-    xmult = _ability(j).get("extra", 2.0)
-    if not ctx.idol_rank or not ctx.idol_suit:
-        return
-    for c in ctx.scoring_cards:
-        if is_debuffed(c):
-            continue
-        if card_rank(c) != ctx.idol_rank:
-            continue
-        suits = card_suits(c, smeared=ctx.smeared)
-        if ctx.idol_suit in suits:
-            ctx.mult *= xmult ** retrigger_count(c, ctx)
 
 def _wee(ctx: ScoreContext, j: dict) -> None:
     # Wee Joker gains +chip_mod chips per scored 2.  The API snapshot shows
@@ -472,7 +372,15 @@ def _yorick(ctx: ScoreContext, j: dict) -> None:
     ctx.mult *= xmult
 
 
-# Collected dict of complex effects for the registry
+# Collected dict of complex effects for the registry.
+#
+# Per-card jokers (Fibonacci, Smiley, Scary Face, Walkie Talkie, Scholar,
+# Even Steven, Odd Todd, Photograph, Triboulet, Ancient, Arrowhead, Onyx
+# Agate, Bloodstone, Greedy/Lusty/Wrathful/Gluttenous, Idol) live in
+# joker_effects/per_card.py and are dispatched in the scoring-card loop.
+# Held-in-hand jokers (Baron, Shoot the Moon, Raised Fist) live in the
+# held-in-hand phase of score_hand. Both categories are marked _noop in
+# registry.py so apply_joker_effects skips them cleanly.
 COMPLEX_EFFECTS: dict[str, object] = {
     "j_half": _half,
     "j_stencil": _stencil,
@@ -481,13 +389,7 @@ COMPLEX_EFFECTS: dict[str, object] = {
     "j_mystic_summit": _mystic_summit,
     "j_loyalty_card": _loyalty_card,
     "j_misprint": _misprint,
-    "j_raised_fist": _raised_fist,
-    "j_fibonacci": _fibonacci,
-    "j_scary_face": _scary_face,
     "j_abstract": _abstract,
-    "j_even_steven": _even_steven,
-    "j_odd_todd": _odd_todd,
-    "j_scholar": _scholar,
     "j_supernova": _supernova,
     "j_runner": _runner,
     "j_square": _square,
@@ -495,29 +397,18 @@ COMPLEX_EFFECTS: dict[str, object] = {
     "j_green_joker": _green_joker,
     "j_ride_the_bus": _ride_the_bus,
     "j_blackboard": _blackboard,
-    "j_baron": _baron,
-    "j_photograph": _photograph,
-    "j_smiley": _smiley,
     "j_acrobat": _acrobat,
     "j_card_sharp": _card_sharp,
-    "j_ancient": _ancient,
-    "j_walkie_talkie": _walkie_talkie,
     "j_seeing_double": _seeing_double,
     "j_flower_pot": _flower_pot,
     "j_blueprint": _blueprint,
     "j_brainstorm": _brainstorm,
-    "j_shoot_the_moon": _shoot_the_moon,
     "j_drivers_license": _drivers_license,
     "j_bootstraps": _bootstraps,
     "j_swashbuckler": _swashbuckler,
-    "j_bloodstone": _bloodstone,
-    "j_arrowhead": _arrowhead,
-    "j_onyx_agate": _onyx_agate,
-    "j_triboulet": _triboulet,
     "j_baseball": _baseball,
     "j_bull": _bull,
     "j_stuntman": _stuntman,
-    "j_idol": _idol,
     "j_wee": _wee,
     "j_lucky_cat": _lucky_cat,
     "j_obelisk": _obelisk,

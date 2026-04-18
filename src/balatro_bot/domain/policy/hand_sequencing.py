@@ -381,7 +381,7 @@ def _execute_finisher(ctx: RoundContext) -> Action | None:
         candidate.card_indices, ctx.hand_cards, ctx.jokers,
         candidate.hand_name, protection=ctx.card_protection,
     )
-    indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
+    indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
 
     effective = candidate.total * ctx.score_discount
     return PlayCards(
@@ -412,7 +412,7 @@ def _execute_setup(ctx: RoundContext, target_type: str | None) -> Action | None:
             match.card_indices, ctx.hand_cards, ctx.jokers,
             match.hand_name, protection=ctx.card_protection,
         )
-        indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
+        indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         return PlayCards(
             indices,
             reason=f"setup: {target_type} for Card Sharp (next same-type gets x3)",
@@ -460,7 +460,7 @@ def _execute_score(ctx: RoundContext, target_type: str | None = None) -> Action 
         candidate.card_indices, ctx.hand_cards, ctx.jokers,
         candidate.hand_name, protection=ctx.card_protection,
     )
-    indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
+    indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
 
     effective = candidate.total * ctx.score_discount
     if target_type and ctx.blind_name == "The Eye":
@@ -585,8 +585,12 @@ def _play_junk(ctx: RoundContext) -> Action | None:
             # All subsets produce used types — skip junk play
             return None
 
-    indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers,
-                               ctx.strategy if hasattr(ctx, 'strategy') else None)
+    indices = _sort_play_order(
+        indices, ctx.hand_cards, ctx.jokers,
+        ctx.strategy if hasattr(ctx, 'strategy') else None,
+        idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit,
+        ancient_suit=ctx.ancient_suit,
+    )
     return PlayCards(
         indices,
         reason=f"plan milk: cycle {len(indices)} junk ({ctx.hands_left - 1} hands left)",
@@ -628,6 +632,8 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
                     indices = _sort_play_order(
                         indices, ctx.hand_cards, ctx.jokers,
                         ctx.strategy if hasattr(ctx, 'strategy') else None,
+                        idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit,
+                        ancient_suit=ctx.ancient_suit,
                     )
                     log.info("To-Do List: playing %s from junk for $4", target)
                     return PlayCards(
@@ -648,6 +654,8 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
         indices = _sort_play_order(
             list(match.card_indices), ctx.hand_cards, ctx.jokers,
             ctx.strategy if hasattr(ctx, 'strategy') else None,
+            idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit,
+            ancient_suit=ctx.ancient_suit,
         )
         log.info("To-Do List: playing %s (any cards) for $4", target)
         return PlayCards(

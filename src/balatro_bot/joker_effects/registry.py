@@ -43,7 +43,7 @@ for key in (
     "j_fibonacci", "j_even_steven", "j_odd_todd", "j_scholar",
     "j_smiley", "j_scary_face", "j_walkie_talkie",
     "j_photograph", "j_triboulet", "j_ancient",
-    "j_arrowhead", "j_onyx_agate", "j_bloodstone",
+    "j_arrowhead", "j_onyx_agate", "j_bloodstone", "j_idol",
     "j_greedy_joker", "j_lusty_joker", "j_wrathful_joker", "j_gluttenous_joker",
 ):
     JOKER_EFFECTS[key] = _noop
