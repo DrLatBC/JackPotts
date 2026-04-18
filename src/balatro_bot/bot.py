@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import random
 import re
-import string
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -226,11 +224,12 @@ def run_bot(
             client.call("menu")
         except APIError:
             pass
-        if seed is None:
-            seed = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        start_params: dict[str, object] = {"deck": deck, "stake": stake}
+        if seed is not None:
+            start_params["seed"] = seed
         for _attempt in range(3):
             try:
-                state = client.call("start", {"deck": deck, "stake": stake, "seed": seed})
+                state = client.call("start", start_params)
                 break
             except APIError as e:
                 log.warning("start() failed (attempt %d): %s — retrying", _attempt + 1, e.message)
