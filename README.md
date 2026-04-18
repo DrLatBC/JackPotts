@@ -2,231 +2,77 @@
 
 [![built with Python](https://img.shields.io/badge/built%20with-Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![version v0.1.0](https://img.shields.io/badge/version-v0.2.0--beta-blue)](https://github.com/DrLatBC/JackPotts/releases)
-[![tests 266 passing](https://img.shields.io/badge/tests-266%20passing-brightgreen)](tests/)
+[![version v1.0.0](https://img.shields.io/badge/version-v1.0.0-blue)](https://github.com/DrLatBC/JackPotts/releases)
+[![tests 380 passing](https://img.shields.io/badge/tests-380%20passing-brightgreen)](tests/)
 [![platform Windows](https://img.shields.io/badge/platform-Windows-lightgrey)](https://github.com/DrLatBC/JackPotts)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/DrLatBC/JackPotts/pulls)
 
-Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/Balatro/) autonomously via the [balatrobot](https://github.com/coder/balatrobot) mod's JSON-RPC API. It evaluates every game state through a priority-ordered rule engine, picking the first rule that fires — no ML, no tree search, just hand-tuned heuristics.
+Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/Balatro/) autonomously via the [balatrobot](https://github.com/coder/balatrobot) mod's JSON-RPC API. A priority-ordered rule engine evaluates every game state and the first rule that fires wins — no ML, no tree search, just hand-tuned heuristics backed by a full simulation of Balatro's scoring pipeline.
 
-The bot fully simulates Balatro's scoring pipeline — joker effects, card enhancements, editions, seals, retriggers, and boss blind modifiers — to predict exact chip totals for every candidate hand before choosing what to play.
+Live stats dashboard: **[jackpotts.drlat.dev](https://jackpotts.drlat.dev)**
 
-**Current peak: Ante 11 | Scoring accuracy: 99.89% | 3.7% win rate** — [full stats](STATS.md)
+## Documentation
 
-## Prerequisites
+| Page | What's inside |
+|------|---------------|
+| [Installation](docs/installation.md) | Prerequisites, the fork rationale, `.env.local` setup |
+| [Usage](docs/usage.md) | Running single games, the supervisor, CLI flags, logs |
+| [Architecture](docs/architecture.md) | Rule engine, decision flow, module map |
+| [Scoring](docs/scoring.md) | Joker pipeline, card/enhancement/edition handling, The Idol mod patch |
+| [Dashboard](docs/dashboard.md) | JackPotts ingest pipeline, payload shape, batch lifecycle |
+| [Testing](docs/testing.md) | Unit tests, integration harness, writing new tests |
+| [Release notes](docs/release-notes.md) | Changelog |
 
-- **Balatro** (Steam)
-- **[Lovely](https://github.com/ethangreen-dev/lovely-injector)** mod loader for Balatro
-- **[balatrobot mod](https://github.com/DrLatBC/balatrobot)** (our fork) installed into Balatro — provides the JSON-RPC server the bot talks to
-- **Python 3.13+**
-
-> **Why our fork?** Jack Potts requires API fields and fixes not yet in [upstream balatrobot](https://github.com/coder/balatrobot): edition scoring values, joker ability data, The Ox's locked hand, Ancient Joker suit, boss blind forcing, endless mode support, and several endpoint hang fixes. A [PR is open](https://github.com/coder/balatrobot/pull/181) to merge these upstream — once accepted, the official mod will work. Until then, use our fork.
-
-## Installation
+## Quickstart
 
 ```bash
-git clone <repo-url>
-cd balatro
-pip install -e ".[dev]"
+git clone https://github.com/DrLatBC/JackPotts.git
+cd JackPotts
+pip install -e ".[dev,runtime]"
 ```
 
-This installs the bot as an editable package along with `httpx`, `balatrobot` (client library), and `pytest` for development.
-
-### Local environment config
-
-Create a `.env.local` file in the repo root with paths to your Balatro install. This file is gitignored and loaded automatically by the bot and test harness:
+Create `.env.local` in the repo root:
 
 ```ini
 BALATRO_EXE=G:\SteamLibrary\steamapps\common\Balatro\Balatro.exe
 LOVELY_DLL=G:\SteamLibrary\steamapps\common\Balatro\version.dll
-UVX_PATH=C:\path\to\.venv\Scripts\uvx.exe
 ```
 
-Adjust paths to match your Steam library location. `UVX_PATH` is only needed if `uvx` isn't on your system PATH (e.g. when it's installed inside a virtualenv).
-
-## Usage
-
-### Start the balatrobot server
-
-Launch a headless Balatro instance with the mod's RPC server:
+Run a single game:
 
 ```bash
-uvx balatrobot serve --port 12346
+uvx balatrobot serve --port 12346          # terminal 1
+balatro-bot --port 12346 --start           # terminal 2
 ```
 
-### Run a single game
-
-```bash
-balatro-bot --port 12346 --start
-```
-
-Key flags:
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--port` | 12346 | RPC server port |
-| `--start` | off | Start a new game automatically |
-| `--deck` | RED | Deck to use |
-| `--stake` | WHITE | Stake level |
-| `--seed` | random | Force a specific seed |
-| `--games` | 1 | Number of games to play back-to-back |
-| `--verbose` | off | Debug-level logging |
-
-### Run multiple instances in parallel
-
-The supervisor manages N bot+server pairs with health monitoring and auto-restart:
+Run 4 parallel instances with health monitoring:
 
 ```bash
 python -m balatro_bot.supervisor --instances 4
 ```
 
-Logs go to `bot_log/<port>/` with per-game and per-scoring breakdowns.
+See [Installation](docs/installation.md) and [Usage](docs/usage.md) for full details.
 
-### Stats
-
-Analyze completed runs:
-
-```bash
-python -m stats                  # latest batch
-python -m stats --batch 55       # specific batch
-```
-
-## Project Structure
-
-```
-src/balatro_bot/
-    bot.py              Main game loop — polls state, dispatches actions
-    engine.py           Priority-ordered rule engine, first match fires
-    context.py          Per-tick cached context (best hand, chips, strategy)
-    strategy.py         Derives hand/suit/rank affinity from owned jokers
-    rules/              Rule implementations per game state
-    domain/
-        models/         Typed game state snapshots
-        scoring/        Hand classification, chip/mult calc, draw probability
-        policy/         Play, discard, shop, consumable, and pack policies
-    joker_effects/      Joker scoring pipeline: chips -> mult -> xmult
-    infrastructure/     API dict <-> typed model adapters
-
-tests/                  Pytest unit tests (233 tests)
-tests/integration/      Integration tests requiring a running balatrobot server
-stats/                  Game replay analysis and reporting
-docs/                   Architecture docs and refactor plans
-```
-
-## Running Tests
-
-Unit tests (no server required):
-
-```bash
-pytest
-```
-
-### Integration Test Harness
-
-The `tests/integration/` directory contains a full in-game test harness that launches Balatro, injects specific game states, plays hands, and compares the bot's predicted score against the game's actual score. This is how we verify scoring accuracy at 99.89%.
-
-**Quick start** — run any test with `--start-server` to auto-launch a headless Balatro instance:
-
-```bash
-python tests/integration/test_batch069_fixes.py --start-server
-```
-
-Or connect to an already-running server:
-
-```bash
-python tests/integration/test_batch069_fixes.py --port 12346
-```
-
-#### Harness Helpers (`harness.py`)
-
-All integration tests share a common harness with these key functions:
-
-| Function | Description |
-|----------|-------------|
-| `start_server(port)` | Launches a headless balatrobot server and waits for health |
-| `ensure_server(port)` | Connects to existing server or starts a new one |
-| `setup_game(client, seed)` | Starts a fresh game with a fixed seed, waits for SELECTING_HAND |
-| `setup_game_full(client, seed, joker_keys, card_configs)` | Full setup — sells default jokers, discards hand, injects specific jokers and cards |
-| `advance_to_boss_select(client, target_ante)` | Fast-forwards through blinds to reach boss select at a specific ante |
-| `force_boss(client, boss_name)` | Forces a specific boss blind via the `set` API (e.g. `"The Ox"`, `"The Flint"`) |
-| `beat_blind_fast(client, state)` | Sets chips to 999999 and plays to instantly win the current blind |
-| `cheat_win_if_needed(client, blind_name)` | Beats the named blind only if still playing it |
-| `inject_jokers(client, joker_keys)` | Sells existing jokers and adds the specified ones |
-| `inject_god_mode(client)` | Injects an overpowered build (leveled High Card + power jokers) for win testing |
-| `burn_discards(client, target)` | Burns N discards to advance discard-tracking jokers (Yorick, etc.) |
-| `wait_for_state(client, targets)` | Polls until the game reaches a target state, auto-advancing through intermediate states |
-| `take_screenshot(client, label)` | Captures a screenshot for debugging failed tests |
-
-#### Writing a Test
-
-A typical integration test follows this pattern:
-
-```python
-from harness import ensure_server, stop_server, setup_game_full, force_boss, advance_to_boss_select
-
-def test_example():
-    client, server = ensure_server()
-    try:
-        # Set up a specific scenario
-        setup_game_full(client, seed="TESTSEED",
-                        joker_keys=["j_four_fingers", "j_shortcut"],
-                        card_configs=[
-                            {"key": "H_K"},  # King of Hearts
-                            {"key": "S_A", "edition": "FOIL"},  # Foil Ace of Spades
-                        ])
-
-        # Optionally force a boss blind
-        advance_to_boss_select(client, target_ante=2)
-        force_boss(client, "The Flint")
-
-        # Play a hand and compare scores
-        state = client.call("gamestate")
-        predicted = your_scoring_function(state)
-        result = client.call("play", {"cards": [0, 1, 2, 3, 4]})
-        actual = result["chips"]
-        assert predicted == actual, f"Mismatch: {predicted} vs {actual}"
-    finally:
-        if server:
-            stop_server(server)
-```
-
-#### Card Format
-
-Cards use `{Suit}_{Rank}` format: `H_K` = King of Hearts, `S_A` = Ace of Spades, `D_T` = 10 of Diamonds, `C_2` = 2 of Clubs.
-
-#### Available Test Suites
-
-| Test File | What It Tests |
-|-----------|--------------|
-| `test_batch069_fixes.py` | Four Fingers, Shortcut, Flower Pot, Ox, Luchador edge cases |
-| `test_shortcut_edges.py` | Shortcut joker gapped straights, combined with Four Fingers |
-| `test_ox.py` | The Ox boss — most-played hand locking and money zeroing |
-| `test_boss.py` | General boss blind scoring interactions |
-| `test_hook_scaling.py` | Scaling/state-dependent joker scoring under bosses |
-| `test_win.py` | Full game win path (uses seed `GODMODE1`) |
-| `test_glass_poly.py` | Glass + Polychrome edition x_mult interactions |
-| `test_holo_edition.py` | Holographic edition scoring |
-| `test_percard_scoring.py` | Per-card scoring breakdown validation |
-| `test_rearrange.py` | Card rearrangement visual + logical ordering |
-
-## Architecture
+## How it works
 
 ```
 balatrobot API  -->  bot.py (game loop)
                        |
-                     engine.py (rule engine)
+                     engine.py (priority-ordered rules)
                        |
-                     rules/ (state-specific rule sets)
-                       |
-              +--------+--------+
-              |                 |
-        domain/policy/    domain/scoring/
-        (what to do)      (how much is it worth)
-              |                 |
-        joker_effects/    strategy.py
+              +--------+---------+
+              |                  |
+        domain/policy/     domain/scoring/
+        (what to do)       (how much is it worth)
+              |                  |
+        joker_effects/     strategy.py
         (score simulation) (build affinity)
 ```
 
-The bot polls `gamestate` from the API, wraps it in a `RoundContext`, then runs the rule engine. Each game state (SELECTING_HAND, SHOP, BLIND_SELECT, etc.) has its own ordered list of rules. The first rule whose conditions match fires an action back to the API.
+Every candidate hand is run through the full scoring simulation — joker effects, enhancements, editions, seals, retriggers, boss blind modifiers — before the bot picks one. Scoring accuracy against the game's actual chip totals sits at **99.89%**.
 
-Scoring is fully simulated — the bot runs every candidate hand through the joker effect pipeline to predict exact chip totals, then picks the best option.
+See [Architecture](docs/architecture.md) for the full breakdown.
+
+## Contributing
+
+PRs welcome. The integration harness ([docs/testing.md](docs/testing.md)) makes it easy to reproduce scoring mismatches against a live Balatro instance — please include a failing test case with bug reports where feasible.
