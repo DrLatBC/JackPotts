@@ -79,6 +79,8 @@ _ENHANCE_SCORES: dict[str, float] = {
 _LUCKY_CAT_BONUS = 2.0             # Lucky synergy with Lucky Cat
 _OOPS_BONUS = 1.5                  # Lucky synergy with Oops! All 6s
 _STEEL_JOKER_BONUS = 2.0           # Steel synergy with Steel Joker
+_GLASS_JOKER_BONUS = 2.0           # Glass synergy with Glass Joker (more shatters = more xmult)
+_GOLD_JOKER_BONUS = 2.0            # Gold synergy with Golden Joker ($4/gold held per round)
 _EARLY_ANTE_ENHANCE_BONUS = 1.3    # enhancement compound bonus early game
 _EARLY_ANTE_CUTOFF = 3             # ante threshold for early-game bonus
 
@@ -107,6 +109,7 @@ _SAFE_SPECTRAL_USE_VALUE = 5.0      # base use-now value for safe spectrals
 
 # Tactical use thresholds
 _SUIT_CONVERT_IMPROVEMENT = 1.2     # 20% improvement threshold for suit convert
+_DESPERATE_MIN_IMPROVEMENT = 1.15   # floor even in desperate mode — avoid burning a tarot for <15% gain
 _TACTICAL_USE_MULTIPLIER = 3.0      # improvement × this = use value
 _GLASS_ANTE_THRESHOLDS: dict[str, float] = {  # enhancement timing thresholds
     "early": 1.0,   # ante <= 3: use freely
@@ -236,7 +239,11 @@ def _score_targeting_tarot(
         return _HANGED_MAN_EARLY if ante <= _HANGED_MAN_ANTE_CUTOFF else _HANGED_MAN_LATE
 
     if effect_type == "glass":
-        return _JUSTICE_VALUE
+        base = _JUSTICE_VALUE
+        jokers = state.get("jokers", {}).get("cards", [])
+        if any(joker_key(j) == "j_glass" for j in jokers):
+            base += _GLASS_JOKER_BONUS
+        return base
 
     if effect_type == "suit_convert":
         suit_aff = strat.suit_affinity(extra) if strat and extra else 0.0
@@ -256,12 +263,22 @@ def _score_targeting_tarot(
         elif extra == "Steel":
             if "j_steel_joker" in joker_keys:
                 base += _STEEL_JOKER_BONUS
+        elif extra == "Glass":
+            if "j_glass" in joker_keys:
+                base += _GLASS_JOKER_BONUS
+        elif extra == "Gold":
+            if "j_golden" in joker_keys:
+                base += _GOLD_JOKER_BONUS
         if ante <= _EARLY_ANTE_CUTOFF:
             base *= _EARLY_ANTE_ENHANCE_BONUS
         return base
 
     if effect_type == "gold":
-        return remaining_rounds * _DEVIL_INCOME_PER_ROUND / _DEVIL_DIVISOR
+        base = remaining_rounds * _DEVIL_INCOME_PER_ROUND / _DEVIL_DIVISOR
+        jokers = state.get("jokers", {}).get("cards", [])
+        if any(joker_key(j) == "j_golden" for j in jokers):
+            base += _GOLD_JOKER_BONUS
+        return base
 
     if effect_type == "stone":
         has_stone_joker = any(joker_key(j) == "j_stone"
@@ -382,6 +399,19 @@ def score_use_now(
             # NOT_ALLOWED if every joker already has an edition
             if all(isinstance(j.get("modifier"), dict) and j["modifier"].get("edition") for j in jokers):
                 return (0.0, None)
+        if key == "c_high_priestess":
+            # Creates up to 2 planets. After use its own slot frees, so full
+            # output needs ≥1 other free slot going in. If slots are full and
+            # another consumable is held, hold Priestess — the other one will
+            # likely fire this tick or next and free a slot for us.
+            cons = state.get("consumables", {})
+            count = cons.get("count", len(cons.get("cards", [])))
+            limit = cons.get("limit", 2)
+            if count >= limit:
+                others = [c for c in cons.get("cards", [])
+                          if c.get("key") != "c_high_priestess"]
+                if others:
+                    return (0.0, None)
         if key == "c_fool":
             if not last_used_consumable:
                 return (0.0, None)  # nothing used yet — API will reject
@@ -501,7 +531,8 @@ def _score_targeting_use(
         if result:
             new_score, targets = result
             improvement = new_score / max(current_score, 1)
-            if improvement > _SUIT_CONVERT_IMPROVEMENT or desperate:
+            threshold = _DESPERATE_MIN_IMPROVEMENT if desperate else _SUIT_CONVERT_IMPROVEMENT
+            if improvement > threshold:
                 return (improvement * _TACTICAL_USE_MULTIPLIER, ("use_target", idx, targets,
                     f"tactical: {label} -> Flush ({new_score} vs {current_score}, {hands_left}h left)"))
         return (0.0, None)
@@ -517,12 +548,13 @@ def _score_targeting_use(
                 return (0.0, None)
             threshold = _GLASS_ANTE_THRESHOLDS["late"]
 
+        effective_threshold = max(threshold, _DESPERATE_MIN_IMPROVEMENT) if desperate else threshold
         if effect_type == "glass":
             result = eval_glass(hand_cards, hand_levels, jokers, current_best, current_score, strat=strat)
             if result:
                 new_score, targets = result
                 improvement = new_score / max(current_score, 1)
-                if improvement >= threshold or desperate:
+                if improvement >= effective_threshold:
                     return (improvement * _TACTICAL_USE_MULTIPLIER, ("use_target", idx, targets,
                         f"{'desperate' if desperate else 'tactical'}: Glass (×{improvement:.1f}, {hands_left}h left)"))
         else:
@@ -533,7 +565,7 @@ def _score_targeting_use(
             if result:
                 new_score, targets = result
                 improvement = new_score / max(current_score, 1)
-                if improvement >= threshold or desperate:
+                if improvement >= effective_threshold:
                     return (improvement * _TACTICAL_USE_MULTIPLIER, ("use_target", idx, targets,
                         f"{'desperate' if desperate else 'tactical'}: {label} ({extra}) (×{improvement:.1f}, {hands_left}h left)"))
 

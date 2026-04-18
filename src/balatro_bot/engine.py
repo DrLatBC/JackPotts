@@ -40,6 +40,7 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
         AlwaysSelectBlind(),
     ],
     "SHOP": [
+        UseConsumables(),
         UnifiedShopRule(),
     ],
     "ROUND_EVAL": [

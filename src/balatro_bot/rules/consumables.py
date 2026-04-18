@@ -102,7 +102,10 @@ class UseConsumables:
             current_score = current_best.total if current_best else 0
 
         can_win_now = current_score >= chips_remaining
-        desperate = hands_left <= 2
+        # Desperate = genuinely about to lose: last 2 hands AND can't win yet.
+        # Old code fired desperate paths on any hands_left<=2, wasting tarots
+        # on rounds we were already crushing.
+        desperate = hands_left <= 2 and not can_win_now
         consumable_limit = state.get("consumables", {}).get("limit", 2)
         slots_full = len(consumables) >= consumable_limit
 
