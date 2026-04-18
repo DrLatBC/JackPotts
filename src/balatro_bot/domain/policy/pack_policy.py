@@ -154,7 +154,6 @@ def choose_from_buffoon_pack(
     from balatro_bot.domain.policy.shop import _is_negative
 
     owned_keys = {joker_key(j) for j in owned_jokers}
-    has_madness = "j_madness" in owned_keys
     slots_full = len(owned_jokers) >= joker_limit
 
     best_idx = 0
@@ -167,9 +166,8 @@ def choose_from_buffoon_pack(
         if slots_full and not _is_negative(card):
             continue
 
-        # Madness interaction (bidirectional)
-        if has_madness and key in SCALING_JOKERS:
-            continue
+        # Don't add Madness onto an existing scaler roster — it will eat them.
+        # (Buying scalers *into* a Madness roster is fine — they're fodder.)
         if key == "j_madness" and owned_keys & SCALING_JOKERS:
             continue
 

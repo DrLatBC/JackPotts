@@ -18,6 +18,7 @@ from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.card import Card, CardValue
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
+from balatro_bot.scaling import SCALING_REGISTRY
 from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,
     JOKER_HAND_AFFINITY,
@@ -477,12 +478,14 @@ def _context_scale(
     cat = _KEY_TO_CATEGORY.get(candidate_key)
     factor = 1.0
 
-    # Ante urgency: xMult critical late, flat less so
-    if cat and ante >= 4:
-        if cat == "xmult":
-            factor *= min(1.0 + (ante - 3) * 0.4, 2.6)   # 1.4 @ ante 4, 2.6 @ ante 7+
+    # Ante urgency: xMult is always valuable; prefer it even early
+    if cat == "xmult":
+        if ante <= 3:
+            factor *= 1.15                                     # mild early-game preference
         else:
-            factor *= max(1.0 - (ante - 3) * 0.1, 0.6)    # 0.9 @ ante 4, 0.6 @ ante 7+
+            factor *= min(1.0 + (ante - 3) * 0.4, 2.6)        # 1.4 @ ante 4, 2.6 @ ante 7+
+    elif cat and ante >= 4:
+        factor *= max(1.0 - (ante - 3) * 0.1, 0.6)            # 0.9 @ ante 4, 0.6 @ ante 7+
 
     # Diminishing returns within same category
     if cat:
@@ -640,6 +643,32 @@ def evaluate_joker_value(
         parsed = parse_effect_value(effect_text)
         dp = _dynamic_power(parsed)
         base_value = max(base_value, dp)
+
+    # Scaling runway floor: cheap scalers read at near-zero current power but
+    # grow substantially over remaining rounds. Floor them early so they don't
+    # get skipped in favor of one-shot static mults (Swashbuckler etc).
+    # Decays with ante — at ante 6+ there's no runway left to justify a floor.
+    if ante <= 5:
+        profile = SCALING_REGISTRY.get(key)
+        if profile and profile.milk_priority >= 1:
+            if profile.milk_priority >= 3:
+                floor = 4.0
+            elif profile.milk_priority >= 2:
+                floor = 3.0
+            else:
+                floor = 2.0
+            floor *= max(0.4, (6 - ante) / 5.0)
+            base_value = max(base_value, floor)
+
+    # Madness fodder: extra bodies dilute Madness's random-eat, protecting real
+    # scalers. No bonus when slots are full (no room for fodder) or when the
+    # candidate is Madness itself.
+    if (
+        key != "j_madness"
+        and "j_madness" in owned_keys
+        and len(owned_jokers) < joker_limit
+    ):
+        base_value += 2.0 / max(1, len(owned_jokers) - 1)
 
     # Deck composition adjustment — boost/gate jokers based on deck contents
     if deck_profile is not None:

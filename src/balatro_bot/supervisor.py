@@ -7,6 +7,7 @@ automatic restart, and clean shutdown.
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
 import os
 import random
@@ -22,6 +23,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from balatro_bot import dashboard_client
 from balatro_bot.config import SupervisorConfig
 
 # ---------------------------------------------------------------------------
@@ -49,12 +51,137 @@ SERVER_STARTUP_WAIT = cfg.server_startup_wait
 SERVER_STAGGER = cfg.server_stagger
 BOT_STAGGER = cfg.bot_stagger
 POLL_INTERVAL = cfg.poll_interval
+DEEP_RECOVERY_THRESHOLD = 5
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
 log = logging.getLogger("supervisor")
+
+
+BALATROBOT_LOGS_DIR = BASE_DIR / "logs"
+BALATROBOT_LOGS_KEEP = 10
+
+# Per-instance Balatro save directories. Each instance gets its own APPDATA
+# override so Love2D writes meta.jkr/profile.jkr/save.jkr/settings.jkr into
+# a dedicated folder — concurrent writes to the same .jkr files across 4
+# instances was corrupting meta.jkr (tutorial flag, unlocks).
+PROFILES_DIR = BASE_DIR / "profiles"
+REAL_APPDATA = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+REAL_BALATRO_DIR = REAL_APPDATA / "Balatro"
+GRACEFUL_EXIT_TIMEOUT = 8.0  # seconds to wait for Balatro to finish saving on shutdown
+
+
+def ensure_isolated_profile(port: int) -> str:
+    """Create a per-port APPDATA override and return its path.
+
+    Layout created:
+        profiles/<port>/Balatro/Mods      -> junction to real %APPDATA%/Balatro/Mods
+        profiles/<port>/Balatro/config    -> junction to real %APPDATA%/Balatro/config (if exists)
+        profiles/<port>/Balatro/settings.jkr   (copied once from real)
+        profiles/<port>/Balatro/1/meta.jkr     (copied once from real)
+        profiles/<port>/Balatro/1/profile.jkr  (copied once from real)
+        profiles/<port>/Balatro/1/save.jkr     (copied once from real)
+
+    Mods is a junction so mod updates propagate; .jkr files are real copies
+    so each instance writes independently.
+    """
+    port_dir = PROFILES_DIR / str(port)
+    balatro_dir = port_dir / "Balatro"
+    balatro_dir.mkdir(parents=True, exist_ok=True)
+
+    # Junction Mods/ (and config/) to the real install — these are shared.
+    for shared in ("Mods", "config"):
+        link = balatro_dir / shared
+        target = REAL_BALATRO_DIR / shared
+        if not target.exists():
+            continue
+        if link.exists() or link.is_symlink():
+            continue
+        # mklink /J creates a directory junction (no admin required on Windows)
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True, check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as e:
+            log.warning("Could not junction %s -> %s: %s", link, target, e)
+
+    # Seed the save files once — copies tutorial-done state, unlocks, etc.
+    for name in ("settings.jkr",):
+        src = REAL_BALATRO_DIR / name
+        dst = balatro_dir / name
+        if src.exists() and not dst.exists():
+            shutil.copy2(src, dst)
+
+    profile_sub = balatro_dir / "1"
+    profile_sub.mkdir(exist_ok=True)
+    for name in ("meta.jkr", "profile.jkr", "save.jkr"):
+        src = REAL_BALATRO_DIR / "1" / name
+        dst = profile_sub / name
+        if src.exists() and not dst.exists():
+            shutil.copy2(src, dst)
+
+    return str(port_dir)
+
+
+def graceful_kill(proc: subprocess.Popen, timeout: float = GRACEFUL_EXIT_TIMEOUT) -> None:
+    """Ask the process tree to close, then force-kill after `timeout`.
+
+    Prevents corrupting Balatro's .jkr save files by force-killing mid-write.
+    `taskkill /T` (without /F) sends WM_CLOSE to GUI processes, letting
+    Love2D run its quit handler and finish any pending save.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+        )
+    except OSError:
+        pass
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return
+        time.sleep(0.25)
+
+    # Timed out — force-kill
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+        )
+    except OSError:
+        pass
+
+
+def prune_balatrobot_logs(keep: int = BALATROBOT_LOGS_KEEP) -> None:
+    """Delete oldest session dirs in ./logs when count exceeds `keep`.
+
+    Upstream `balatrobot serve` pipes Balatro+mod stdout/stderr into
+    logs/<session>/<port>.log and never rotates — it can hit tens of GB
+    over long batch runs. We only touch sessions not currently being
+    written to (oldest first), so in-flight runs are safe.
+    """
+    if not BALATROBOT_LOGS_DIR.exists():
+        return
+    sessions = sorted(
+        (p for p in BALATROBOT_LOGS_DIR.iterdir() if p.is_dir()),
+        key=lambda p: p.stat().st_mtime,
+    )
+    excess = len(sessions) - keep
+    if excess <= 0:
+        return
+    for old in sessions[:excess]:
+        try:
+            shutil.rmtree(old)
+            log.info("Pruned old balatrobot log dir: %s", old.name)
+        except OSError as e:
+            log.warning("Could not prune %s: %s", old, e)
 
 
 def setup_supervisor_logging() -> None:
@@ -86,6 +213,34 @@ def _pick_princess_name(taken: set[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Soft-lock cycle detection
+# ---------------------------------------------------------------------------
+
+_MIN_REPS = 5  # require at least 5 full repetitions to flag a cycle
+_MAX_PERIOD = 4  # check cycles of period 1, 2, 3, 4
+
+
+def _has_repeating_cycle(lines: list[str]) -> bool:
+    """Detect short repeating cycles (period 1-4) in recent log lines.
+
+    Returns True if the last N lines form a repeating pattern of any short
+    period with at least _MIN_REPS full repetitions.  Catches both single-line
+    loops (A-A-A) and multi-line cycles (A-B-A-B or A-B-C-A-B-C).
+    """
+    n = len(lines)
+    for period in range(1, _MAX_PERIOD + 1):
+        required = period * _MIN_REPS
+        if n < required:
+            continue
+        # Check from the tail: do the last `required` lines repeat with this period?
+        tail = lines[-required:]
+        pattern = tail[:period]
+        if all(tail[i] == pattern[i % period] for i in range(required)):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Slot
 # ---------------------------------------------------------------------------
 
@@ -98,6 +253,7 @@ class Slot:
     state: str = "stopped"
     restarts: int = 0
     restart_times: list[float] = field(default_factory=list)
+    consecutive_launch_failures: int = 0
     last_health: float = 0.0
     progress: str = ""
     wins: int = 0
@@ -106,31 +262,30 @@ class Slot:
     log_offset: int = 0
     recent_lines: deque = field(default_factory=lambda: deque(maxlen=40))
     loop_start: float = 0.0
+    bot_launch_time: float = 0.0
 
     def is_alive(self, proc: subprocess.Popen | None) -> bool:
         return proc is not None and proc.poll() is None
 
     def kill_pair(self) -> None:
-        """Kill both server and bot process trees, including child consoles."""
-        for proc in (self.bot_proc, self.server_proc):
-            if proc and proc.poll() is None:
-                # taskkill /F /T kills the entire process tree (including
-                # Balatro.exe spawned by uvx in a separate console window)
-                try:
-                    subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                        capture_output=True,
-                    )
-                except OSError:
-                    pass
-        # Give processes a moment to die, then force-kill any stragglers
-        time.sleep(1.0)
-        for proc in (self.bot_proc, self.server_proc):
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
+        """Kill both server and bot process trees, including child consoles.
+
+        Bot is force-killed (it doesn't write save files). Server is closed
+        gracefully so Balatro can finish any in-flight save to disk before
+        exiting — force-kill during save was corrupting meta.jkr.
+        """
+        # Bot first, force — it holds no on-disk state worth preserving.
+        if self.bot_proc and self.bot_proc.poll() is None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self.bot_proc.pid)],
+                    capture_output=True,
+                )
+            except OSError:
+                pass
+        # Server (uvx -> Balatro.exe): graceful, then escalate.
+        if self.server_proc and self.server_proc.poll() is None:
+            graceful_kill(self.server_proc)
         self.server_proc = None
         self.bot_proc = None
 
@@ -162,6 +317,7 @@ class Slot:
             pass
 
     _LOG_PREFIX = re.compile(r"^\d{2}:\d{2}:\d{2} \S+ ")
+    _ACTION_COUNTER = re.compile(r"\[#\d+\] ")
 
     def poll_log_for_softlock(self) -> bool:
         if not self.log_file:
@@ -177,13 +333,14 @@ class Slot:
         for line in raw.decode("utf-8", errors="replace").splitlines():
             line = line.strip()
             if line:
-                self.recent_lines.append(self._LOG_PREFIX.sub("", line))
+                stripped = self._LOG_PREFIX.sub("", line)
+                stripped = self._ACTION_COUNTER.sub("", stripped)
+                self.recent_lines.append(stripped)
 
         if len(self.recent_lines) < 20:
             return False
 
-        unique_ratio = len(set(self.recent_lines)) / len(self.recent_lines)
-        if unique_ratio <= 0.25:
+        if _has_repeating_cycle(list(self.recent_lines)):
             if self.loop_start == 0.0:
                 self.loop_start = time.time()
             return time.time() - self.loop_start >= 60
@@ -252,6 +409,8 @@ class Supervisor:
         self.session_num = 0
         self.session_start: float = 0.0
         self._shutdown_done = False
+        self._finish_posted = False
+        self.dashboard_batch_id: int | None = None
 
     def setup(self) -> None:
         WINS_DIR.mkdir(parents=True, exist_ok=True)
@@ -264,7 +423,31 @@ class Supervisor:
             print(f"Cleaned up {killed} orphan processes")
             time.sleep(2)
 
-        self.session_num = compute_session_number()
+        # Session number now comes from the dashboard (MAX(batch_number)+1),
+        # not from scanning local log files. Fall back to the local scan only
+        # when the dashboard is unreachable / unconfigured, so an offline run
+        # still gets a plausible number for log filenames.
+        result = dashboard_client.post_batch_start(
+            num_instances=len(self.slots),
+            games_per_inst=self.games,
+            decks=",".join(self.decks),
+            stake=self.stake,
+        )
+        if result is not None:
+            self.dashboard_batch_id, self.session_num = result
+            # Last-resort safety net: if the process is torn down without
+            # reaching shutdown() (e.g. uncaught crash), atexit still fires
+            # and marks the batch as abandoned on the dashboard. shutdown()'s
+            # own path is idempotent — post_run()'s post_batch_finish will
+            # have already set the status and this becomes a no-op-ish
+            # second call.
+            atexit.register(self._atexit_abandon)
+        else:
+            self.dashboard_batch_id = None
+            self.session_num = compute_session_number()
+            log.warning("Dashboard unavailable — using local session number %d", self.session_num)
+
+        # cli.py reads next_num.txt per-bot to name its log files.
         (LOG_DIR / "next_num.txt").write_text(str(self.session_num))
 
         # Clear stale progress files from previous sessions
@@ -272,6 +455,8 @@ class Supervisor:
             p = LOG_DIR / str(slot.port) / "progress.txt"
             if p.exists():
                 p.unlink()
+
+        prune_balatrobot_logs()
 
     def launch_server(self, slot: Slot) -> None:
         cmd = [
@@ -282,8 +467,16 @@ class Supervisor:
         ]
         if not self.stream:
             cmd.extend(["--headless", "--fast"])
+
+        # Point Love2D at a per-port APPDATA so each instance has its own
+        # Balatro/ save folder (meta.jkr, profile.jkr, save.jkr, settings.jkr).
+        # Shared concurrent writes to the global profile were corrupting it.
+        env = os.environ.copy()
+        env["APPDATA"] = ensure_isolated_profile(slot.port)
+
         slot.server_proc = subprocess.Popen(
             cmd,
+            env=env,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         slot.state = "starting"
@@ -327,6 +520,8 @@ class Supervisor:
             cmd.append("--verbose")
         if self.stream:
             cmd.extend(["--stream-delay", "2.0", "--stream-log"])
+        if self.dashboard_batch_id:
+            cmd.extend(["--dashboard-batch-id", str(self.dashboard_batch_id)])
         slot.bot_proc = subprocess.Popen(
             cmd,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
@@ -336,6 +531,7 @@ class Supervisor:
         slot.log_offset = 0
         slot.recent_lines.clear()
         slot.loop_start = 0.0
+        slot.bot_launch_time = time.time()
         log.info("%s (port %d): launching with %d games remaining [%s deck]", slot.name, slot.port, games, deck)
 
     def wait_for_health(self, slot: Slot, timeout: float = 30.0) -> bool:
@@ -386,7 +582,18 @@ class Supervisor:
                     old_name, slot.port, slot.restarts, slot.name, reason)
 
         slot.kill_pair()
-        time.sleep(2)
+
+        # Deep recovery: if the bot has been failing to launch repeatedly, a
+        # bare kill_pair() isn't enough — there's likely a zombie Balatro.exe
+        # still holding resources. Nuke anything on the port and wait longer.
+        if slot.consecutive_launch_failures >= DEEP_RECOVERY_THRESHOLD:
+            log.warning("%s (port %d): deep recovery — %d consecutive launch failures, killing port processes",
+                        slot.name, slot.port, slot.consecutive_launch_failures)
+            kill_port_processes([slot.port])
+            slot.consecutive_launch_failures = 0
+            time.sleep(10)
+        else:
+            time.sleep(2)
         self.start_slot(slot)
 
     def check_slot(self, slot: Slot) -> None:
@@ -413,7 +620,15 @@ class Supervisor:
                 slot.kill_pair()
                 return
             else:
-                log.error("%s (port %d): bot exited rc=%d", slot.name, slot.port, rc)
+                alive_for = time.time() - slot.bot_launch_time if slot.bot_launch_time else 0.0
+                # A bot that ran >120s before crashing is considered "healthy launch";
+                # reset the consecutive-failure counter. Fast failures accumulate.
+                if alive_for > 120.0:
+                    slot.consecutive_launch_failures = 0
+                else:
+                    slot.consecutive_launch_failures += 1
+                log.error("%s (port %d): bot exited rc=%d (alive=%.0fs, consec_fails=%d)",
+                          slot.name, slot.port, rc, alive_for, slot.consecutive_launch_failures)
                 self.restart_slot(slot, reason=f"bot exited rc={rc}")
                 return
 
@@ -474,6 +689,22 @@ class Supervisor:
         print(f"  Active: {active}  Done: {done}  Wins: {total_wins}{win_pct}  Session: {self.session_num}{rate_str}")
         print(f"  Ctrl+C to stop all")
 
+        if self.dashboard_batch_id:
+            dashboard_client.post_instance_states(self.dashboard_batch_id, [
+                {
+                    "port": s.port,
+                    "name": s.name,
+                    "deck": self._deck_for_slot(s),
+                    "state": s.state,
+                    "games_completed": int(s.progress.split("/")[0]) if "/" in s.progress else 0,
+                    "games_total": self.games,
+                    "wins": s.wins,
+                    "restarts": s.restarts,
+                    "last_reason": s.last_reason,
+                }
+                for s in self.slots
+            ])
+
     def run(self) -> None:
         setup_supervisor_logging()
         self.setup()
@@ -528,7 +759,26 @@ class Supervisor:
             self.post_run()
         print("  All princesses recalled.")
 
+    def _atexit_abandon(self) -> None:
+        """Last-resort fallback if the process dies before post_run runs.
+
+        No-op once a clean finish has been posted.
+        """
+        if self._finish_posted or self.dashboard_batch_id is None:
+            return
+        try:
+            dashboard_client.post_batch_finish(self.dashboard_batch_id, status="abandoned")
+        except Exception:
+            pass
+
     def post_run(self) -> None:
+        # Mark the batch finished FIRST — stats/rotate below can crash (shared
+        # FS, stats script bugs, etc.) and we don't want that to orphan the
+        # batch at "running" on the dashboard.
+        if self.dashboard_batch_id:
+            dashboard_client.post_batch_finish(self.dashboard_batch_id)
+            self._finish_posted = True
+
         batch = f"{self.session_num:03d}"
         print(f"\n  Running stats for batch {batch}...")
         try:

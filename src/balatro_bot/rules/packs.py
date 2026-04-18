@@ -20,12 +20,18 @@ log = logging.getLogger("balatro_bot")
 class SkipPackForRedCard:
     """Skip packs to trigger Red Card's +3 mult scaling.
 
-    Skips Standard, Spectral, and Arcana packs. Does NOT skip Celestial
-    (planet cards too valuable) or Buffoon (free jokers too valuable).
+    Skips when the best pick in the pack is worth less than one +3 mult stack
+    (scaled by ante runway). Never skips if the pack contains Planets, Jokers,
+    or Black Hole — those are always picked regardless of Red Card.
     """
     name = "skip_pack_for_red_card"
 
+    # Margin: the pick must clearly beat the skip to override.
+    _PICK_MARGIN = 1.3
+
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        from balatro_bot.scaling import red_card_skip_value
+
         jokers = state.get("jokers", {}).get("cards", [])
         if not any(joker_key(j) == "j_red_card" for j in jokers):
             return None
@@ -35,7 +41,7 @@ class SkipPackForRedCard:
         if not cards:
             return None
 
-        # Don't skip if pack has Planets or Jokers — those are too valuable
+        # Hard keeps — skip rule does not fire on these contents
         for c in cards:
             if c.get("set") == "PLANET" or c.get("label", "") in PLANET_HAND_MAP:
                 return None
@@ -44,7 +50,60 @@ class SkipPackForRedCard:
             if c.get("key", "") == "c_black_hole":
                 return None
 
-        return PackAction(card_index=None, reason="skip pack for Red Card (+3 mult)")
+        ante = state.get("ante_num", 1)
+        skip_value = red_card_skip_value(ante)
+        best_pick = _best_pack_pick_value(state, cards, jokers)
+
+        if best_pick > skip_value * self._PICK_MARGIN:
+            return None  # let the normal pick rule fire
+
+        return PackAction(
+            card_index=None,
+            reason=f"skip pack for Red Card (+3 mult, skip={skip_value:.1f} > pick={best_pick:.1f})",
+        )
+
+
+def _best_pack_pick_value(state: dict[str, Any], cards: list[dict], jokers: list[dict]) -> float:
+    """Estimate the best achievable pick score for a pack (Arcana/Spectral/Standard).
+
+    Returns 0.0 for pack types we don't expect to skip (caller has already
+    bailed out on Celestial/Buffoon via the hard-keep checks).
+    """
+    from balatro_bot.domain.policy.pack_policy import (
+        choose_from_spectral_pack, choose_from_tarot_pack, SPECTRAL_SCORES,
+    )
+
+    hand_levels = state.get("hands", {})
+    hand_cards = state.get("hand", {}).get("cards", [])
+    strat = compute_strategy(jokers, hand_levels)
+    ante = state.get("ante_num", 1)
+
+    # Arcana (tarot)
+    if any(c.get("key", "") in (set(NO_TARGET_TAROTS) | set(TARGETING_TAROTS)) for c in cards):
+        _, best_score, _, _ = choose_from_tarot_pack(cards, state, hand_cards, jokers, strat)
+        return best_score
+
+    # Spectral
+    if any(c.get("key", "") in SPECTRAL_SCORES for c in cards):
+        joker_slots = state.get("jokers", {})
+        _, best_score, _, _ = choose_from_spectral_pack(
+            cards, jokers, joker_slots, ante, hand_levels, hand_cards, strat,
+        )
+        return best_score
+
+    # Standard — estimate from editions/enhancements; most picks are modest
+    _EDITION = {"POLYCHROME": 8.0, "HOLOGRAPHIC": 4.0, "FOIL": 2.0}
+    _ENH = {"STEEL": 5.0, "GLASS": 4.0, "LUCKY": 3.0, "MULT": 3.0,
+            "WILD": 2.0, "BONUS": 2.0, "GOLD": 2.0}
+    best = 0.0
+    for c in cards:
+        score = 0.0
+        mod = c.get("modifier") if isinstance(c.get("modifier"), dict) else {}
+        score += _EDITION.get(mod.get("edition", ""), 0.0)
+        score += _ENH.get(mod.get("enhancement", ""), 0.0)
+        if score > best:
+            best = score
+    return best
 
 
 class PickFromTarotPack:

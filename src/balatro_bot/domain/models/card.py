@@ -32,6 +32,7 @@ class CardModifier:
 @dataclass(frozen=True)
 class CardState:
     debuff: bool = False
+    highlight: bool = False  # Cerulean Bell forced card
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,9 @@ def card_from_dict(d: dict | Card) -> Card:
             edition_x_mult=mod.get("edition_x_mult", 0) or 0,
             enhancement_x_mult=mod.get("enhancement_x_mult", 0) or 0,
         ),
-        state=CardState(debuff=st.get("debuff", False) is True),
+        state=CardState(
+            debuff=st.get("debuff", False) is True,
+            highlight=st.get("highlight", False) is True,
+        ),
         cost=d.get("cost") or {},
     )

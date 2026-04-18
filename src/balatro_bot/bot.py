@@ -8,6 +8,7 @@ import random
 import re
 import string
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 
 import httpx
@@ -31,6 +32,7 @@ class GameLoopState:
     total_discards_used: int = 0
     hands_at_blind_start: int = 0
     discards_at_blind_start: int = 0
+    ante_at_blind_start: int = 0
     last_logged_hand: tuple | None = None
     last_logged_shop: tuple | None = None
     last_logged_blind: tuple | None = None
@@ -44,6 +46,18 @@ class GameLoopState:
     max_chips_this_blind: int = 0
     won_logged: bool = False
     actually_won: bool = False
+    round_results: list = field(default_factory=list)
+    jokers_bought: list = field(default_factory=list)
+    hand_types_played: Counter = field(default_factory=Counter)
+    joker_scaling: dict = field(default_factory=dict)  # {name: {chips, mult, xmult}}
+    consumables_bought: list = field(default_factory=list)  # [{name, type, count}]
+    action_log: list = field(default_factory=list)  # [{seq, game_state, action_type, ...}]
+    ante_snapshots: list = field(default_factory=list)  # [{ante, money, joker_roster, ...}]
+    hand_scores: list = field(default_factory=list)  # [{seq, ante, hand_type, ...}]
+    shop_events: list = field(default_factory=list)  # [{ante, event_type, item_name, ...}]
+    hands_scored: int = 0  # sequence counter for hand_scores
+    packs_opened: int = 0  # incremented on transitions into a pack-opened state
+    in_pack_state: bool = False
 
 
 class WinCaptureHandler(logging.handlers.MemoryHandler):
@@ -57,6 +71,10 @@ class WinCaptureHandler(logging.handlers.MemoryHandler):
     def shouldFlush(self, record: logging.LogRecord) -> bool:
         return False
 
+    def get_log_text(self) -> str:
+        """Return buffered log records as a single string."""
+        return "\n".join(self.fmt.format(record) for record in self.buffer)
+
     def flush_win(self, seed: str) -> None:
         with open(self.wins_file, "a", encoding="utf-8") as f:
             f.write(f"\n{'='*60}\n")
@@ -64,7 +82,7 @@ class WinCaptureHandler(logging.handlers.MemoryHandler):
             f.write(f"{'='*60}\n")
             for record in self.buffer:
                 f.write(self.fmt.format(record) + "\n")
-        self.buffer.clear()
+        # Don't clear buffer here — bot.py captures log_text after this
 
     def reset(self) -> None:
         self.buffer.clear()
@@ -193,12 +211,14 @@ def run_bot(
     seed: str | None = None,
     poll_interval: float = 0.2,
     stream_delay: float = 0.0,
+    dashboard_batch_id: int | None = None,
 ) -> bool:
     """Main bot loop. Returns True if the game was won."""
     from balatro_bot.bot_logging import (
-        build_play_snapshot, detect_joker_changes, log_action,
-        log_ante_transition, log_blind_transition, log_game_over,
+        build_play_snapshot, compute_played_hand_detail, detect_joker_changes,
+        log_action, log_ante_transition, log_blind_transition, log_game_over,
         log_hand_state, log_played_hand, log_shop_state,
+        serialize_joker_contributions,
     )
 
     if start_game:
@@ -270,6 +290,16 @@ def run_bot(
         if game_state == "SHOP":
             log_shop_state(gs, state)
 
+        # Detect entry into a pack-opened state (any *_PACK or SMODS_BOOSTER_OPENED).
+        # Counts every pack opened, whether bought, free from tags, or from effects.
+        _is_pack_state = game_state in (
+            "TAROT_PACK", "PLANET_PACK", "SPECTRAL_PACK",
+            "STANDARD_PACK", "BUFFOON_PACK", "SMODS_BOOSTER_OPENED",
+        )
+        if _is_pack_state and not gs.in_pack_state:
+            gs.packs_opened += 1
+        gs.in_pack_state = _is_pack_state
+
         if game_state == "BLIND_SELECT":
             log_blind_transition(gs, state)
 
@@ -325,10 +355,53 @@ def run_bot(
                     pass
                 time.sleep(0.5)
 
+        # Capture joker/consumable label before buy RPC (state changes after call)
+        _buying_joker_label = None
+        _buying_consumable = None
+        _buying_pack_label = None
+        _picking_pack_card_label = None
+        if method == "buy" and params and "card" in params:
+            shop_cards = state.get("shop", {}).get("cards", [])
+            idx = params["card"]
+            if idx < len(shop_cards):
+                card_set = shop_cards[idx].get("set", "")
+                card_label = shop_cards[idx].get("label", "?")
+                if card_set == "JOKER":
+                    _buying_joker_label = card_label
+                elif card_set in ("TAROT", "PLANET", "SPECTRAL"):
+                    _buying_consumable = {"name": card_label, "type": card_set.lower()}
+        # Voucher buys use a separate "card" index in vouchers list
+        if method == "buy" and params and "voucher" in params:
+            vouchers = state.get("vouchers", {}).get("cards", [])
+            idx = params["voucher"]
+            if idx < len(vouchers):
+                _buying_consumable = {"name": vouchers[idx].get("label", "?"), "type": "voucher"}
+        # Pack buys use {pack: i} indexing into state["packs"]["cards"]
+        if method == "buy" and params and "pack" in params:
+            packs_list = state.get("packs", {}).get("cards", [])
+            pidx = params["pack"]
+            if pidx < len(packs_list):
+                _buying_pack_label = packs_list[pidx].get("label", "?")
+        # Pack picks: {card: i} indexing into state["pack"]["cards"]
+        if method == "pack" and params and "card" in params:
+            pack_open = state.get("pack", {}).get("cards", [])
+            cidx = params["card"]
+            if cidx < len(pack_open):
+                _picking_pack_card_label = pack_open[cidx].get("label", "?")
+
         pre_play_chips = 0
         play_snapshot = None
+        _pre_money = state.get("money", 0)
+        _pre_chips = state.get("round", {}).get("chips", 0)
+        _pre_state_hand = state.get("hand", {}).get("cards", []) if method == "use" else None
+        _using_consumable_name = None
+        if method == "use" and params and "consumable" in params:
+            consumables_list = state.get("consumables", {}).get("cards", [])
+            cidx = params["consumable"]
+            if cidx < len(consumables_list):
+                _using_consumable_name = consumables_list[cidx].get("label", "?")
         if method == "play":
-            pre_play_chips = state.get("round", {}).get("chips", 0)
+            pre_play_chips = _pre_chips
             _scoring_log.info("  PRE_PLAY chips_in_round=%d", pre_play_chips)
             play_snapshot = build_play_snapshot(state, params, action)
 
@@ -341,8 +414,40 @@ def run_bot(
             if _boss_disabled_before:
                 state["_boss_disabled"] = True
             gs.actions_taken += 1
+            # Enrich action detail for consumable uses with card labels
+            _action_detail = params
+            if method == "use" and params and "cards" in params:
+                # Resolve target card indices to labels from pre-call state
+                hand_cards = _pre_state_hand or []
+                target_labels = []
+                for ci in params["cards"]:
+                    if ci < len(hand_cards):
+                        c = hand_cards[ci]
+                        rank = c.get("value", {}).get("rank", "?")
+                        suit = c.get("value", {}).get("suit", "?")
+                        target_labels.append(f"{rank} of {suit}")
+                _action_detail = dict(params, target_labels=target_labels)
+            if method == "use" and params and "consumable" in params:
+                # Add the consumable name
+                _action_detail = dict(_action_detail or params,
+                                      consumable_name=_using_consumable_name)
+            gs.action_log.append({
+                "seq": gs.actions_taken,
+                "game_state": game_state,
+                "action_type": method,
+                "detail": _action_detail,
+                "ante": state.get("ante_num"),
+                "blind_name": gs.current_blind_name,
+                "chips_before": _pre_chips,
+                "chips_after": state.get("round", {}).get("chips", 0),
+                "money_before": _pre_money,
+                "money_after": state.get("money", 0),
+            })
             if method == "play":
                 gs.total_hands_played += 1
+                hand_name = getattr(action, "hand_name", "") or ""
+                if hand_name:
+                    gs.hand_types_played[hand_name] += 1
                 post_chips = state.get("round", {}).get("chips", 0)
                 _scoring_log.info("  POST_PLAY chips_in_round=%d, delta=%d", post_chips, post_chips - pre_play_chips)
                 # The Hook discards 2 held cards BEFORE scoring (before
@@ -350,8 +455,103 @@ def run_bot(
                 # as-is; joker corrections (Ramen, Yorick, Green Joker)
                 # are applied in joker_effects/complex.py.
                 log_played_hand(play_snapshot, pre_play_chips, state)
+                # Capture hand score for dashboard
+                gs.hands_scored += 1
+                actual_score = post_chips - pre_play_chips
+                joker_contribs = None
+                try:
+                    _detail = compute_played_hand_detail(play_snapshot)
+                    joker_contribs = serialize_joker_contributions(_detail)
+                except Exception:
+                    joker_contribs = None
+                gs.hand_scores.append({
+                    "seq": gs.hands_scored,
+                    "ante": state.get("ante_num"),
+                    "blind_name": gs.current_blind_name,
+                    "hand_type": hand_name or None,
+                    "total_score": actual_score if actual_score > 0 else None,
+                    "joker_contributions": joker_contribs,
+                })
             elif method == "discard":
                 gs.total_discards_used += 1
+
+            if _buying_joker_label:
+                gs.jokers_bought.append({
+                    "joker_name": _buying_joker_label,
+                    "buy_ante": state.get("ante_num", 0),
+                })
+
+            if _buying_consumable:
+                # Aggregate by name+type
+                name = _buying_consumable["name"]
+                ctype = _buying_consumable["type"]
+                for c in gs.consumables_bought:
+                    if c["name"] == name and c["consumable_type"] == ctype:
+                        c["count"] += 1
+                        break
+                else:
+                    gs.consumables_bought.append({
+                        "name": name,
+                        "consumable_type": ctype,
+                        "count": 1,
+                    })
+
+            # Track shop events: buys, sells, rerolls
+            _post_money = state.get("money", 0)
+            _ante = state.get("ante_num")
+            if _buying_joker_label:
+                gs.shop_events.append({
+                    "ante": _ante, "event_type": "buy",
+                    "item_name": _buying_joker_label, "item_type": "joker",
+                    "cost": _pre_money - _post_money, "money_after": _post_money,
+                })
+            if _buying_consumable:
+                gs.shop_events.append({
+                    "ante": _ante, "event_type": "buy",
+                    "item_name": _buying_consumable["name"],
+                    "item_type": _buying_consumable["type"],
+                    "cost": _pre_money - _post_money, "money_after": _post_money,
+                })
+            if method == "sell":
+                sold_name = getattr(action, "reason", "") or "?"
+                if hasattr(action, "index"):
+                    # Try to get the item name from pre-state
+                    if "joker" in (params or {}):
+                        jokers = state.get("jokers", {}).get("cards", [])
+                        sold_name = "joker"
+                    elif "consumable" in (params or {}):
+                        sold_name = "consumable"
+                gs.shop_events.append({
+                    "ante": _ante, "event_type": "sell",
+                    "item_name": sold_name, "item_type": None,
+                    "cost": None, "money_after": _post_money,
+                })
+            if method == "reroll":
+                gs.shop_events.append({
+                    "ante": _ante, "event_type": "reroll",
+                    "item_name": None, "item_type": None,
+                    "cost": _pre_money - _post_money, "money_after": _post_money,
+                })
+            if _buying_pack_label is not None:
+                gs.shop_events.append({
+                    "ante": _ante, "event_type": "buy",
+                    "item_name": _buying_pack_label, "item_type": "pack",
+                    "cost": _pre_money - _post_money, "money_after": _post_money,
+                })
+            if method == "pack" and params:
+                if params.get("skip"):
+                    gs.shop_events.append({
+                        "ante": _ante, "event_type": "skip",
+                        "item_name": None, "item_type": "pack",
+                        "cost": None, "money_after": _post_money,
+                    })
+                elif "card" in params:
+                    gs.shop_events.append({
+                        "ante": _ante, "event_type": "pick",
+                        "item_name": _picking_pack_card_label,
+                        "item_type": "pack",
+                        "cost": None, "money_after": _post_money,
+                    })
 
             detect_joker_changes(gs, state)
 
@@ -396,12 +596,25 @@ def run_bot(
             gs.consecutive_errors += 1
             log.warning("API error: %s (%s) — retry %d", e.message, e.name, gs.consecutive_errors)
 
-            # If a consumable use was rejected, clear Fool tracking so
-            # the rule engine doesn't keep trying the same consumable.
+            # If a consumable use was rejected, block that index so the
+            # rule engine doesn't keep trying the same consumable this round.
             if method == "use" and e.name == "NOT_ALLOWED":
+                blocked_idx = (params or {}).get("consumable")
                 for rule in engine.rules.get(game_state, []):
                     if hasattr(rule, "_last_used_consumable"):
                         rule._last_used_consumable = None
+                    if hasattr(rule, "_blocked_consumables") and blocked_idx is not None:
+                        rule._blocked_consumables.add(blocked_idx)
+                        log.info("Blocked consumable index %d for this round", blocked_idx)
+                        break
+
+            # If a joker buy was rejected due to full slots, tell the
+            # shop evaluator so it stops trying to buy jokers this visit.
+            if "joker slots are full" in e.message:
+                for rule in engine.rules.get("SHOP", []):
+                    evaluator = getattr(rule, "_evaluator", None)
+                    if evaluator is not None:
+                        evaluator.slots_full = True
                         break
 
             if gs.consecutive_errors >= 5:
@@ -422,4 +635,59 @@ def run_bot(
                 if _boss_disabled_before:
                     state["_boss_disabled"] = True
     log_game_over(gs, state)
+
+    # Capture log text AFTER log_game_over (includes game summary lines).
+    # flush_win() no longer clears the buffer, so it's intact for both wins and losses.
+    _captured_log_text = _win_handler.get_log_text() if _win_handler else None
+    if _win_handler:
+        _win_handler.reset()
+
+    # POST game data to dashboard
+    if dashboard_batch_id:
+        from balatro_bot import dashboard_client
+        joker_cards = state.get("jokers", {}).get("cards", [])
+        final_roster = {j.get("label", "?") for j in joker_cards}
+        _rerolls = sum(1 for e in gs.shop_events if e.get("event_type") == "reroll")
+        _packs_bought = sum(1 for e in gs.shop_events if e.get("event_type") == "buy" and e.get("item_type") == "pack")
+        _pack_picks = sum(1 for e in gs.shop_events if e.get("event_type") == "pick" and e.get("item_type") == "pack")
+        _pack_skips = sum(1 for e in gs.shop_events if e.get("event_type") == "skip" and e.get("item_type") == "pack")
+        dashboard_client.post_game(dashboard_batch_id, {
+            "instance_port": client.port,
+            "seed": state.get("seed", ""),
+            "deck": deck,
+            "stake": stake,
+            "win": gs.actually_won,
+            "final_ante": state.get("ante_num", 0),
+            "final_round": state.get("round_num", 0),
+            "actions": gs.actions_taken,
+            "rerolls": _rerolls,
+            "packs_bought": _packs_bought,
+            "packs_opened": gs.packs_opened,
+            "pack_picks": _pack_picks,
+            "pack_skips": _pack_skips,
+            "final_money": state.get("money", 0),
+            "final_jokers": ", ".join(j.get("label", "?") for j in joker_cards),
+            "total_hands": gs.total_hands_played,
+            "total_discards": gs.total_discards_used,
+            "log_text": _captured_log_text,
+            "rounds": gs.round_results,
+            "jokers": [
+                {
+                    "joker_name": jb["joker_name"],
+                    "in_final_roster": jb["joker_name"] in final_roster,
+                    "buy_ante": jb["buy_ante"],
+                    "final_chips": (gs.joker_scaling.get(jb["joker_name"]) or {}).get("chips"),
+                    "final_mult": (gs.joker_scaling.get(jb["joker_name"]) or {}).get("mult"),
+                    "final_xmult": (gs.joker_scaling.get(jb["joker_name"]) or {}).get("xmult"),
+                }
+                for jb in gs.jokers_bought
+            ],
+            "hand_types": dict(gs.hand_types_played),
+            "consumables": gs.consumables_bought,
+            "actions_log": gs.action_log,
+            "ante_snapshots": gs.ante_snapshots,
+            "hand_scores": gs.hand_scores,
+            "shop_events": gs.shop_events,
+        })
+
     return gs.actually_won

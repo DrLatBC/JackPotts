@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # Round outlook thresholds (projected score / chips remaining)
 # ---------------------------------------------------------------------------
 _COMFORTABLE_RATIO = 1.5   # >= this → comfortable, blind is well in hand
-_TIGHT_RATIO = 0.8         # >= this → tight, every hand matters
+_TIGHT_RATIO = 0.9         # >= this → tight, every hand matters
 
 __all__ = ["RoundContext"]
 
@@ -50,9 +50,21 @@ class RoundContext:
     score_discount: float = 1.0
     forced_card_idx: int | None = None
     ancient_suit: str | None = None
+    idol_rank: str | None = None
+    idol_suit: str | None = None
     eye_used_hands: set[str] | None = None
     scoring_suit: str | None = None
     best_as_finisher: HandCandidate | None = None
+
+    @property
+    def card_protection(self):
+        """Build the CardProtection view from this round's strategy + state."""
+        return self.strategy.card_protection(
+            jokers=self.jokers,
+            idol_rank=self.idol_rank,
+            idol_suit=self.idol_suit,
+            scoring_suit=self.scoring_suit,
+        )
 
     @property
     def round_outlook(self) -> str:
@@ -146,22 +158,23 @@ class RoundContext:
         hands_left = snapshot.round.hands_left
         discards_left = snapshot.round.discards_left
 
-        joker_count = len(jokers)
-        score_discount = (
-            (joker_count - 1) / joker_count if blind_name == "Crimson Heart" and joker_count > 1 and not boss_disabled
-            else 0.5 if blind_name == "Crimson Heart" and not boss_disabled
-            else 1.0
-        )
+        # Crimson Heart: one random joker is debuffed each hand.  The API
+        # reports which joker is currently debuffed, and the scoring pipeline
+        # (score_hand / score_hand_detailed) already skips debuffed jokers via
+        # is_joker_debuffed().  So ctx.best.total already reflects the penalty.
+        # No additional score_discount is needed — applying one double-counts.
+        score_discount = 1.0
 
         forced_card_idx = None
         if blind_name == "Cerulean Bell" and not boss_disabled:
             for i, c in enumerate(hand_cards):
-                s = c.get("state", {})
-                if isinstance(s, dict) and s.get("highlight"):
+                if c.state.highlight:
                     forced_card_idx = i
                     break
 
         ancient_suit = snapshot.round.ancient_suit
+        idol_rank = snapshot.round.idol_rank
+        idol_suit = snapshot.round.idol_suit
         ox_most_played = snapshot.round.most_played_poker_hand if blind_name == "The Ox" and not boss_disabled else None
         strat = compute_strategy(jokers, hand_levels)
         deck_profile = DeckProfile.from_cards(list(deck_cards) + list(hand_cards))
@@ -182,6 +195,8 @@ class RoundContext:
             deck_cards=deck_cards,
             blind_name=effective_blind,
             ox_most_played=ox_most_played,
+            idol_rank=idol_rank,
+            idol_suit=idol_suit,
         )
 
         # Score best hand as if it were the final hand (hands_left=1) so the
@@ -221,6 +236,8 @@ class RoundContext:
             score_discount=score_discount,
             forced_card_idx=forced_card_idx,
             ancient_suit=ancient_suit,
+            idol_rank=idol_rank,
+            idol_suit=idol_suit,
             eye_used_hands=eye_used_hands,
             scoring_suit=scoring_suit,
             money=money,

@@ -124,22 +124,6 @@ class DiscardToImprove:
         ctx = RoundContext.from_state(state)
         return choose_discard(ctx)
 
-    # Backward-compatible classmethods — delegate to discard_policy module functions
-    @staticmethod
-    def _chase_ev(candidate, ctx, miss_ev):
-        from balatro_bot.domain.policy.discard_policy import _chase_ev
-        return _chase_ev(candidate, ctx, miss_ev)
-
-    @staticmethod
-    def _sample_miss_ev(keep_indices, ctx):
-        from balatro_bot.domain.policy.discard_policy import _sample_miss_ev
-        return _sample_miss_ev(keep_indices, ctx)
-
-    @classmethod
-    def _best_chase(cls, suggestions, ctx, play_ev):
-        from balatro_bot.domain.policy.discard_policy import _best_chase
-        return _best_chase(suggestions, ctx, play_ev)
-
 
 class PlayBestAvailable:
     """Last resort: play the best hand we have, even if it won't clear."""

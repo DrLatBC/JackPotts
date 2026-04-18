@@ -93,6 +93,11 @@ def build_round_plan(ctx: RoundContext) -> RoundPlan | None:
         return None
 
     joker_keys = {joker_key(j) for j in ctx.jokers}
+
+    # --- The Eye: sequence hand types weakest-first, strongest-last ---
+    if ctx.blind_name == "The Eye" and ctx.hands_left >= 2:
+        return _build_eye_plan(ctx)
+
     has_final_hand = bool(joker_keys & FINAL_HAND_JOKERS)
     has_card_sharp = bool(joker_keys & SEQUENCE_JOKERS)
     has_loyalty = "j_loyalty_card" in joker_keys
@@ -153,8 +158,7 @@ def build_round_plan(ctx: RoundContext) -> RoundPlan | None:
     if "j_glass" in joker_keys:
         glass_count = sum(
             1 for c in ctx.hand_cards
-            if (c.get("value", {}).get("ability", {}).get("enhancement")
-                or c.get("modifier", {}).get("enhancement", "")) == "GLASS"
+            if (c.modifier.enhancement if hasattr(c, 'modifier') else None) == "GLASS"
         )
         if glass_count > 0:
             old_budget = milk_budget
@@ -274,6 +278,63 @@ def build_round_plan(ctx: RoundContext) -> RoundPlan | None:
 
 
 # ---------------------------------------------------------------------------
+# The Eye planner
+# ---------------------------------------------------------------------------
+
+def _build_eye_plan(ctx: RoundContext) -> RoundPlan | None:
+    """Build a plan for The Eye: play weakest hand types first, strongest last.
+
+    The Eye eliminates each hand type after it's played.  Greedy play wastes
+    the strongest type first, leaving only weak options.  By reversing the
+    order we save the high-scoring type for when we need it most.
+    """
+    eye_used = ctx.eye_used_hands or set()
+
+    # Enumerate all distinct hand types we can form right now
+    candidates = enumerate_hands(
+        ctx.hand_cards, ctx.hand_levels,
+        jokers=ctx.jokers, joker_limit=len(ctx.jokers),
+        hands_left=ctx.hands_left,
+        excluded_hands=eye_used,
+    )
+    if not candidates:
+        return None
+
+    # Deduplicate: keep the best candidate per hand type
+    best_per_type: dict[str, HandCandidate] = {}
+    for c in candidates:
+        if c.hand_name not in best_per_type or c.total > best_per_type[c.hand_name].total:
+            best_per_type[c.hand_name] = c
+
+    # Sort weakest first — play cheap types early, save the strongest for last
+    sorted_types = sorted(best_per_type.items(), key=lambda kv: kv[1].total)
+
+    # Build steps: one "score" step per hand type, weakest first
+    steps: list[PlanStep] = []
+    for hand_type, cand in sorted_types[:ctx.hands_left]:
+        steps.append(PlanStep(
+            "score",
+            target_type=hand_type,
+            score_estimate=int(cand.total * ctx.score_discount),
+        ))
+
+    if not steps:
+        return None
+
+    plan = RoundPlan(
+        steps=steps,
+        finisher_score=int(sorted_types[-1][1].total * ctx.score_discount) if sorted_types else 0,
+        total_hands=ctx.hands_left,
+    )
+
+    type_seq = " -> ".join(f"{s.target_type}({s.score_estimate})" for s in steps)
+    log.info("RoundPlan[Eye]: %s | %d types available, %d hands, used=%s",
+             type_seq, len(best_per_type), ctx.hands_left, eye_used or "{}")
+
+    return plan
+
+
+# ---------------------------------------------------------------------------
 # Executor
 # ---------------------------------------------------------------------------
 
@@ -318,7 +379,7 @@ def _execute_finisher(ctx: RoundContext) -> Action | None:
 
     indices = _pad_with_junk(
         candidate.card_indices, ctx.hand_cards, ctx.jokers,
-        candidate.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit,
+        candidate.hand_name, protection=ctx.card_protection,
     )
     indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
 
@@ -349,7 +410,7 @@ def _execute_setup(ctx: RoundContext, target_type: str | None) -> Action | None:
     if match:
         indices = _pad_with_junk(
             match.card_indices, ctx.hand_cards, ctx.jokers,
-            match.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit,
+            match.hand_name, protection=ctx.card_protection,
         )
         indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
         return PlayCards(
@@ -397,12 +458,17 @@ def _execute_score(ctx: RoundContext, target_type: str | None = None) -> Action 
 
     indices = _pad_with_junk(
         candidate.card_indices, ctx.hand_cards, ctx.jokers,
-        candidate.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit,
+        candidate.hand_name, protection=ctx.card_protection,
     )
     indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
 
     effective = candidate.total * ctx.score_discount
-    suffix = f" (targeting {target_type} for Card Sharp)" if target_type else ""
+    if target_type and ctx.blind_name == "The Eye":
+        suffix = f" (Eye sequence: targeting {target_type})"
+    elif target_type:
+        suffix = f" (targeting {target_type} for Card Sharp)"
+    else:
+        suffix = ""
     return PlayCards(
         indices,
         reason=f"score: {candidate.hand_name} for {candidate.total} "
@@ -819,13 +885,12 @@ def _dna_solo(ctx: RoundContext) -> Action | None:
         score = rank_value(r)
 
         # Prefer enhanced cards — duplicating an enhanced card is very strong
-        enhancement = (c.get("value", {}).get("ability", {}).get("enhancement")
-                       or c.get("modifier", {}).get("enhancement", ""))
+        enhancement = c.modifier.enhancement if hasattr(c, 'modifier') else None
         if enhancement and enhancement != "NONE":
             score += 100  # heavily prefer enhanced
 
         # Prefer cards with seals
-        seal = c.get("modifier", {}).get("seal") or c.get("value", {}).get("seal", "")
+        seal = c.modifier.seal if hasattr(c, 'modifier') else None
         if seal and seal != "NONE":
             score += 50
 

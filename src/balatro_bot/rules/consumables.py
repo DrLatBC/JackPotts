@@ -44,6 +44,9 @@ class UseConsumables:
     # Hex sell-down state: sell weak jokers before using Hex
     _hex_selling_down: bool = False
     _hex_target_key: str | None = None
+    # Consumables that were rejected by the API this round — skip them
+    _blocked_consumables: set[int] = set()  # indices blocked this round
+    _blocked_round: int = -1
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         consumables = state.get("consumables", {}).get("cards", [])
@@ -60,6 +63,11 @@ class UseConsumables:
         round_num = state.get("round_num", 0)
 
         strat = compute_strategy(jokers, hand_levels)
+
+        # Reset blocked consumables on new round
+        if round_num != self._blocked_round:
+            self._blocked_consumables = set()
+            self._blocked_round = round_num
 
         # Track held consumable staleness
         if round_num != self._last_round:
@@ -107,6 +115,8 @@ class UseConsumables:
         candidates: list[tuple[int, float, str, Action]] = []
 
         for i, card in enumerate(consumables):
+            if i in self._blocked_consumables:
+                continue
             key = card.get("key", "")
             label = card.get("label", "?")
 

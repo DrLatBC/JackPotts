@@ -9,7 +9,7 @@ from itertools import combinations
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
-    from balatro_bot.strategy import Strategy
+    from balatro_bot.strategy import CardProtection, Strategy
 
 from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, is_joker_debuffed, is_stone, joker_key, rank_value
 from balatro_bot.constants import HAND_INFO
@@ -56,7 +56,7 @@ class HandCandidate:
         self.priority = HAND_INFO[hand_name][2]
 
     def __repr__(self) -> str:
-        labels = [c.get("label", "?") for c in self.cards]
+        labels = [c.label if hasattr(c, "label") else c.get("label", "?") for c in self.cards]
         return f"HandCandidate({self.hand_name}, total={self.total}, cards={labels})"
 
 
@@ -78,6 +78,8 @@ def enumerate_hands(
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
     ox_most_played: str | None = None,
+    idol_rank: str | None = None,
+    idol_suit: str | None = None,
 ) -> list[HandCandidate]:
     """Enumerate all valid poker hands from the cards in hand."""
     candidates: list[HandCandidate] = []
@@ -121,6 +123,8 @@ def enumerate_hands(
                 deck_count=deck_count, deck_cards=deck_cards,
                 blind_name=blind_name,
                 ox_most_played=_ox_mp,
+                idol_rank=idol_rank,
+                idol_suit=idol_suit,
             )
 
             candidates.append(HandCandidate(
@@ -163,6 +167,8 @@ def best_hand(
     deck_cards: list[dict] | None = None,
     blind_name: str = "",
     ox_most_played: str | None = None,
+    idol_rank: str | None = None,
+    idol_suit: str | None = None,
 ) -> HandCandidate | None:
     """Return the single best hand playable from the given cards."""
     candidates = enumerate_hands(
@@ -178,47 +184,32 @@ def best_hand(
         deck_count=deck_count, deck_cards=deck_cards,
         blind_name=blind_name,
         ox_most_played=ox_most_played,
+        idol_rank=idol_rank,
+        idol_suit=idol_suit,
     )
     return candidates[0] if candidates else None
 
 
 def cards_not_in(
-    hand_cards: list[dict], keep_indices: set[int], blackboard: bool = False,
-    rank_affinity: dict[str, float] | None = None,
-    scoring_suit: str | None = None,
-    strategy: Strategy | None = None,
+    hand_cards: list[dict], keep_indices: set[int],
+    protection: CardProtection | None = None,
 ) -> list[int]:
-    """Return indices of cards NOT in the keep set — candidates for discard.
+    """Return indices of cards NOT in the keep set, sorted discard-first.
 
-    When rank_affinity is provided, high-affinity ranks are protected (sorted
-    last) and negative-affinity ranks are prioritized for discard (sorted first).
-    When scoring_suit is set (suit restriction bosses), off-suit cards sort earlier.
-    When strategy is provided, off-suit cards in suit-focused builds are
-    prioritized for discard (lower score = discarded first).
+    Sorted ascending by `protection.score(card)` — lowest-protection cards
+    come first (best candidates to discard). CardProtection consolidates all
+    signals: boss suit constraints, rank/suit/enhancement affinity, idol target,
+    Blackboard, and debuff status.
+
+    When `protection` is None, falls back to raw rank order (discard lowest first).
     """
     candidates = [i for i in range(len(hand_cards)) if i not in keep_indices]
 
-    def _suit_affinity_score(i: int) -> float:
-        if not strategy or not strategy.preferred_suits:
-            return 0.0
-        s = card_suit(hand_cards[i])
-        if not s:
-            return 0.0
-        return strategy.suit_affinity(s)
+    if protection is None:
+        candidates.sort(key=lambda i: rank_value(card_rank(hand_cards[i]) or "2"))
+        return candidates
 
-    candidates.sort(key=lambda i: (
-        # 1. Hard constraints (boss/joker mechanics) — protect required cards
-        1 if scoring_suit and scoring_suit in card_suits(hand_cards[i]) else 0 if not scoring_suit else -1,
-        0 if blackboard and card_suit(hand_cards[i]) in ("H", "D") else 1,
-        # 2. Strategic value — protect cards the strategy wants to keep
-        _suit_affinity_score(i),
-        rank_affinity.get(card_rank(hand_cards[i]) or "", 0.0) if rank_affinity else 0,
-        # 3. Debuff as tiebreaker — debuffed junk goes first, but debuffed
-        #    cards with strategic value are protected by layers above
-        0 if is_debuffed(hand_cards[i]) else 1,
-        # 4. Raw card value — higher rank cards survive longer
-        rank_value(card_rank(hand_cards[i]) or "2"),
-    ))
+    candidates.sort(key=lambda i: protection.score(hand_cards[i]))
     return candidates
 
 
@@ -227,14 +218,18 @@ def discard_candidates(
     hand_levels: dict[str, dict] | None = None,
     max_select: int = 5,
     max_discard: int = 5,
-    strategy_affinity: dict[str, float] | None = None,
     deck_cards: list[dict] | None = None,
     chips_remaining: int = 0,
     jokers: list[dict] | None = None,
     required_hand: str | None = None,
     deck_profile=None,
+    protection: CardProtection | None = None,
 ) -> list[ChaseCandidate]:
-    """Suggest discard sets that improve toward better hands."""
+    """Suggest discard sets that improve toward better hands.
+
+    Returns candidates in generation order — no ranking. Callers are expected
+    to rank via expected-value scoring (Monte Carlo) in the policy layer.
+    """
     bh = best_hand(hand_cards, hand_levels, max_select, jokers=jokers, required_hand=required_hand)
     if not bh:
         fallback = list(range(min(max_discard, len(hand_cards))))
@@ -243,6 +238,9 @@ def discard_candidates(
     from balatro_bot.strategy import compute_strategy
     strat = compute_strategy(jokers or [], hand_levels)
     rank_aff = strat.rank_affinity_dict() or None
+
+    if protection is None:
+        protection = strat.card_protection(jokers=jokers)
 
     strategies = generate_chases(
         hand_cards, bh,
@@ -256,44 +254,9 @@ def discard_candidates(
         deck_profile=deck_profile,
     )
 
-    has_any_affinity = strategy_affinity and any(v > 0 for v in strategy_affinity.values())
-
-    def _leveled_value(hand_name: str) -> float:
-        """Return chips * mult for a hand using real hand levels."""
-        base_chips, base_mult, _ = HAND_INFO[hand_name]
-        if hand_levels and hand_name in hand_levels:
-            lvl = hand_levels[hand_name]
-            base_chips = lvl.get("chips", base_chips)
-            base_mult = lvl.get("mult", base_mult)
-        return base_chips * base_mult
-
-    def chase_score(strategy: tuple[str, list[int], float, str]) -> float:
-        hand_name, keep, prob, _ = strategy
-        if hand_name == "redraw":
-            keep_cards = [hand_cards[i] for i in keep]
-            _, _, total = score_hand(
-                bh.hand_name, keep_cards,
-                hand_levels=hand_levels, jokers=jokers,
-            )
-            return total * prob
-
-        base = _leveled_value(hand_name) * prob
-
-        if has_any_affinity:
-            affinity = strategy_affinity.get(hand_name, 0)
-            if affinity > 0:
-                base *= (1.0 + affinity * 0.5)
-            elif hand_name != bh.hand_name:
-                base *= 0.3
-        return base
-
-    strategies.sort(key=chase_score, reverse=True)
-
     results: list[ChaseCandidate] = []
-    has_blackboard = any(joker_key(j) == "j_blackboard" for j in (jokers or []))
-
     for chase_name, keep, prob, reason in strategies:
-        to_discard = cards_not_in(hand_cards, set(keep), blackboard=has_blackboard, rank_affinity=rank_aff, strategy=strat)[:max_discard]
+        to_discard = cards_not_in(hand_cards, set(keep), protection=protection)[:max_discard]
         if to_discard:
             results.append(ChaseCandidate(to_discard, reason, chase_name, list(keep), prob))
 

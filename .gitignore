@@ -14,6 +14,7 @@ growing.txt
 wins_*.txt
 output*.txt
 logs/
+profiles/
 
 # IDE
 .vscode/

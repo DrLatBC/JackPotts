@@ -36,6 +36,15 @@ _PLANET_BASE_VALUE = 5.0           # base score for on-strategy planet
 _CONSTELLATION_BONUS = 2.0         # extra value when Constellation owned
 _CONSTELLATION_ONLY_VALUE = 3.0    # off-strategy planet with Constellation (+0.1 xmult)
 
+# Generic planet floor: planets for common hands that the bot realistically
+# plays (Pair, Two Pair, Three of a Kind, High Card) are valuable even without
+# joker-driven affinity. Leveling them compounds for the whole run.
+_COMMON_HAND_FLOOR = 3.0
+_COMMON_HANDS = frozenset({"Pair", "Two Pair", "Three of a Kind", "High Card"})
+# Weaker floor for hands that do show up but less often.
+_UNCOMMON_HAND_FLOOR = 2.0
+_UNCOMMON_HANDS = frozenset({"Straight", "Flush", "Full House", "Four of a Kind"})
+
 # No-target tarot values
 _JUDGEMENT_VALUE = 6.0             # creates a random joker
 _HIGH_PRIESTESS_VALUE = 5.0        # creates up to 2 random planet cards
@@ -146,7 +155,6 @@ def score_consumable(
         hand_type = PLANET_KEYS[key]
         if hand_type == "ALL":
             return _BLACK_HOLE_VALUE  # Black Hole — always top priority
-        hand_levels = state.get("hands", {})
         has_constellation = any(joker_key(j) == "j_constellation" for j in jokers)
         affinity = strat.hand_affinity(hand_type) if strat else 0.0
         if affinity > 0:
@@ -154,9 +162,22 @@ def score_consumable(
             if has_constellation:
                 score += _CONSTELLATION_BONUS
             return score
+        # No joker-driven affinity: planets for hands we'll actually play still
+        # compound for the whole run. Pair/Two Pair/3oK/High Card land every
+        # round; leveling them is consistently good even on thin rosters.
+        if hand_type in _COMMON_HANDS:
+            score = _COMMON_HAND_FLOOR
+            if has_constellation:
+                score += _CONSTELLATION_BONUS
+            return score
+        if hand_type in _UNCOMMON_HANDS:
+            score = _UNCOMMON_HAND_FLOOR
+            if has_constellation:
+                score += _CONSTELLATION_BONUS
+            return score
         if has_constellation:
             return _CONSTELLATION_ONLY_VALUE
-        return 0.0  # off-strategy, no constellation
+        return 0.0  # exotic hand, no constellation
 
     # --- No-target tarots ---
     if key == "c_judgement":

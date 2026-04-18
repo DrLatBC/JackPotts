@@ -267,17 +267,19 @@ class TestGenerateChases:
 
 
 # ---------------------------------------------------------------------------
-# chase_score with hand levels
+# MC EV respects hand levels
 # ---------------------------------------------------------------------------
 
-class TestChaseScoreUsesHandLevels:
-    def test_keep_leveled_pair_ranks_above_base_flush_chase(self):
-        """Keep leveled-Pair strategy should outrank a Flush chase at base levels.
+class TestMCEvUsesHandLevels:
+    def test_leveled_pair_beats_base_flush_chase_via_mc(self):
+        """MC EV of keeping a leveled Pair should beat the EV of chasing a base Flush."""
+        import random
+        from balatro_bot.context import RoundContext
+        from balatro_bot.strategy import compute_strategy
+        from balatro_bot.domain.scoring.search import best_hand
+        from balatro_bot.domain.policy.discard_policy import _expected_play_value
+        from tests.conftest import joker
 
-        Level-5 Pair: 70 chips × 6 mult × 1.0 prob = 420
-        Base Flush:   35 chips × 4 mult × ~0.5 prob ≈ 70
-        """
-        # 2 spade Kings for a pair, 3 hearts for a flush draw (not enough for flush)
         hand = [card("K", "S"), card("K", "C"),
                 card("A", "H"), card("9", "H"), card("5", "H"),
                 card("7", "D"), card("3", "D"), card("2", "D")]
@@ -294,12 +296,28 @@ class TestChaseScoreUsesHandLevels:
             "Four of a Kind": {"chips": 60, "mult": 7, "level": 1},
         }
 
-        results = discard_candidates(
-            hand, hand_levels=hand_levels, deck_cards=deck,
+        # Need at least one joker so best_hand uses total-based ranking rather
+        # than hand-type priority (without jokers, a base Full House would be
+        # picked over a higher-scoring leveled Pair).
+        jokers_list = [joker("j_duo")]   # Pair-specific joker, amplifies leveled Pair
+
+        ctx = RoundContext(
+            blind_score=5000, blind_name="", chips_scored=0,
+            chips_remaining=5000, hands_left=4, discards_left=3,
+            hand_cards=hand, hand_levels=hand_levels, jokers=jokers_list,
+            best=best_hand(hand, hand_levels=hand_levels, jokers=jokers_list),
+            money=5, ante=1, round_num=1, min_cards=1,
+            strategy=compute_strategy(jokers_list, hand_levels),
+            deck_cards=deck,
         )
-        chase_names = [r.chase_hand for r in results]
-        # Keep Pair (leveled: 420) should rank above any base-level chase
-        assert chase_names[0] == "Pair", f"Expected Pair first, got {chase_names}"
+        random.seed(42)
+        pair_ev = _expected_play_value([0, 1], ctx)             # keep leveled Pair
+        random.seed(42)
+        flush_ev = _expected_play_value([2, 3, 4], ctx)         # chase Flush
+
+        assert pair_ev > flush_ev, (
+            f"Leveled Pair EV ({pair_ev:.0f}) should beat Flush-chase EV ({flush_ev:.0f})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +333,9 @@ class TestCardsNotInDebuffPriority:
             card("2", "D"),         # 2 — junk
         ]
         keep = {0}
-        rank_aff = {"K": 2.0, "A": 1.0, "2": -1.0}
-        result = cards_not_in(hand, keep, rank_affinity=rank_aff)
+        from balatro_bot.strategy import CardProtection
+        protection = CardProtection(rank_affinity={"K": 2.0, "A": 1.0, "2": -1.0})
+        result = cards_not_in(hand, keep, protection=protection)
         # 2 should be discarded first (low affinity), K second (high affinity despite debuff)
         assert result == [2, 1]
 
@@ -328,7 +347,8 @@ class TestCardsNotInDebuffPriority:
             card("3", "D"),         # 2 — also junk but not debuffed
         ]
         keep = {0}
-        result = cards_not_in(hand, keep)
+        from balatro_bot.strategy import CardProtection
+        result = cards_not_in(hand, keep, protection=CardProtection())
         # Both are junk, debuff breaks the tie — 2 goes first
         assert result[0] == 1
 
@@ -340,7 +360,8 @@ class TestCardsNotInDebuffPriority:
             debuffed_card("Q", "S"),  # 2 — debuffed, off-suit
         ]
         keep = {0}
-        result = cards_not_in(hand, keep, scoring_suit="H")
+        from balatro_bot.strategy import CardProtection
+        result = cards_not_in(hand, keep, protection=CardProtection(scoring_suit="H"))
         # Off-suit Q goes first despite being debuffed (scoring_suit protects K♥)
         assert result[0] == 2
 
