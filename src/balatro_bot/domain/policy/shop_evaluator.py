@@ -62,11 +62,17 @@ class Budget:
     scoring_aggression: float        # 0.0-1.0 — buy scoring power
     speculative_aggression: float    # 0.0-1.0 — speculative spends
     rounds_est: int                  # estimated rounds remaining
+    # Voucher-derived knobs
+    interest_cap_per_round: int = 5  # 5 / 10 / 20 (Seed Money / Money Tree)
+    reroll_cost: int = 5             # 5 / 3 / 1 (Reroll Surplus / Glut)
+    reroll_cap: int = 3              # 3 / 5 / 8 (Reroll Surplus / Glut)
+    shop_slot_bonus: int = 0         # 0 / 1 / 2 (Overstock / Plus)
 
 
 def compute_budget(
     money: int, ante: int, joker_count: int = 0,
     owned_jokers: list[dict] | None = None,
+    owned_vouchers: set[str] | None = None,
 ) -> Budget:
     """Determine economy phase and spending limits.
 
@@ -125,7 +131,43 @@ def compute_budget(
         reserve = 0
         scoring_agg = 1.0
 
-    return Budget(phase, reserve, spend_ceiling, scoring_agg, speculative_agg, rounds_est)
+    # Voucher effects on economy knobs.
+    vouchers = owned_vouchers or set()
+    if "v_money_tree" in vouchers:
+        interest_cap_per_round = 20
+    elif "v_seed_money" in vouchers:
+        interest_cap_per_round = 10
+    else:
+        interest_cap_per_round = 5
+
+    if "v_reroll_glut" in vouchers:
+        reroll_cost, reroll_cap = 1, 8
+    elif "v_reroll_surplus" in vouchers:
+        reroll_cost, reroll_cap = 3, 5
+    else:
+        reroll_cost, reroll_cap = 5, 3
+
+    if "v_overstock_plus" in vouchers:
+        shop_slot_bonus = 2
+    elif "v_overstock" in vouchers:
+        shop_slot_bonus = 1
+    else:
+        shop_slot_bonus = 0
+
+    # Clearance Sale / Liquidation: cheaper items mean each dollar buys more
+    # scoring power, so nudge scoring aggression up.
+    if "v_liquidation" in vouchers:
+        scoring_agg = min(1.0, scoring_agg * 1.2)
+    elif "v_clearance_sale" in vouchers:
+        scoring_agg = min(1.0, scoring_agg * 1.1)
+
+    return Budget(
+        phase, reserve, spend_ceiling, scoring_agg, speculative_agg, rounds_est,
+        interest_cap_per_round=interest_cap_per_round,
+        reroll_cost=reroll_cost,
+        reroll_cap=reroll_cap,
+        shop_slot_bonus=shop_slot_bonus,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -375,19 +417,64 @@ _VOUCHER_ROI: dict[str, float] = {
     "v_grabber": 12.0, "v_nacho_tong": 12.0,
     "v_paint_brush": 8.0, "v_palette": 8.0,
     "v_wasteful": 6.0, "v_recyclomancy": 6.0,
-    # Slots
+    # Joker slots
+    "v_blank": 0.5,  # prereq only — no direct effect
     "v_antimatter": 7.0,
+    # Consumable slots / pack modifiers
     "v_crystal_ball": 3.0,
-    # Economy — scale with rounds remaining
-    "v_hieroglyph": 5.0,
-    "v_seed_money": 0.0,  # computed dynamically
+    "v_omen_globe": 2.0,  # spectrals can appear in arcana packs
+    # Planet / tarot economy
+    "v_telescope": 10.0,  # free planet matching most-played hand every shop
+    "v_observatory": 5.0,  # X1.5 mult for owned planet consumables when used
+    "v_tarot_merchant": 3.0, "v_tarot_tycoon": 4.0,
+    "v_planet_merchant": 3.0, "v_planet_tycoon": 4.0,
+    # Editions / shop card variety
+    "v_hone": 4.0, "v_glow_up": 6.0,
+    "v_magic_trick": 2.0, "v_illusion": 3.0,
+    # Rerolls
+    "v_reroll_surplus": 4.0, "v_reroll_glut": 5.0,
+    # Boss reroll
+    "v_directors_cut": 2.0, "v_retcon": 4.0,
+    # Ante skip
+    "v_hieroglyph": 5.0, "v_petroglyph": 5.0,
+    # Interest cap — computed dynamically from rounds_est
+    "v_seed_money": 0.0,
     "v_money_tree": 0.0,
     # Shop improvements
-    "v_clearance_sale": 2.0, "v_overstock": 2.0,
+    "v_clearance_sale": 2.0, "v_liquidation": 4.0,
+    "v_overstock": 2.0, "v_overstock_plus": 3.0,
+}
+
+# Tier-2 → tier-1 prereq. Tier-2 vouchers only appear when prereq is owned, so
+# seeing one in the shop means the chain is already in flight — completing it
+# is a strictly-better ROI than breaking it.
+_VOUCHER_PREREQ: dict[str, str] = {
+    "v_nacho_tong": "v_grabber",
+    "v_palette": "v_paint_brush",
+    "v_recyclomancy": "v_wasteful",
+    "v_antimatter": "v_blank",
+    "v_omen_globe": "v_crystal_ball",
+    "v_observatory": "v_telescope",
+    "v_tarot_tycoon": "v_tarot_merchant",
+    "v_planet_tycoon": "v_planet_merchant",
+    "v_glow_up": "v_hone",
+    "v_illusion": "v_magic_trick",
+    "v_reroll_glut": "v_reroll_surplus",
+    "v_retcon": "v_directors_cut",
+    "v_petroglyph": "v_hieroglyph",
+    "v_money_tree": "v_seed_money",
+    "v_liquidation": "v_clearance_sale",
+    "v_overstock_plus": "v_overstock",
 }
 
 
-def _score_voucher(key: str, cost: int, money: int, budget: Budget) -> float:
+def _score_voucher(
+    key: str,
+    cost: int,
+    money: int,
+    budget: Budget,
+    owned_vouchers: set[str],
+) -> float:
     """Score a voucher by ROI over remaining rounds."""
     base = _VOUCHER_ROI.get(key)
     if base is None:
@@ -396,14 +483,20 @@ def _score_voucher(key: str, cost: int, money: int, budget: Budget) -> float:
     # Economy vouchers: value scales with rounds remaining
     if key == "v_seed_money":
         # Raises interest cap from $5/round to $10/round
-        # Worth +$5/round for remaining rounds
         base = min(5.0 * budget.rounds_est, 30.0)
     elif key == "v_money_tree":
+        # Raises interest cap to $20/round
         base = min(10.0 * budget.rounds_est, 50.0)
 
     # Scale by remaining rounds for non-economy vouchers too
     if key not in ("v_seed_money", "v_money_tree"):
         base *= min(budget.rounds_est / 10.0, 1.5)
+
+    # Chain completion bonus: tier-2 upgrades strictly improve a chain already
+    # sunk into — don't let marginal opp_cost block completing it.
+    prereq = _VOUCHER_PREREQ.get(key)
+    if prereq is not None and prereq in owned_vouchers:
+        base *= 1.3
 
     return base
 
@@ -623,8 +716,9 @@ def _money_opportunity_cost(cost: int, money: int, budget: Budget,
     ante 1 opp_cost dominates any realistic shop_value and the bot skips
     every affordable joker.
     """
-    current_interest = min(money // 5, 5)
-    after_interest = min((money - cost) // 5, 5)
+    cap = budget.interest_cap_per_round
+    current_interest = min(money // 5, cap)
+    after_interest = min((money - cost) // 5, cap)
     lost_per_round = current_interest - after_interest
 
     effective_rounds = min(budget.rounds_est, 3 + joker_count * 4)
@@ -691,12 +785,14 @@ class ShopEvaluator:
         shop = state.get("shop", {})
         packs = state.get("packs", {})
         vouchers = state.get("vouchers", {})
+        owned_vouchers: set[str] = set(state.get("used_vouchers", {}).keys())
         consumables_info = state.get("consumables", {})
         consumables = consumables_info.get("cards", [])
 
         strat = compute_strategy(owned, hand_levels)
         deck_profile = self._get_deck_profile(state)
-        budget = compute_budget(money, ante, joker_count, owned_jokers=owned)
+        budget = compute_budget(money, ante, joker_count, owned_jokers=owned,
+                                owned_vouchers=owned_vouchers)
 
         # ── Score roster ──
         roster = score_roster(
@@ -941,7 +1037,7 @@ class ShopEvaluator:
             cost = card.get("cost", {}).get("buy", 999)
             label = card.get("label", "?")
 
-            value = _score_voucher(key, cost, money, budget)
+            value = _score_voucher(key, cost, money, budget, owned_vouchers)
             if value <= 0:
                 continue
             if cost > money:
@@ -987,22 +1083,25 @@ class ShopEvaluator:
                 ))
 
         # 10. Reroll
-        if (self._rerolls_this_shop < 3
-                and money - 5 >= budget.reserve):
+        if (self._rerolls_this_shop < budget.reroll_cap
+                and money - budget.reroll_cost >= budget.reserve):
             # Simple heuristic: reroll value = chance of finding something better
             best_shop_value = max(
                 (c.net_value for c in candidates if "buy" in c.description.lower()),
                 default=0.0,
             )
-            # If nothing good in shop and we have slots, reroll is worth trying
-            reroll_value = 2.0 if slots_open and best_shop_value < 3.0 else 0.5
-            opp_cost = _money_opportunity_cost(5, money, budget,
+            # If nothing good in shop and we have slots, reroll is worth trying.
+            # Scale by cheapness (cheap reroll = retry more freely) and by shop
+            # slot bonus (more slots per roll = more EV per roll).
+            base = 2.0 if slots_open and best_shop_value < 3.0 else 0.5
+            reroll_value = base * (5 / budget.reroll_cost) * (1 + 0.4 * budget.shop_slot_bonus)
+            opp_cost = _money_opportunity_cost(budget.reroll_cost, money, budget,
                                                budget.speculative_aggression,
                                                joker_count)
             net = reroll_value * budget.speculative_aggression - opp_cost
             if net > 0:
                 candidates.append(ActionPlan(
-                    steps=[Reroll(reason=f"reroll shop (${money}, reroll #{self._rerolls_this_shop + 1})")],
+                    steps=[Reroll(reason=f"reroll shop (${money}, reroll #{self._rerolls_this_shop + 1}, cost=${budget.reroll_cost})")],
                     net_value=net,
                     description="reroll shop",
                 ))
