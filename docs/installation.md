@@ -4,6 +4,7 @@
 
 - **Balatro** (Steam)
 - **[Lovely](https://github.com/ethangreen-dev/lovely-injector)** mod loader for Balatro
+- **[Steamodded](https://github.com/Steamodded/smods)** mod framework — required by balatrobot
 - **[balatrobot mod](https://github.com/DrLatBC/balatrobot)** (our fork) installed into Balatro — provides the JSON-RPC server the bot talks to
 - **Python 3.13+**
 
