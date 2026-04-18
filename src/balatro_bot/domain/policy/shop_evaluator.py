@@ -606,7 +606,8 @@ def _invisible_plan(
 # ---------------------------------------------------------------------------
 
 def _money_opportunity_cost(cost: int, money: int, budget: Budget,
-                            category_aggression: float) -> float:
+                            category_aggression: float,
+                            joker_count: int) -> float:
     """How much is spending $cost worth in lost future interest?
 
     Scoped to the category making the purchase: a joker buy at high
@@ -615,17 +616,25 @@ def _money_opportunity_cost(cost: int, money: int, budget: Budget,
     full interest tax. Without this scoping, a high speculative_aggression
     would subsidize speculation and a low one would block scoring — both
     wrong.
+
+    The horizon is capped by roster strength: future interest only matters
+    if we survive to collect it, and survival requires scoring power. With
+    0 jokers the effective horizon is 3 rounds, not 21 — otherwise the
+    ante 1 opp_cost dominates any realistic shop_value and the bot skips
+    every affordable joker.
     """
     current_interest = min(money // 5, 5)
     after_interest = min((money - cost) // 5, 5)
     lost_per_round = current_interest - after_interest
+
+    effective_rounds = min(budget.rounds_est, 3 + joker_count * 4)
 
     # Minimum 0.2 floor so even at full aggression interest-breaking
     # buys pay a small tax. Without this, ante 1-2 buys are literally
     # free (cost_factor = 1 - 1.0 = 0) and the bot never banks cash —
     # tune data shows ~0% of ante 1-2 rounds start at interest cap.
     cost_factor = max(0.2, 1.0 - category_aggression)
-    return lost_per_round * budget.rounds_est * cost_factor
+    return lost_per_round * effective_rounds * cost_factor
 
 
 # ---------------------------------------------------------------------------
@@ -765,7 +774,8 @@ class ShopEvaluator:
                 # time.  When count is already at limit (from a prior Negative),
                 # fall through to the sell-then-buy path below.
                 opp_cost = _money_opportunity_cost(cost, money, budget,
-                                                   budget.scoring_aggression)
+                                                   budget.scoring_aggression,
+                                                   joker_count)
                 net = shop_value * budget.scoring_aggression - opp_cost
                 if cost <= budget.spend_ceiling or is_negative or shop_value >= 8.0:
                     steps = [BuyCard(i, reason=f"buy {label} (${cost}, value={shop_value:.1f})")]
@@ -806,7 +816,8 @@ class ShopEvaluator:
                         )
                         upgrade_delta = shop_value_post - sc.ev_delta
                     opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
-                                                       budget.scoring_aggression)
+                                                       budget.scoring_aggression,
+                                                       joker_count)
                     # Discount 30%: only the sell emits this tick, buy is uncertain
                     net = upgrade_delta * budget.scoring_aggression * 0.7 - opp_cost
                     if net > 0:
@@ -882,7 +893,8 @@ class ShopEvaluator:
                     continue
 
                 opp_cost = _money_opportunity_cost(cost, money, budget,
-                                                   budget.scoring_aggression)
+                                                   budget.scoring_aggression,
+                                                   joker_count)
                 net = value * budget.scoring_aggression - opp_cost
                 if cost <= budget.spend_ceiling or value >= 4.0:
                     candidates.append(ActionPlan(
@@ -913,7 +925,8 @@ class ShopEvaluator:
                 pack_aggression = budget.scoring_aggression
             else:
                 pack_aggression = budget.speculative_aggression
-            opp_cost = _money_opportunity_cost(cost, money, budget, pack_aggression)
+            opp_cost = _money_opportunity_cost(cost, money, budget, pack_aggression,
+                                               joker_count)
             net = value * pack_aggression - opp_cost
             if cost <= budget.spend_ceiling or value >= 6.0:
                 candidates.append(ActionPlan(
@@ -935,7 +948,8 @@ class ShopEvaluator:
                 continue
 
             opp_cost = _money_opportunity_cost(cost, money, budget,
-                                               budget.speculative_aggression)
+                                               budget.speculative_aggression,
+                                               joker_count)
             net = value * budget.speculative_aggression - opp_cost
             if cost <= budget.spend_ceiling or value >= 8.0:
                 candidates.append(ActionPlan(
@@ -983,7 +997,8 @@ class ShopEvaluator:
             # If nothing good in shop and we have slots, reroll is worth trying
             reroll_value = 2.0 if slots_open and best_shop_value < 3.0 else 0.5
             opp_cost = _money_opportunity_cost(5, money, budget,
-                                               budget.speculative_aggression)
+                                               budget.speculative_aggression,
+                                               joker_count)
             net = reroll_value * budget.speculative_aggression - opp_cost
             if net > 0:
                 candidates.append(ActionPlan(
