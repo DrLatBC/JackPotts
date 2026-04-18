@@ -48,7 +48,7 @@ def log_blind_result(gs: GameLoopState, result: str = "WON") -> None:
     # Accumulate for dashboard reporting
     is_boss = gs.current_blind_name.startswith("The ") if gs.current_blind_name else False
     gs.round_results.append({
-        "ante": gs.last_ante or 0,
+        "ante": gs.ante_at_blind_start or gs.last_ante or 0,
         "blind_name": gs.current_blind_name,
         "is_boss": is_boss,
         "scored": gs.max_chips_this_blind,
@@ -241,6 +241,11 @@ def log_blind_transition(gs: GameLoopState, state: dict) -> None:
             state.pop("_boss_disabled", None)
             gs.hands_at_blind_start = gs.total_hands_played
             gs.discards_at_blind_start = gs.total_discards_used
+            # Snapshot ante at blind start — Balatro bumps ante_num once the
+            # boss is defeated, so reading gs.last_ante at round completion
+            # lands the boss row on the next ante.
+            ante_now = state.get("ante_num")
+            gs.ante_at_blind_start = ante_now if ante_now is not None else (gs.last_ante or 0)
             gs.hand_context_logged = False
             break
     gs.last_logged_blind = blind_id
@@ -459,80 +464,119 @@ def log_game_over(gs: GameLoopState, state: dict) -> None:
 # Scoring diagnostics (the 270-line _log_played_hand)
 # ---------------------------------------------------------------------------
 
+def compute_played_hand_detail(snapshot: dict | None) -> dict | None:
+    """Compute the scored-hand detail dict for a just-played hand.
+
+    Returns None when the snapshot is missing. Safe to call regardless of
+    logging configuration — used by both log_played_hand and the dashboard
+    hand_scores payload.
+    """
+    if not snapshot:
+        return None
+    from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
+    from balatro_bot.domain.scoring.estimate import score_hand_detailed
+
+    played = snapshot["played"]
+    hand_name = snapshot["hand_name"]
+    if not hand_name:
+        hand_name = classify_hand(played)
+
+    joker_keys = {joker_key(j) for j in snapshot["jokers"]}
+    has_splash = "j_splash" in joker_keys
+    four_fingers = "j_four_fingers" in joker_keys
+    smeared = "j_smeared" in joker_keys
+    shortcut = "j_shortcut" in joker_keys
+    scoring = played if has_splash else _scoring_cards_for(hand_name, played, four_fingers=four_fingers, smeared=smeared, shortcut=shortcut)
+
+    hand_levels = snapshot["hand_levels"]
+    blind_name = snapshot.get("blind_name", "")
+    boss_disabled = snapshot.get("_boss_disabled", False)
+    if blind_name == "The Arm" and not boss_disabled:
+        from balatro_bot.domain.scoring.base import arm_reduce_hand_levels
+        hand_levels = arm_reduce_hand_levels(hand_levels)
+
+    blind_zeroed = False
+    if not boss_disabled:
+        if blind_name == "The Mouth":
+            current_played = False
+            other_played = False
+            for ht, data in hand_levels.items():
+                if isinstance(data, dict) and data.get("played_this_round", 0) > 0:
+                    if ht == hand_name:
+                        current_played = True
+                    else:
+                        other_played = True
+            if other_played and not current_played:
+                blind_zeroed = True
+        elif blind_name == "The Eye":
+            for ht, data in hand_levels.items():
+                if ht == hand_name and isinstance(data, dict) and data.get("played_this_round", 0) > 0:
+                    blind_zeroed = True
+                    break
+        elif blind_name == "The Psychic" and len(played) < 5:
+            blind_zeroed = True
+
+    _ox_mp = snapshot.get("_ox_most_played")
+
+    detail = score_hand_detailed(
+        hand_name, scoring,
+        hand_levels=hand_levels,
+        jokers=snapshot["jokers"],
+        played_cards=played,
+        held_cards=snapshot["held"],
+        money=snapshot["money"],
+        discards_left=snapshot["discards_left"],
+        hands_left=snapshot["hands_left"],
+        joker_limit=snapshot["joker_limit"],
+        ancient_suit=snapshot.get("ancient_suit"),
+        deck_count=snapshot.get("deck_count", 0),
+        deck_cards=snapshot.get("deck_cards"),
+        blind_name="" if boss_disabled else blind_name,
+        ox_most_played=_ox_mp,
+    )
+
+    if blind_zeroed:
+        detail["total"] = 0
+
+    detail["_hand_name"] = hand_name
+    detail["_scoring"] = scoring
+    detail["_joker_keys"] = joker_keys
+    return detail
+
+
+def serialize_joker_contributions(detail: dict | None) -> list[dict] | None:
+    """Convert detail['joker_contributions'] tuples into JSON-friendly dicts."""
+    if not detail:
+        return None
+    entries = detail.get("joker_contributions") or []
+    out = []
+    for entry in entries:
+        label = entry[0]
+        dc = entry[1] if len(entry) > 1 else 0
+        dm = entry[2] if len(entry) > 2 else 0
+        xm = entry[3] if len(entry) > 3 else 1.0
+        out.append({
+            "name": label,
+            "chips": float(dc) if dc else 0.0,
+            "mult": float(dm) if dm else 0.0,
+            "xmult": float(xm) if xm else 1.0,
+        })
+    return out
+
+
 def log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict) -> None:
     """Log a detailed scoring breakdown for a hand that was just played."""
     if not snapshot or not _scoring_log.handlers:
         return
     try:
-        from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
-        from balatro_bot.domain.scoring.estimate import score_hand_detailed
-
+        detail = compute_played_hand_detail(snapshot)
+        if detail is None:
+            return
         played = snapshot["played"]
-        hand_name = snapshot["hand_name"]
-        if not hand_name:
-            hand_name = classify_hand(played)
-
-        joker_keys = {joker_key(j) for j in snapshot["jokers"]}
-        has_splash = "j_splash" in joker_keys
-        four_fingers = "j_four_fingers" in joker_keys
-        smeared = "j_smeared" in joker_keys
-        shortcut = "j_shortcut" in joker_keys
-        scoring = played if has_splash else _scoring_cards_for(hand_name, played, four_fingers=four_fingers, smeared=smeared, shortcut=shortcut)
-
-        # Apply boss blind level adjustments for scoring estimate
-        # NOTE: The Flint halving is already applied in the snapshot,
-        # so we must NOT halve again here — that caused double-halving.
-        hand_levels = snapshot["hand_levels"]
+        hand_name = detail["_hand_name"]
+        scoring = detail["_scoring"]
+        joker_keys = detail["_joker_keys"]
         blind_name = snapshot.get("blind_name", "")
-        boss_disabled = snapshot.get("_boss_disabled", False)
-        if blind_name == "The Arm" and not boss_disabled:
-            from balatro_bot.domain.scoring.base import arm_reduce_hand_levels
-            hand_levels = arm_reduce_hand_levels(hand_levels)
-
-        # Boss blind hand-type restrictions — zero estimate when hand is invalid
-        blind_zeroed = False
-        if not boss_disabled:
-            if blind_name == "The Mouth":
-                current_played = False
-                other_played = False
-                for ht, data in hand_levels.items():
-                    if isinstance(data, dict) and data.get("played_this_round", 0) > 0:
-                        if ht == hand_name:
-                            current_played = True
-                        else:
-                            other_played = True
-                if other_played and not current_played:
-                    blind_zeroed = True
-            elif blind_name == "The Eye":
-                for ht, data in hand_levels.items():
-                    if ht == hand_name and isinstance(data, dict) and data.get("played_this_round", 0) > 0:
-                        blind_zeroed = True
-                        break
-            elif blind_name == "The Psychic" and len(played) < 5:
-                blind_zeroed = True
-
-        # The Ox locks most-played hand at blind start
-        _ox_mp = snapshot.get("_ox_most_played")
-
-        detail = score_hand_detailed(
-            hand_name, scoring,
-            hand_levels=hand_levels,
-            jokers=snapshot["jokers"],
-            played_cards=played,
-            held_cards=snapshot["held"],
-            money=snapshot["money"],
-            discards_left=snapshot["discards_left"],
-            hands_left=snapshot["hands_left"],
-            joker_limit=snapshot["joker_limit"],
-            ancient_suit=snapshot.get("ancient_suit"),
-            deck_count=snapshot.get("deck_count", 0),
-            deck_cards=snapshot.get("deck_cards"),
-            blind_name="" if boss_disabled else blind_name,
-            ox_most_played=_ox_mp,
-        )
-
-        if blind_zeroed:
-            detail["total"] = 0
 
         post_chips = new_state.get("round", {}).get("chips", 0)
         actual_chips = post_chips - pre_chips

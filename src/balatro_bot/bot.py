@@ -32,6 +32,7 @@ class GameLoopState:
     total_discards_used: int = 0
     hands_at_blind_start: int = 0
     discards_at_blind_start: int = 0
+    ante_at_blind_start: int = 0
     last_logged_hand: tuple | None = None
     last_logged_shop: tuple | None = None
     last_logged_blind: tuple | None = None
@@ -214,9 +215,10 @@ def run_bot(
 ) -> bool:
     """Main bot loop. Returns True if the game was won."""
     from balatro_bot.bot_logging import (
-        build_play_snapshot, detect_joker_changes, log_action,
-        log_ante_transition, log_blind_transition, log_game_over,
+        build_play_snapshot, compute_played_hand_detail, detect_joker_changes,
+        log_action, log_ante_transition, log_blind_transition, log_game_over,
         log_hand_state, log_played_hand, log_shop_state,
+        serialize_joker_contributions,
     )
 
     if start_game:
@@ -456,12 +458,19 @@ def run_bot(
                 # Capture hand score for dashboard
                 gs.hands_scored += 1
                 actual_score = post_chips - pre_play_chips
+                joker_contribs = None
+                try:
+                    _detail = compute_played_hand_detail(play_snapshot)
+                    joker_contribs = serialize_joker_contributions(_detail)
+                except Exception:
+                    joker_contribs = None
                 gs.hand_scores.append({
                     "seq": gs.hands_scored,
                     "ante": state.get("ante_num"),
                     "blind_name": gs.current_blind_name,
                     "hand_type": hand_name or None,
                     "total_score": actual_score if actual_score > 0 else None,
+                    "joker_contributions": joker_contribs,
                 })
             elif method == "discard":
                 gs.total_discards_used += 1
