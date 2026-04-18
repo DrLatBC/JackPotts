@@ -46,7 +46,8 @@ def log_blind_result(gs: GameLoopState, result: str = "WON") -> None:
         )
 
     # Accumulate for dashboard reporting
-    is_boss = gs.current_blind_name.startswith("The ") if gs.current_blind_name else False
+    from balatro_bot.domain.policy.playing import BOSS_BLINDS
+    is_boss = gs.current_blind_name in BOSS_BLINDS if gs.current_blind_name else False
     gs.round_results.append({
         "ante": gs.ante_at_blind_start or gs.last_ante or 0,
         "blind_name": gs.current_blind_name,
@@ -245,7 +246,15 @@ def log_blind_transition(gs: GameLoopState, state: dict) -> None:
             # boss is defeated, so reading gs.last_ante at round completion
             # lands the boss row on the next ante.
             ante_now = state.get("ante_num")
-            gs.ante_at_blind_start = ante_now if ante_now is not None else (gs.last_ante or 0)
+            if ante_now is None:
+                log.warning(
+                    "Blind %r started without ante_num in state — falling "
+                    "back to last_ante=%s; round may be misattributed",
+                    name, gs.last_ante,
+                )
+                gs.ante_at_blind_start = gs.last_ante or 0
+            else:
+                gs.ante_at_blind_start = ante_now
             gs.hand_context_logged = False
             break
     gs.last_logged_blind = blind_id
