@@ -1,19 +1,19 @@
 # Dashboard integration
 
-Jack Potts can push per-game data to a [JackPotts](https://github.com/DrLatBC/jackpotts-dashboard) dashboard instance for aggregate analytics — win rates by deck/stake, joker pick distributions, shop behavior, ante-by-ante scoring, and so on. The dashboard is a separate repo (FastAPI + Postgres + HTMX). The bot runs the same without it.
+Jack Potts can push per-game data to an HTTP ingest endpoint for aggregate analytics — win rates by deck/stake, joker pick distributions, shop behavior, ante-by-ante scoring, and so on. The bot runs the same without it.
 
-Live reference instance: **[jackpotts.drlat.dev](https://jackpotts.drlat.dev)**.
+The author's live dashboard (a FastAPI + Postgres + HTMX app) is publicly viewable at **[jackpotts.drlat.dev](https://jackpotts.drlat.dev)** — the source for that app is kept private, so this page documents the client side only. Useful if you're curious about the payload shape or want to wire the bot up to a compatible ingest service of your own.
 
 ## Config
 
-Add to `.env.local`:
+Set these in `.env.local` to enable reporting:
 
 ```ini
-JACKPOTTS_URL=https://your-dashboard.example
+JACKPOTTS_URL=https://your-ingest-endpoint.example
 JACKPOTTS_API_KEY=...
 ```
 
-When unset, `dashboard_client.py` no-ops everything.
+When either is unset, `dashboard_client.py` no-ops everything and the bot runs purely locally.
 
 ## Data flow
 
@@ -52,8 +52,4 @@ Built in `bot.py` — search for `post_game(`.
 
 **Core fields:** `seed`, `deck`, `stake`, `win`, `final_ante`, `final_round`, `actions`, `rerolls`, `pack_picks`, `pack_skips`, `final_money`, `final_jokers`, `total_hands`, `total_discards`, `log_text` (wins only).
 
-**Rich arrays:** `rounds[]`, `jokers[]`, `hand_types[]`, `consumables[]`, `actions_log[]`, `ante_snapshots[]`, `hand_scores[]`, `shop_events[]`. Each element maps to a row in the corresponding dashboard table.
-
-## Running your own instance
-
-See the dashboard repo's README for hosting setup. For quick experimentation you can point `JACKPOTTS_URL` at a local dev server (`http://localhost:8000`) and iterate against the dashboard repo's FastAPI app directly.
+**Rich arrays:** `rounds[]`, `jokers[]`, `hand_types[]`, `consumables[]`, `actions_log[]`, `ante_snapshots[]`, `hand_scores[]`, `shop_events[]`.
