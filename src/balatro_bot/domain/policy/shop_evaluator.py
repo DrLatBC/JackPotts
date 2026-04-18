@@ -193,6 +193,7 @@ def score_roster(
     joker_limit: int = 5,
     deck_profile: DeckProfile | None = None,
     ante: int = 1,
+    unique_planets_used: int = 0,
 ) -> list[JokerScore]:
     """Compute live EV delta for each owned joker."""
     scores: list[JokerScore] = []
@@ -210,6 +211,7 @@ def score_roster(
             j, owned_jokers=owned, hand_levels=hand_levels,
             ante=ante, strategy=strategy, joker_limit=joker_limit,
             deck_profile=deck_profile,
+            unique_planets_used=unique_planets_used,
         )
 
         # Fodder value: if Dagger is owned and this isn't Dagger itself,
@@ -361,12 +363,14 @@ def _score_shop_joker(
     ante: int,
     joker_limit: int,
     deck_profile: DeckProfile | None,
+    unique_planets_used: int = 0,
 ) -> float:
     """Score a shop joker using the valuation engine."""
     return evaluate_joker_value(
         card, owned_jokers=owned, hand_levels=hand_levels,
         ante=ante, strategy=strategy, joker_limit=joker_limit,
         deck_profile=deck_profile,
+        unique_planets_used=unique_planets_used,
     )
 
 
@@ -743,6 +747,17 @@ class ShopEvaluator:
         consumables_info = state.get("consumables", {})
         consumables = consumables_info.get("cards", [])
 
+        # Count unique Planets used this run — feeds Satellite ROI valuator
+        # via evaluate_joker_value. Mod exposes consumeable_usage as
+        # {center_key: {count, set}} (see balatrobot/gamestate.lua).
+        usage_raw = state.get("consumeable_usage", {})
+        unique_planets_used = 0
+        if isinstance(usage_raw, dict):
+            unique_planets_used = sum(
+                1 for v in usage_raw.values()
+                if isinstance(v, dict) and v.get("set") == "Planet"
+            )
+
         strat = compute_strategy(owned, hand_levels)
         deck_profile = self._get_deck_profile(state)
         budget = compute_budget(money, ante, joker_count, owned_jokers=owned,
@@ -752,6 +767,7 @@ class ShopEvaluator:
         roster = score_roster(
             owned, hand_levels, strat,
             joker_limit=joker_limit, deck_profile=deck_profile, ante=ante,
+            unique_planets_used=unique_planets_used,
         )
 
         # ── Enumerate all candidate plans ──
@@ -807,6 +823,7 @@ class ShopEvaluator:
 
             shop_value = _score_shop_joker(
                 card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
+                unique_planets_used=unique_planets_used,
             )
 
             # Riff-Raff slot reservation: penalize buys that fill spawn slots
@@ -863,6 +880,7 @@ class ShopEvaluator:
                         shop_value_post = _score_shop_joker(
                             card, post_sell_owned, hand_levels,
                             post_sell_strategy, ante, joker_limit, deck_profile,
+                            unique_planets_used=unique_planets_used,
                         )
                         upgrade_delta = shop_value_post - sc.ev_delta
                     opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
@@ -1025,7 +1043,8 @@ class ShopEvaluator:
             # Only sell if nothing great in shop
             shop_has_great = any(
                 card.get("set") == "JOKER" and _score_shop_joker(
-                    card, owned, hand_levels, strat, ante, joker_limit, deck_profile
+                    card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
+                    unique_planets_used=unique_planets_used,
                 ) >= 6.0
                 for card in shop.get("cards", [])
             )

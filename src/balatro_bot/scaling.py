@@ -308,7 +308,8 @@ ANTI_SYNERGY: dict[str, frozenset[str]] = {
     "j_mystic_summit":  frozenset({"j_banner"}),
     "j_ramen":          frozenset(_DISCARD_SCALERS_SET),
     "j_delayed_grat":   frozenset(_DISCARD_SCALERS_SET | {"j_mystic_summit"}),
-    "j_burglar":        frozenset({"j_banner"}),
+    "j_burglar":        frozenset({"j_banner", "j_drunkard", "j_merry_andy"} | _DISCARD_SCALERS_SET),
+    "j_drunkard":       frozenset({"j_burglar"}),
     # Play-count conflicts (decay vs scaling)
     "j_ice_cream":      frozenset(_PLAY_SCALERS_SET),
     # Card count conflicts

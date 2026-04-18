@@ -170,6 +170,18 @@ def post_instance_states(batch_id: int, instances: List[dict]) -> None:
     })
 
 
+def post_value_map(batch_id: int, payload: dict) -> None:
+    """Push the joker value-map snapshot for a batch.
+
+    Payload shape: ``{"scenarios": [...], "rows": [{key, name, rarity,
+    rarity_label, cost, effect_hint, values: {scenario: float}}, ...]}``.
+
+    Stored per-batch on the dashboard so tuning changes can be compared
+    batch-to-batch. No-ops when the dashboard URL is not configured.
+    """
+    _post_gzip(f"/api/ingest/batch/{batch_id}/value-map", payload)
+
+
 def post_game(batch_id: int, game_data: dict) -> None:
     """Buffer a completed game for bulk upload."""
     if not _url():

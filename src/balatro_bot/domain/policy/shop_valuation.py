@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.card import Card, CardValue
+from balatro_bot.domain.policy import utility_value
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
 from balatro_bot.scaling import SCALING_REGISTRY
@@ -648,6 +649,7 @@ def evaluate_joker_value(
     strategy: Strategy | None = None,
     joker_limit: int = 5,
     deck_profile: DeckProfile | None = None,
+    unique_planets_used: int = 0,
 ) -> float:
     """Unified joker valuation. Returns ~0.0 to ~15.0.
 
@@ -671,7 +673,15 @@ def evaluate_joker_value(
         raw_delta = _scoring_delta(candidate, owned_jokers, hand_levels, hand_types, joker_limit, strategy)
         base_value = math.log2(1.0 + max(raw_delta, 0.0)) * 3.0
     else:
-        base_value = UTILITY_VALUE.get(key, 0.0)
+        roi = utility_value.evaluate(
+            key, ante=ante, deck_profile=deck_profile,
+            owned_count=len(owned_jokers),
+            unique_planets_used=unique_planets_used,
+            strategy=strategy,
+            owned_keys=frozenset(owned_keys),
+            owned_jokers=owned_jokers,
+        )
+        base_value = roi if roi is not None else UTILITY_VALUE.get(key, 0.0)
         base_value += _utility_synergy_bonus(key, owned_keys, strategy)
 
     # Riff-Raff: dynamic value based on available slots for spawns

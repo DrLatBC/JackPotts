@@ -442,6 +442,16 @@ class Supervisor:
             # have already set the status and this becomes a no-op-ish
             # second call.
             atexit.register(self._atexit_abandon)
+
+            # Snapshot the joker value map at batch start so the dashboard can
+            # show what the bot "thinks" each joker is worth under canonical
+            # scenarios. Per-batch so valuator tuning is traceable over time.
+            try:
+                from balatro_bot.value_map import build_value_map, scenario_labels
+                payload = {"scenarios": scenario_labels(), "rows": build_value_map()}
+                dashboard_client.post_value_map(self.dashboard_batch_id, payload)
+            except Exception:
+                log.warning("value map snapshot failed", exc_info=True)
         else:
             self.dashboard_batch_id = None
             self.session_num = compute_session_number()
