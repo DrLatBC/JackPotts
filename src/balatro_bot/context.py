@@ -57,6 +57,16 @@ class RoundContext:
     best_as_finisher: HandCandidate | None = None
 
     @property
+    def card_protection(self):
+        """Build the CardProtection view from this round's strategy + state."""
+        return self.strategy.card_protection(
+            jokers=self.jokers,
+            idol_rank=self.idol_rank,
+            idol_suit=self.idol_suit,
+            scoring_suit=self.scoring_suit,
+        )
+
+    @property
     def round_outlook(self) -> str:
         """Project whether the round is winnable at the current scoring rate.
 

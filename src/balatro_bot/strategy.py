@@ -214,6 +214,85 @@ JOKER_SUIT_AFFINITY: dict[str, tuple[str, int]] = {
     "j_rough_gem": ("D", 1),
 }
 
+# Joker key -> (enhancements, weight). Jokers that care about specific
+# card enhancements — used for card protection during discards.
+JOKER_ENHANCEMENT_AFFINITY: dict[str, tuple[list[str], int]] = {
+    "j_steel_joker":  (["STEEL"], 5),
+    "j_stone":        (["STONE"], 5),
+    "j_lucky_cat":    (["LUCKY"], 4),
+    "j_glass":        (["GLASS"], 3),
+    "j_golden":       (["GOLD"], 2),
+}
+
+
+# ---------------------------------------------------------------------------
+# CardProtection — unified discard-priority scoring
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CardProtection:
+    """Protection score per card attribute. Higher = more valuable to keep.
+
+    Consolidates all signals that should shield a card from discard:
+    boss blind suit constraints, rank affinity from jokers, suit affinity,
+    enhancement affinity, and the current round's Idol target card.
+
+    `score(card)` returns a float per card — callers sort ascending (lowest
+    protection first = discard first).
+    """
+    rank_affinity: dict[str, float] = field(default_factory=dict)
+    suit_affinity: dict[str, float] = field(default_factory=dict)
+    enhancement_affinity: dict[str, float] = field(default_factory=dict)
+    idol_rank: str | None = None
+    idol_suit: str | None = None
+    scoring_suit: str | None = None         # boss-blind forced suit (Head/Club/Window)
+    blackboard: bool = False                # require Spades/Clubs in played hand
+
+    def score(self, card) -> float:
+        """Protection score for a single card. Higher = keep."""
+        from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, rank_value, _modifier
+
+        total = 0.0
+        rank = card_rank(card)
+        suit = card_suit(card)
+        all_suits = card_suits(card)
+        mod = _modifier(card) if isinstance(card, dict) else None
+        enhancement = None
+        if mod is not None:
+            enhancement = mod.get("enhancement") if isinstance(mod, dict) else None
+        elif hasattr(card, "modifier"):
+            enhancement = getattr(card.modifier, "enhancement", None)
+
+        # Hard constraints: boss blind / Blackboard — these are binary protections
+        if self.scoring_suit and self.scoring_suit in all_suits:
+            total += 50.0
+        if self.blackboard and suit in ("S", "C"):
+            total += 40.0
+
+        # Idol target — specific rank+suit match
+        if self.idol_rank and self.idol_suit and rank == self.idol_rank and self.idol_suit in all_suits:
+            total += 20.0
+
+        # Strategy affinities
+        if rank and self.rank_affinity:
+            total += self.rank_affinity.get(rank, 0.0)
+        if self.suit_affinity:
+            for s in all_suits:
+                total += self.suit_affinity.get(s, 0.0)
+        if enhancement and self.enhancement_affinity:
+            total += self.enhancement_affinity.get(enhancement, 0.0)
+
+        # Debuff penalty — debuffed cards are slightly preferred for discard,
+        # but only if nothing else protects them.
+        if is_debuffed(card):
+            total -= 0.5
+
+        # Raw card value tiebreaker — higher ranks slightly more valuable
+        if rank:
+            total += rank_value(rank) * 0.01
+
+        return total
+
 
 # ---------------------------------------------------------------------------
 # Strategy dataclass
@@ -255,6 +334,41 @@ class Strategy:
     def rank_affinity_dict(self) -> dict[str, float]:
         """Return rank affinity as a dict for fast lookup in hot paths."""
         return dict(self.preferred_ranks) if self.preferred_ranks else {}
+
+    def card_protection(
+        self,
+        jokers: list[dict] | None = None,
+        idol_rank: str | None = None,
+        idol_suit: str | None = None,
+        scoring_suit: str | None = None,
+    ) -> CardProtection:
+        """Build a CardProtection view from this strategy + round context.
+
+        Jokers contribute enhancement affinity on top of the already-computed
+        hand/suit/rank affinities. Round-specific fields (idol target, boss
+        scoring suit, Blackboard) are passed in directly.
+        """
+        enhancement_affinity: dict[str, float] = {}
+        blackboard = False
+        if jokers:
+            for j in jokers:
+                key = joker_key(j)
+                if key == "j_blackboard":
+                    blackboard = True
+                if key in JOKER_ENHANCEMENT_AFFINITY:
+                    enhs, weight = JOKER_ENHANCEMENT_AFFINITY[key]
+                    for e in enhs:
+                        enhancement_affinity[e] = enhancement_affinity.get(e, 0.0) + weight
+
+        return CardProtection(
+            rank_affinity=self.rank_affinity_dict(),
+            suit_affinity=dict(self.preferred_suits),
+            enhancement_affinity=enhancement_affinity,
+            idol_rank=idol_rank,
+            idol_suit=idol_suit,
+            scoring_suit=scoring_suit,
+            blackboard=blackboard,
+        )
 
     def has_archetype(self, name: str) -> bool:
         return any(n == name for n, _ in self.active_archetypes)

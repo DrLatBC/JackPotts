@@ -379,7 +379,7 @@ def _execute_finisher(ctx: RoundContext) -> Action | None:
 
     indices = _pad_with_junk(
         candidate.card_indices, ctx.hand_cards, ctx.jokers,
-        candidate.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit,
+        candidate.hand_name, protection=ctx.card_protection,
     )
     indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
 
@@ -410,7 +410,7 @@ def _execute_setup(ctx: RoundContext, target_type: str | None) -> Action | None:
     if match:
         indices = _pad_with_junk(
             match.card_indices, ctx.hand_cards, ctx.jokers,
-            match.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit,
+            match.hand_name, protection=ctx.card_protection,
         )
         indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
         return PlayCards(
@@ -458,7 +458,7 @@ def _execute_score(ctx: RoundContext, target_type: str | None = None) -> Action 
 
     indices = _pad_with_junk(
         candidate.card_indices, ctx.hand_cards, ctx.jokers,
-        candidate.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit,
+        candidate.hand_name, protection=ctx.card_protection,
     )
     indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
 

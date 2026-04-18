@@ -298,7 +298,7 @@ class TestCardsNotInSuitAwareness:
             preferred_suits=[("H", 5.0)],
         )
 
-        result = cards_not_in(hand, keep, strategy=strat)
+        result = cards_not_in(hand, keep, protection=strat.card_protection())
         # Spades (indices 3, 4) should appear before Hearts (1, 2)
         spade_positions = [result.index(3), result.index(4)]
         heart_positions = [result.index(1), result.index(2)]
@@ -313,9 +313,9 @@ class TestCardsNotInSuitAwareness:
         ]
         keep = {0}
 
-        with_strat = cards_not_in(hand, keep, strategy=None)
+        with_none = cards_not_in(hand, keep, protection=None)
         without = cards_not_in(hand, keep)
-        assert with_strat == without
+        assert with_none == without
 
     def test_neutral_suit_no_penalty(self):
         """Cards in suits with zero affinity shouldn't be penalized vs each other."""
@@ -331,6 +331,6 @@ class TestCardsNotInSuitAwareness:
             preferred_suits=[],  # no suit preference
         )
 
-        result = cards_not_in(hand, keep, strategy=strat)
+        result = cards_not_in(hand, keep, protection=strat.card_protection())
         # All three should sort by rank affinity/rank value, not suit
         assert len(result) == 3

@@ -15,7 +15,7 @@ from balatro_bot.domain.scoring.classify import classify_hand
 
 if TYPE_CHECKING:
     from typing import Any
-    from balatro_bot.strategy import Strategy
+    from balatro_bot.strategy import CardProtection, Strategy
 
 log = logging.getLogger("balatro_bot")
 
@@ -28,6 +28,7 @@ def _pad_with_junk(
     max_cards: int = 5,
     strategy: Strategy | None = None,
     scoring_suit: str | None = None,
+    protection: CardProtection | None = None,
 ) -> list[int]:
     """Pad a hand with junk cards for free deck cycling.
 
@@ -58,16 +59,13 @@ def _pad_with_junk(
     shortcut = "j_shortcut" in jk
     smeared = "j_smeared" in jk
 
-    has_blackboard = "j_blackboard" in jk
-    rank_affinity = strategy.rank_affinity_dict() if strategy else None
+    if protection is None and strategy is not None:
+        protection = strategy.card_protection(jokers=jokers, scoring_suit=scoring_suit)
 
     # cards_not_in returns non-keep indices sorted worst-first (discard priority)
     junk_priority = cards_not_in(
         hand_cards, set(card_indices),
-        blackboard=has_blackboard,
-        rank_affinity=rank_affinity,
-        scoring_suit=scoring_suit,
-        strategy=strategy,
+        protection=protection,
     )
 
     # For High Card, junk must not outrank the scoring card or it becomes

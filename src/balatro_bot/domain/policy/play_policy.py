@@ -42,7 +42,7 @@ def choose_winning_play(ctx: RoundContext) -> Action | None:
         return None
     effective_score = ctx.best.total * ctx.score_discount
     if effective_score >= ctx.chips_remaining:
-        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit)
+        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
         indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
         return PlayCards(
             indices,
@@ -116,7 +116,7 @@ def choose_high_value_play(ctx: RoundContext) -> Action | None:
         )
         return None
 
-    indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit)
+    indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
     indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
     return PlayCards(
         indices,
@@ -136,7 +136,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
     if ctx.blind_name == "The Needle" and ctx.discards_left > 0:
         if ctx.best:
             keep = set(ctx.best.card_indices)
-            to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit, strategy=ctx.strategy)[:min(5, ctx.discards_left)]
+            to_discard = cards_not_in(ctx.hand_cards, keep, protection=ctx.card_protection)[:min(5, ctx.discards_left)]
             if to_discard:
                 return DiscardCards(to_discard, reason="Needle: use all discards to find winning hand")
         return None
@@ -146,12 +146,12 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
     if (ctx.best and ctx.best.total < ctx.chips_remaining
             and ctx.discards_left > 0 and len(ctx.best.card_indices) < 5):
         keep = set(ctx.best.card_indices)
-        to_discard = cards_not_in(ctx.hand_cards, keep, rank_affinity=ctx.strategy.rank_affinity_dict(), scoring_suit=ctx.scoring_suit, strategy=ctx.strategy)[:min(5, ctx.discards_left)]
+        to_discard = cards_not_in(ctx.hand_cards, keep, protection=ctx.card_protection)[:min(5, ctx.discards_left)]
         if to_discard:
             return DiscardCards(to_discard, reason="last resort discard (hand too weak, searching for better)")
 
     if ctx.best:
-        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit)
+        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
         indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
         return PlayCards(
             indices,
@@ -187,7 +187,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
             hands_left=ctx.hands_left,
         )
         if unconstrained:
-            indices = _pad_with_junk(unconstrained.card_indices, ctx.hand_cards, ctx.jokers, unconstrained.hand_name, strategy=ctx.strategy, scoring_suit=ctx.scoring_suit)
+            indices = _pad_with_junk(unconstrained.card_indices, ctx.hand_cards, ctx.jokers, unconstrained.hand_name, protection=ctx.card_protection)
             indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy)
             return PlayCards(
                 indices,
