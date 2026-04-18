@@ -660,6 +660,16 @@ def evaluate_joker_value(
             floor *= max(0.4, (6 - ante) / 5.0)
             base_value = max(base_value, floor)
 
+    # Madness fodder: extra bodies dilute Madness's random-eat, protecting real
+    # scalers. No bonus when slots are full (no room for fodder) or when the
+    # candidate is Madness itself.
+    if (
+        key != "j_madness"
+        and "j_madness" in owned_keys
+        and len(owned_jokers) < joker_limit
+    ):
+        base_value += 2.0 / max(1, len(owned_jokers) - 1)
+
     # Deck composition adjustment — boost/gate jokers based on deck contents
     if deck_profile is not None:
         base_value = _deck_composition_adjustment(key, base_value, deck_profile, strategy)

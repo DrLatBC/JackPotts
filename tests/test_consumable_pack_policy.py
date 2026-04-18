@@ -72,18 +72,21 @@ class TestScoreConsumable:
         score = score_consumable("c_mercury", state, strat)  # Pair planet
         assert score > 5.0
 
-    def test_planet_off_strategy_no_constellation(self):
+    def test_planet_off_strategy_common_hand_floor(self):
+        # Mercury (Pair) is a common hand — floors at 3.0 even off-strategy
+        # since leveling Pair compounds every round regardless of roster.
         state = _state()
         strat = compute_strategy([], HAND_LEVELS)
         score = score_consumable("c_mercury", state, strat)
-        assert score == 0.0
+        assert score == 3.0
 
     def test_planet_with_constellation(self):
+        # Common-hand floor (3.0) + Constellation bonus (2.0)
         jks = [joker("j_constellation")]
         state = _state(jokers=jks)
         strat = compute_strategy(jks, HAND_LEVELS)
         score = score_consumable("c_mercury", state, strat)
-        assert score == 3.0  # off-strategy but constellation
+        assert score == 5.0
 
     def test_judgement_with_open_slot(self):
         state = _state()
