@@ -41,8 +41,45 @@ def choose_winning_play(ctx: RoundContext) -> Action | None:
     if not ctx.best:
         return None
     effective_score = ctx.best.total * ctx.score_discount
+
+    # The Ox: playing the most-played hand type zeroes your money.
+    # Try to find a winning alternative hand type first.
+    if (ctx.blind_name == "The Ox" and ctx.ox_most_played
+            and ctx.best.hand_name == ctx.ox_most_played
+            and effective_score >= ctx.chips_remaining):
+        from balatro_bot.domain.scoring.search import best_hand
+        excluded = set(ctx.eye_used_hands or set()) | {ctx.ox_most_played}
+        alt = best_hand(
+            ctx.hand_cards, ctx.hand_levels,
+            min_select=ctx.min_cards, jokers=ctx.jokers,
+            money=ctx.money, discards_left=ctx.discards_left,
+            hands_left=ctx.hands_left,
+            ancient_suit=ctx.ancient_suit,
+            excluded_hands=excluded,
+            deck_cards=ctx.deck_cards,
+            blind_name=ctx.blind_name,
+            ox_most_played=ctx.ox_most_played,
+            idol_rank=ctx.idol_rank,
+            idol_suit=ctx.idol_suit,
+        )
+        if alt and alt.total * ctx.score_discount >= ctx.chips_remaining:
+            log.info("Ox avoidance: play %s (%d) instead of %s (saves money)",
+                     alt.hand_name, alt.total, ctx.ox_most_played)
+            indices = _sort_play_order(list(alt.card_indices), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            return PlayCards(
+                indices,
+                reason=f"Ox avoidance: {alt.hand_name} for {alt.total} (saves ${ctx.money})",
+                hand_name=alt.hand_name,
+                total=alt.total,
+            )
+
     if effective_score >= ctx.chips_remaining:
-        indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
+        # The Tooth: each played card costs $1. Skip padding when winning —
+        # extra cards are pure economy loss with no scoring benefit.
+        if ctx.blind_name == "The Tooth":
+            indices = list(ctx.best.card_indices)
+        else:
+            indices = _pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
         indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         return PlayCards(
             indices,
@@ -132,11 +169,14 @@ def choose_high_value_play(ctx: RoundContext) -> Action | None:
 
 def choose_best_available(ctx: RoundContext) -> Action | None:
     """Last resort: play the best hand we have, even if it won't clear."""
+    # The Serpent: only 3 cards drawn back per discard — cap at 1 (nets +2).
+    _size_cap = 1 if ctx.blind_name == "The Serpent" else 5
+
     # The Needle: keep discarding if we have discards — don't give up
     if ctx.blind_name == "The Needle" and ctx.discards_left > 0:
         if ctx.best:
             keep = set(ctx.best.card_indices)
-            to_discard = cards_not_in(ctx.hand_cards, keep, protection=ctx.card_protection)[:min(5, ctx.discards_left)]
+            to_discard = cards_not_in(ctx.hand_cards, keep, protection=ctx.card_protection)[:min(_size_cap, ctx.discards_left)]
             if to_discard:
                 return DiscardCards(to_discard, reason="Needle: use all discards to find winning hand")
         return None
@@ -146,7 +186,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
     if (ctx.best and ctx.best.total < ctx.chips_remaining
             and ctx.discards_left > 0 and len(ctx.best.card_indices) < 5):
         keep = set(ctx.best.card_indices)
-        to_discard = cards_not_in(ctx.hand_cards, keep, protection=ctx.card_protection)[:min(5, ctx.discards_left)]
+        to_discard = cards_not_in(ctx.hand_cards, keep, protection=ctx.card_protection)[:min(_size_cap, ctx.discards_left)]
         if to_discard:
             return DiscardCards(to_discard, reason="last resort discard (hand too weak, searching for better)")
 
@@ -167,7 +207,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
         if ctx.discards_left > 0:
             suggestions = discard_candidates(
                 ctx.hand_cards, ctx.hand_levels,
-                max_discard=min(5, ctx.discards_left),
+                max_discard=min(_size_cap, ctx.discards_left),
                 deck_cards=ctx.deck_cards,
                 chips_remaining=ctx.chips_remaining,
                 jokers=ctx.jokers,

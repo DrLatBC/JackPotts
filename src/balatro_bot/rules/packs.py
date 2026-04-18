@@ -276,7 +276,10 @@ class PickFromStandardPack:
         "STEEL": 5.0, "GLASS": 4.0, "LUCKY": 3.0, "MULT": 3.0,
         "WILD": 2.0, "BONUS": 2.0, "GOLD": 2.0,
     }
-    _SEAL_BONUS = {"GOLD": 3.0, "RED": 4.0, "BLUE": 2.0, "PURPLE": 2.0}
+    # Red retrigger is the strongest seal (effectively doubles the card's
+    # contribution every play). Gold $3/play is solid economy. Blue/Purple
+    # are conditional (held-at-end / discarded) but still free value.
+    _SEAL_BONUS = {"RED": 6.0, "GOLD": 4.0, "BLUE": 3.0, "PURPLE": 3.0}
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         pack = state.get("pack", {})

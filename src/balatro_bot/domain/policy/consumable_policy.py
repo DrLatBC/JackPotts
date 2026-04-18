@@ -291,6 +291,29 @@ def _score_targeting_tarot(
     if effect_type == "rank_up":
         return _RANK_UP_VALUE
 
+    if effect_type == "seal":
+        # Red = best for scoring (retrigger compounds with everything).
+        # Gold = economy value scales with remaining rounds.
+        # Blue = planet at round end if held (steady value).
+        # Purple = free tarot on discard (conditional on discard activity).
+        seal = (extra or "").upper()
+        if seal == "RED":
+            base = 4.0
+            if ante <= _EARLY_ANTE_CUTOFF:
+                base *= _EARLY_ANTE_ENHANCE_BONUS
+            return base
+        if seal == "GOLD":
+            # Similar logic to Devil (gold enhancement) but weaker — only 1 card.
+            return max(1.5, remaining_rounds * _DEVIL_INCOME_PER_ROUND / (_DEVIL_DIVISOR * 2))
+        if seal == "BLUE":
+            # Planet at round end — best when focused strategy plays same hand type.
+            top_aff = strat.preferred_hands[0][1] if strat and strat.preferred_hands else 0.0
+            return 2.0 + min(top_aff, 3.0) * 0.3
+        if seal == "PURPLE":
+            # Tarot on discard — worth it if we actually discard regularly.
+            return 2.0
+        return _TARGETING_FALLBACK
+
     return _TARGETING_FALLBACK
 
 

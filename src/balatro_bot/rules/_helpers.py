@@ -361,13 +361,39 @@ def _find_clone_targets(hand_cards, strategy=None):
     return (best_idx, worst_idx)
 
 
-def _find_seal_targets(hand_cards, count):
+def _find_seal_targets(hand_cards, count, seal_type=None, strategy=None, current_best=None):
+    """Pick targets for a seal-applying consumable.
+
+    Red/Gold: best scoring card (plays often, compounds). Prefer on-strategy.
+    Blue: card that will be HELD not played — off-strategy / low rank.
+    Purple: card to discard — off-strategy / low rank.
+    """
+    seal = (seal_type or "").upper()
+    prefer_scoring = seal in ("RED", "GOLD")
+    scoring_set = set(current_best.card_indices) if current_best else set()
+    rank_aff = strategy.rank_affinity_dict() if strategy else {}
+    suit_aff = dict(strategy.preferred_suits) if strategy else {}
+
     candidates = []
     for i, c in enumerate(hand_cards):
         r = card_rank(c)
-        if r and not _modifier(c).get("seal"):
-            candidates.append((i, rank_value(r)))
-    candidates.sort(key=lambda x: -x[1])
+        if not r or _modifier(c).get("seal"):
+            continue
+        rv = rank_value(r)
+        aff = rank_aff.get(r, 0.0)
+        s = card_suit(c)
+        if s:
+            aff += suit_aff.get(s, 0.0)
+        in_scoring = 1 if i in scoring_set else 0
+        if prefer_scoring:
+            # Rank high, on-strategy, in current scoring set all boost
+            score = rv + aff * 2.0 + in_scoring * 5.0
+            candidates.append((i, -score))
+        else:
+            # Off-strategy, low rank, not in scoring set all boost (we want to keep/discard this one)
+            score = rv + aff * 2.0 + in_scoring * 5.0
+            candidates.append((i, score))
+    candidates.sort(key=lambda x: x[1])
     return [i for i, _ in candidates[:count]]
 
 
@@ -439,7 +465,9 @@ def _find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, strat
         targets = _find_deck_enhance_targets(hand_cards, max_count)
         return (targets, 2.0) if targets else (None, 0)
     if effect_type == "seal":
-        targets = _find_seal_targets(hand_cards, max_count)
+        targets = _find_seal_targets(hand_cards, max_count,
+                                     seal_type=extra, strategy=strat,
+                                     current_best=current_best)
         return (targets, 2.0) if targets else (None, 0)
     if effect_type == "edition":
         targets = _find_edition_targets(hand_cards, max_count)

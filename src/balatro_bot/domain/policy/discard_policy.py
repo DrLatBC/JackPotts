@@ -39,6 +39,18 @@ KEEP_DISCARDS_JOKERS = {
 N_SAMPLES = 30          # Monte Carlo samples per unique keep set
 
 
+def _discard_size_cap(ctx: RoundContext) -> int:
+    """Max cards per discard based on boss blind.
+
+    The Serpent: only 3 cards drawn back per play/discard. Discarding 1 nets
+    +2 cards (free deck cycling); discarding N>=2 is neutral-to-negative.
+    Cap at 1 unless a specific trigger requires more (none currently tracked).
+    """
+    if ctx.blind_name == "The Serpent":
+        return 1
+    return 5
+
+
 def choose_discard(ctx: RoundContext) -> Action | None:
     """Decide whether and what to discard to improve the hand.
 
@@ -65,7 +77,7 @@ def choose_discard(ctx: RoundContext) -> Action | None:
     if len(ctx.best.card_indices) >= 5:
         suggestions = discard_candidates(
             ctx.hand_cards, ctx.hand_levels,
-            max_discard=min(5, ctx.discards_left),
+            max_discard=min(5, ctx.discards_left, _discard_size_cap(ctx)),
             deck_cards=ctx.deck_cards,
             chips_remaining=ctx.chips_remaining,
             jokers=ctx.jokers,
@@ -80,7 +92,7 @@ def choose_discard(ctx: RoundContext) -> Action | None:
         extra_count = len(ctx.hand_cards) - 5
         if extra_count > 0 and outlook == "hopeless":
             extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), protection=ctx.card_protection)
-            to_discard = extras[:min(extra_count, ctx.discards_left, 5)]
+            to_discard = extras[:min(extra_count, ctx.discards_left, _discard_size_cap(ctx))]
             if to_discard:
                 return DiscardCards(
                     to_discard,
@@ -97,7 +109,7 @@ def choose_discard(ctx: RoundContext) -> Action | None:
 
     suggestions = discard_candidates(
         ctx.hand_cards, ctx.hand_levels,
-        max_discard=min(5, ctx.discards_left),
+        max_discard=min(5, ctx.discards_left, _discard_size_cap(ctx)),
         deck_cards=ctx.deck_cards,
         chips_remaining=ctx.chips_remaining,
         jokers=ctx.jokers,

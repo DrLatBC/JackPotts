@@ -72,7 +72,8 @@ _PLAN_MARGIN_WALL = 1.8
 # The Mouth: locks hand type on first play, junk = locked into High Card.
 # The Flint: halves base chips+mult, can't afford to waste any hand.
 # The Eye: no repeat hand types — milking burns through types needed for scoring.
-_NO_MILK_BOSSES = {"The Mouth", "The Flint", "The Eye"}
+# The Serpent: only 3 cards drawn after each play — playing 5 nets -2 cards.
+_NO_MILK_BOSSES = {"The Mouth", "The Flint", "The Eye", "The Serpent"}
 
 
 # ---------------------------------------------------------------------------

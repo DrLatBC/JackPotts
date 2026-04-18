@@ -54,6 +54,8 @@ class RoundContext:
     idol_suit: str | None = None
     eye_used_hands: set[str] | None = None
     scoring_suit: str | None = None
+    debuffed_suit: str | None = None
+    ox_most_played: str | None = None
     best_as_finisher: HandCandidate | None = None
 
     @property
@@ -64,6 +66,9 @@ class RoundContext:
             idol_rank=self.idol_rank,
             idol_suit=self.idol_suit,
             scoring_suit=self.scoring_suit,
+            debuffed_suit=self.debuffed_suit,
+            discards_left=self.discards_left,
+            heavy_debuff=(self.blind_name == "The Pillar"),
         )
 
     @property
@@ -146,6 +151,7 @@ class RoundContext:
             }
 
         scoring_suit = None
+        debuffed_suit = None
         if not boss_disabled:
             if blind_name == "The Head":
                 scoring_suit = "H"
@@ -153,6 +159,8 @@ class RoundContext:
                 scoring_suit = "C"
             elif blind_name == "The Window":
                 scoring_suit = "D"
+            elif blind_name == "The Goad":
+                debuffed_suit = "S"
 
         chips_scored = snapshot.round.chips
         hands_left = snapshot.round.hands_left
@@ -240,6 +248,8 @@ class RoundContext:
             idol_suit=idol_suit,
             eye_used_hands=eye_used_hands,
             scoring_suit=scoring_suit,
+            debuffed_suit=debuffed_suit,
+            ox_most_played=ox_most_played,
             money=money,
             ante=snapshot.ante,
             round_num=snapshot.round_num,

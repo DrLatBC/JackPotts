@@ -263,7 +263,10 @@ class CardProtection:
     idol_rank: str | None = None
     idol_suit: str | None = None
     scoring_suit: str | None = None         # boss-blind forced suit (Head/Club/Window)
+    debuffed_suit: str | None = None        # boss-blind debuffed suit (The Goad = Spades)
     blackboard: bool = False                # require Spades/Clubs in played hand
+    discards_left: int = 0                  # affects purple-seal anti-protection
+    heavy_debuff: bool = False              # Pillar: debuffed = permanently dead this round
 
     def score(self, card) -> float:
         """Protection score for a single card. Higher = keep."""
@@ -273,16 +276,15 @@ class CardProtection:
         rank = card_rank(card)
         suit = card_suit(card)
         all_suits = card_suits(card)
-        mod = _modifier(card) if isinstance(card, dict) else None
-        enhancement = None
-        if mod is not None:
-            enhancement = mod.get("enhancement") if isinstance(mod, dict) else None
-        elif hasattr(card, "modifier"):
-            enhancement = getattr(card.modifier, "enhancement", None)
+        mod = _modifier(card)
+        enhancement = mod.get("enhancement") if isinstance(mod, dict) else None
+        seal = mod.get("seal") if isinstance(mod, dict) else None
 
         # Hard constraints: boss blind / Blackboard — these are binary protections
         if self.scoring_suit and self.scoring_suit in all_suits:
             total += 50.0
+        if self.debuffed_suit and self.debuffed_suit in all_suits:
+            total -= 50.0
         if self.blackboard and suit in ("S", "C"):
             total += 40.0
 
@@ -299,10 +301,23 @@ class CardProtection:
         if enhancement and self.enhancement_affinity:
             total += self.enhancement_affinity.get(enhancement, 0.0)
 
-        # Debuff penalty — debuffed cards are slightly preferred for discard,
-        # but only if nothing else protects them.
+        # Seal value — Red/Gold/Blue protect, Purple anti-protects (prefer discard).
+        # Purple only anti-protects when we actually have discards available.
+        if seal == "RED":
+            total += 15.0
+        elif seal == "BLUE":
+            total += 8.0
+        elif seal == "GOLD":
+            total += 6.0
+        elif seal == "PURPLE" and self.discards_left > 0:
+            total -= 10.0
+
+        # Debuff penalty. Normally small — debuffed cards may still be useful
+        # for hand classification (e.g. a debuffed face in a Pair still counts).
+        # Under The Pillar, the debuff is permanent for the round and the card
+        # is pure dead weight — push strongly toward discard.
         if is_debuffed(card):
-            total -= 0.5
+            total -= 20.0 if self.heavy_debuff else 0.5
 
         # Raw card value tiebreaker — higher ranks slightly more valuable
         if rank:
@@ -358,6 +373,9 @@ class Strategy:
         idol_rank: str | None = None,
         idol_suit: str | None = None,
         scoring_suit: str | None = None,
+        debuffed_suit: str | None = None,
+        discards_left: int = 0,
+        heavy_debuff: bool = False,
     ) -> CardProtection:
         """Build a CardProtection view from this strategy + round context.
 
@@ -384,7 +402,10 @@ class Strategy:
             idol_rank=idol_rank,
             idol_suit=idol_suit,
             scoring_suit=scoring_suit,
+            debuffed_suit=debuffed_suit,
             blackboard=blackboard,
+            discards_left=discards_left,
+            heavy_debuff=heavy_debuff,
         )
 
     def has_archetype(self, name: str) -> bool:
