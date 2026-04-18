@@ -785,7 +785,10 @@ class ShopEvaluator:
         shop = state.get("shop", {})
         packs = state.get("packs", {})
         vouchers = state.get("vouchers", {})
-        owned_vouchers: set[str] = set(state.get("used_vouchers", {}).keys())
+        used_vouchers_raw = state.get("used_vouchers", {})
+        owned_vouchers: set[str] = (
+            set(used_vouchers_raw.keys()) if isinstance(used_vouchers_raw, dict) else set()
+        )
         consumables_info = state.get("consumables", {})
         consumables = consumables_info.get("cards", [])
 
