@@ -599,6 +599,18 @@ def _scoring_delta(
     joker_limit = ctx.joker_limit
     strategy = ctx.strategy
 
+    # Card Sharp only fires when the played hand type already has
+    # played_this_round > 0. Fresh hand_levels dicts always have 0, so the
+    # sim would zero Card Sharp out. Synthesize a repeat-play state for this
+    # evaluation — the proc-rate correction in evaluate_joker_value then
+    # discounts for the fact that not every hand is a repeat.
+    candidate_key_early = ctx.candidate_key
+    if "j_card_sharp" in (set(ctx.owned_keys) | {candidate_key_early}):
+        hand_levels = {
+            h: {**v, "played_this_round": max(1, v.get("played_this_round", 0))}
+            for h, v in hand_levels.items()
+        }
+
     # Filter candidate from owned to handle sell evaluations correctly
     candidate_key = ctx.candidate_key
     baseline_jokers = [j for j in owned_jokers if j is not ctx.candidate]
@@ -1038,6 +1050,20 @@ def evaluate_joker_value(
         if key == "j_flower_pot":
             proc_rate = 0.70 if "j_smeared" in owned_keys else 0.30
             raw_delta *= proc_rate
+        # Acrobat fires only on hands_left == 1 (finisher). The sim defaults
+        # hands_left=1 so the X3 always fires. Discount to reflect that it
+        # hits 1 of ~3.5 hands per round — but that 1 hand is the planned
+        # finisher (biggest scoring hand, compounds with other late-hand
+        # scalers like Dusk), so rate > pure 1/3.5.
+        elif key == "j_acrobat":
+            raw_delta *= 0.45
+        # Card Sharp fires only on repeat-type plays (played_this_round > 0).
+        # We synthesized played_this_round=1 above so the X3 fires in the
+        # sim; discount for the fact that not every hand is a repeat. Bot
+        # reliably commits to hand-type repeats via hand_sequencing, and the
+        # repeat hands are the later/bigger ones, so rate > pure 2/3.5.
+        elif key == "j_card_sharp":
+            raw_delta *= 0.65
         # Phase 3: rank-per-card jokers fire once per scored target rank. The
         # synthetic hand forces its target rank into a scoring slot (so the
         # effect fires at all), but how often that rank realistically shows up
