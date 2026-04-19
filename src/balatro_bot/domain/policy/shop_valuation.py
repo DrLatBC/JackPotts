@@ -17,9 +17,13 @@ from typing import TYPE_CHECKING
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.card import Card, CardModifier, CardValue
 from balatro_bot.domain.policy import utility_value
+from balatro_bot.domain.policy.scaling_projection import (
+    project_additive_total,
+    project_total_xmult,
+)
 from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring.estimate import score_hand
-from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
+from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
 from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE, SCALING_REGISTRY
 from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,
@@ -101,12 +105,6 @@ SIM_COEFF_DEFAULT = 3.0  # uncategorized jokers
 PIVOT_FLOOR_A1 = 2.5        # floor at ante 1
 PIVOT_FLOOR_DECAY = 0.5     # subtract this per ante (hits 0 at ante 6)
 PIVOT_FLOOR_THRESHOLD = 2.5  # sim base_value must be below this to trigger floor
-
-# Gate the "Currently X…" effect-text floor to true scaling jokers only.
-# Before this existed, raw xmult × 5.0 was an unconditional floor that
-# clobbered correctly-low sim values for hand/suit/rank-conditional jokers.
-SCALING_DP_FLOOR_ENABLED = True
-
 
 # ---------------------------------------------------------------------------
 # Utility joker base values (moved from shop.py)
@@ -1041,16 +1039,23 @@ def evaluate_joker_value(
             # Room for Riff-Raff + 2 spawns — full value
             base_value = 2.0 if ante <= 3 else 1.0
 
-    # For scaling jokers (Madness, Hologram, Campfire, etc.) the effect text
-    # carries live "(Currently X…)" anchors worth trusting as a floor. For
-    # non-scaling conditional jokers (Duo/Trio/Tribe/Family/Order, Acrobat,
-    # Photograph, …) the parsed xmult × 5 is a misleading ceiling that
-    # ignores trigger conditions — let the scoring simulation speak instead.
-    effect_text = candidate.get("value", {}).get("effect", "")
-    if effect_text and SCALING_DP_FLOOR_ENABLED and key in SCALING_REGISTRY:
-        parsed = parse_effect_value(effect_text)
-        dp = _dynamic_power(parsed)
-        base_value = max(base_value, dp)
+    # Scaling-joker projection (Phase 4, issue #36): for every joker with a
+    # ScalingProfile, predict end-of-run state as (live_anchor + projected
+    # gain) and floor the sim with the same xmult × 5 / mult / 5 / chips / 50
+    # conversion used for the live anchor alone. Live anchor comes from
+    # ``ctx.lifetime`` (parsed from owned effect text); projection uses
+    # per-joker trigger-rate models in ``scaling_projection``.
+    if key in SCALING_REGISTRY:
+        effect_text = candidate.get("value", {}).get("effect", "") or ""
+        total_xmult = project_total_xmult(key, ctx)
+        total_chips, total_mult = project_additive_total(key, ctx, effect_text)
+        projected_end = {
+            "xmult": total_xmult if total_xmult > 1.0 else None,
+            "chips": total_chips if total_chips > 0 else None,
+            "mult": total_mult if total_mult > 0 else None,
+        }
+        projected_floor = _dynamic_power(projected_end)
+        base_value = max(base_value, projected_floor)
 
     # Hand-conditional xmult jokers read ~0 from the simulation when the
     # roster hasn't committed to their trigger hand. Correct for committed
@@ -1061,58 +1066,6 @@ def evaluate_joker_value(
         aligned = any(strategy.hand_affinity(h) > 0 for h in target_hands)
         if not aligned:
             floor = max(0.0, PIVOT_FLOOR_A1 - (ante - 1) * PIVOT_FLOOR_DECAY)
-            base_value = max(base_value, floor)
-
-    # Scaling runway floor: cheap scalers read at near-zero current power but
-    # grow substantially over remaining rounds. Floor them early so they don't
-    # get skipped in favor of one-shot static mults (Swashbuckler etc).
-    # Decays with ante — at ante 6+ there's no runway left to justify a floor.
-    if ante <= 5:
-        profile = SCALING_REGISTRY.get(key)
-        if profile and profile.milk_priority >= 1:
-            if profile.milk_priority >= 3:
-                floor = 4.0
-            elif profile.milk_priority >= 2:
-                floor = 3.0
-            else:
-                floor = 2.0
-            floor *= max(0.4, (6 - ante) / 5.0)
-            base_value = max(base_value, floor)
-
-    # Passive xmult scalers (milk_priority=0: Madness, Hologram, Canio,
-    # Lucky Cat, Glass) read at X1.0 baseline in the sim but accumulate
-    # meaningful xmult over remaining rounds with no play commitment. Project
-    # a future-value floor = gain_per × estimated trigger count × sim coeff.
-    if ante <= 6:
-        profile = SCALING_REGISTRY.get(key)
-        if (
-            profile
-            and profile.milk_priority == 0
-            and profile.gain_type == "xmult"
-            and profile.gain_per > 0
-        ):
-            rounds_left = max(0, 8 - ante + 1)
-            # Per-round trigger estimate: once/blind for passives (Madness,
-            # Canio on blind), a few per round for per-card (Lucky Cat,
-            # Hologram, Glass).
-            if key in ("j_madness", "j_canio"):
-                triggers_per_round = 1.0
-            else:
-                triggers_per_round = 2.0
-            projected_xmult_gain = profile.gain_per * triggers_per_round * rounds_left
-            # Halve — not all rounds realize full gain (bosses, early death).
-            projected_xmult_gain *= 0.5
-            # Phase 3: Lucky Cat and Glass gain only when the matching
-            # enhancement exists in the deck. Scale their projected floor by
-            # deck count so an empty-deck Lucky Cat doesn't float on a hollow
-            # floor identical to a 4-Lucky deck.
-            if key == "j_lucky_cat":
-                lucky_count = deck_profile.enhancement_counts.get("LUCKY", 0) if deck_profile else 0
-                projected_xmult_gain *= min(lucky_count / 4.0, 2.0)
-            elif key == "j_glass":
-                glass_count = deck_profile.enhancement_counts.get("GLASS", 0) if deck_profile else 0
-                projected_xmult_gain *= min(glass_count / 4.0, 2.0)
-            floor = math.log2(1.0 + projected_xmult_gain) * SIM_COEFF_XMULT
             base_value = max(base_value, floor)
 
     # Madness fodder: extra bodies dilute Madness's random-eat, protecting real

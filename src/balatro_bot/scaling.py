@@ -197,6 +197,10 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
         "j_madness", "passive", "xmult", 0.5, True, 0,
         "+X0.5 per blind select. Destroys a random joker. Run-defining.",
     ),
+    "j_throwback": ScalingProfile(
+        "j_throwback", "skip_blind", "xmult", 0.25, True, 0,
+        "+X0.25 per blind skipped this run. Passive scaler driven by skip policy.",
+    ),
     "j_ceremonial": ScalingProfile(
         "j_ceremonial", "passive", "mult", 0, True, 0,
         "Absorbs sell value of right joker. Park fodder to the right.",

@@ -23,8 +23,9 @@ from balatro_bot.constants import (
 )
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.shop_valuation import (
-    _KEY_TO_CATEGORY, evaluate_joker_value, parse_effect_value,
+    _KEY_TO_CATEGORY, evaluate_joker_value,
 )
+from balatro_bot.joker_effects.parsers import parse_effect_value
 from balatro_bot.joker_effects.scoring_phase import (
     get_joker_phase, get_joker_edition_phase,
     PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
