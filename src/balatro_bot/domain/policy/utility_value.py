@@ -511,7 +511,7 @@ def _cartomancer_dollars(ante: int, **_: object) -> float:
 
     3 blinds per remaining ante (inclusive of current). Always-on generator.
     """
-    blinds_remaining = max(1, (9 - ante)) * 3
+    blinds_remaining = max(1, (8 - ante)) * 3
     return _TAROT_DOLLARS * blinds_remaining
 
 
@@ -520,7 +520,7 @@ def _hallucination_dollars(ante: int, **_: object) -> float:
 
     Bot opens ≈2 packs per ante on average. Value = 0.4 × 2 × antes_remaining × tarot_$.
     """
-    packs_remaining = max(1, (9 - ante)) * 2
+    packs_remaining = max(1, (8 - ante)) * 2
     return 0.4 * _TAROT_DOLLARS * packs_remaining
 
 
@@ -686,7 +686,7 @@ def _marble_dollars(
     willingness to play deck-polluting cards (Stone breaks flushes/straights).
     Massive with Stone Joker (X0.25 mult per Stone in full deck).
     """
-    blinds_remaining = max(1, (9 - ante)) * 3
+    blinds_remaining = max(1, (8 - ante)) * 3
     per_stone = 0.6  # +50 chips × realization when actually scored
     if "j_stone" in owned_keys:
         per_stone += 2.0  # Stone Joker xmult scaling

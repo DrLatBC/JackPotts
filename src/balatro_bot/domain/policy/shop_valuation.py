@@ -657,7 +657,9 @@ def _scoring_delta(
     # ReorderJokersForScoring (chips→mult→xmult). Without this the sim scores
     # in owned order and understates jokers that benefit from being placed
     # rightmost (Hologram after chips/mult) or left of xmult (Blueprint).
+    # Joker order doesn't depend on hand type, so reorder once outside the loop.
     baseline_jokers = reorder_for_scoring(baseline_jokers)
+    with_jokers = reorder_for_scoring(_place_candidate(list(baseline_jokers)))
 
     samples = max(0, ctx.monte_carlo_samples)
 
@@ -674,8 +676,6 @@ def _scoring_delta(
             scoring_cards = _rewrite_suits(scoring_cards, ["C"] + ["H"] * (len(scoring_cards) - 1))
             played_cards = scoring_cards + played_cards[len(scoring_cards):]
 
-        with_jokers = reorder_for_scoring(_place_candidate(list(baseline_jokers)))
-
         def _score(jokers: list, rng=None) -> tuple[int, int, int]:
             return score_hand(
                 hand_name, scoring_cards, hand_levels,
@@ -687,15 +687,15 @@ def _scoring_delta(
             )
 
         if samples > 0:
-            # Deterministic seeds per (candidate_key, hand_name, sample) so
-            # different candidates compared against each other share noise.
+            # Common random numbers: same seed for baseline and candidate so
+            # paired-difference variance shrinks (shared noise on Misprint /
+            # Lucky Cat / Bloodstone rolls cancels between the two sims).
             base_sum = 0.0
             cand_sum = 0.0
             for s in range(samples):
-                seed_b = hash((candidate_key, hand_name, "b", s)) & 0xFFFFFFFF
-                seed_c = hash((candidate_key, hand_name, "c", s)) & 0xFFFFFFFF
-                base_sum += _score(baseline_jokers, random.Random(seed_b))[2]
-                cand_sum += _score(with_jokers, random.Random(seed_c))[2]
+                seed = hash((candidate_key, hand_name, s)) & 0xFFFFFFFF
+                base_sum += _score(baseline_jokers, random.Random(seed))[2]
+                cand_sum += _score(with_jokers, random.Random(seed))[2]
             baseline_total = base_sum / samples
             candidate_total = cand_sum / samples
         else:
@@ -1123,7 +1123,12 @@ def evaluate_joker_value(
     context = _context_scale(key, owned_jokers, ante)
 
     # Layer 4 (Phase 7): boss-blind adjustment. In-round uses the active boss;
-    # shop phase blends across the upcoming-boss pool.
+    # shop phase blends across the upcoming-boss pool. Note: if the caller
+    # passed a blind_name that isn't in _BOSS_TEMPLATES (non-templated boss
+    # like Verdant Leaf / Cerulean Bell / Crimson Heart), from_name() returns
+    # None and ctx.boss stays unset — we fall back to the shop blend even
+    # mid-round. That's intentional: the blend is a reasonable prior when we
+    # have no specific adjustment logic for the active boss.
     if ctx.boss is not None:
         boss_mult = boss_multiplier(key, ctx.boss)
     else:

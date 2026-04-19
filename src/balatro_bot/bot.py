@@ -543,16 +543,17 @@ def run_bot(
                 })
             if method == "sell":
                 sold_name = getattr(action, "reason", "") or "?"
+                item_type: str | None = None
                 if hasattr(action, "index"):
-                    # Try to get the item name from pre-state
                     if "joker" in (params or {}):
-                        jokers = state.get("jokers", {}).get("cards", [])
+                        item_type = "joker"
                         sold_name = "joker"
                     elif "consumable" in (params or {}):
+                        item_type = "consumable"
                         sold_name = "consumable"
                 gs.shop_events.append({
                     "ante": _ante, "event_type": "sell",
-                    "item_name": sold_name, "item_type": None,
+                    "item_name": sold_name, "item_type": item_type,
                     "cost": None, "money_after": _post_money,
                 })
             if method == "reroll":
