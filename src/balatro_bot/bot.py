@@ -56,6 +56,16 @@ class GameLoopState:
     hands_scored: int = 0  # sequence counter for hand_scores
     packs_opened: int = 0  # incremented on transitions into a pack-opened state
     in_pack_state: bool = False
+    shop_offers: list = field(default_factory=list)  # [{ante, shop_visit_seq, ...}]
+    pack_offers: list = field(default_factory=list)  # [{ante, pack_seq, ...}]
+    tags_seen: list = field(default_factory=list)    # [{ante, round, tag_key, ...}]
+    blind_decisions: list = field(default_factory=list)  # [{ante, blind_type, action, ...}]
+    shop_visit_seq: int = 0          # incremented on SHOP entry; resets between games
+    last_shop_signature: str | None = None  # detect post-reroll roster change
+    pack_seq: int = 0                # incremented on each pack opened
+    current_pack_label: str | None = None  # label of currently open pack
+    last_tag_keys: list = field(default_factory=list)  # for new-tag diff
+    death_info: dict | None = None   # populated at game end
 
 
 class WinCaptureHandler(logging.handlers.MemoryHandler):
@@ -223,6 +233,106 @@ def _check_victory(
     return True
 
 
+def _capture_shop_offer(gs: "GameLoopState", state: dict) -> None:
+    """Snapshot shop roster on SHOP entry and after rerolls (signature change)."""
+    shop_cards = state.get("shop", {}).get("cards", []) or []
+    vouchers = state.get("vouchers", {}).get("cards", []) or []
+    packs = state.get("packs", {}).get("cards", []) or []
+
+    sig_parts = (
+        [f"{c.get('set','')}:{c.get('label','')}:{c.get('cost',{}).get('buy','')}" for c in shop_cards]
+        + [f"V:{v.get('label','')}" for v in vouchers]
+        + [f"P:{p.get('label','')}" for p in packs]
+    )
+    sig = "|".join(sig_parts)
+    if sig == gs.last_shop_signature:
+        return
+    # New visit when signature changed AND we weren't already in this shop
+    if gs.last_shop_signature is None:
+        gs.shop_visit_seq += 1
+    gs.last_shop_signature = sig
+
+    items = []
+    for c in shop_cards:
+        items.append({
+            "slot": "shop",
+            "set": c.get("set"),
+            "label": c.get("label"),
+            "cost": (c.get("cost") or {}).get("buy"),
+            "rarity": c.get("rarity"),
+            "edition": (c.get("edition") or None) if c.get("edition") else None,
+        })
+    for v in vouchers:
+        items.append({
+            "slot": "voucher",
+            "set": "VOUCHER",
+            "label": v.get("label"),
+            "cost": (v.get("cost") or {}).get("buy"),
+        })
+    for p in packs:
+        items.append({
+            "slot": "pack",
+            "set": "BOOSTER",
+            "label": p.get("label"),
+            "cost": (p.get("cost") or {}).get("buy"),
+        })
+    gs.shop_offers.append({
+        "ante": state.get("ante_num"),
+        "round": state.get("round_num"),
+        "shop_visit_seq": gs.shop_visit_seq,
+        "money": state.get("money"),
+        "items": items,
+    })
+
+
+def _capture_pack_offer(gs: "GameLoopState", state: dict) -> None:
+    """Snapshot pack contents on transition into a *_PACK / SMODS_BOOSTER_OPENED state."""
+    pack_cards = state.get("pack", {}).get("cards", []) or []
+    if not pack_cards:
+        return
+    gs.pack_seq += 1
+    items = []
+    for c in pack_cards:
+        items.append({
+            "label": c.get("label"),
+            "set": c.get("set"),
+            "rank": (c.get("value") or {}).get("rank"),
+            "suit": (c.get("value") or {}).get("suit"),
+            "enhancement": (c.get("modifier") or {}).get("enhancement") if isinstance(c.get("modifier"), dict) else None,
+            "edition": (c.get("edition") or None) if c.get("edition") else None,
+            "seal": (c.get("modifier") or {}).get("seal") if isinstance(c.get("modifier"), dict) else None,
+        })
+    gs.pack_offers.append({
+        "ante": state.get("ante_num"),
+        "round": state.get("round_num"),
+        "pack_seq": gs.pack_seq,
+        "pack_state": state.get("state"),
+        "items": items,
+    })
+
+
+def _capture_tags_diff(gs: "GameLoopState", state: dict) -> None:
+    """Append newly-acquired tags by diffing tag-key list across ticks."""
+    tags = state.get("tags") or []
+    cur_keys = [t.get("key", "") for t in tags]
+    if cur_keys == gs.last_tag_keys:
+        return
+    # Detect additions: simple multiset diff
+    prev_count = Counter(gs.last_tag_keys)
+    cur_count = Counter(cur_keys)
+    for k, n in cur_count.items():
+        added = n - prev_count.get(k, 0)
+        for _ in range(max(0, added)):
+            info = next((t for t in tags if t.get("key") == k), {})
+            gs.tags_seen.append({
+                "ante": state.get("ante_num"),
+                "round": state.get("round_num"),
+                "tag_key": k,
+                "tag_name": info.get("name"),
+            })
+    gs.last_tag_keys = cur_keys
+
+
 # ---------------------------------------------------------------------------
 # Main game loop
 # ---------------------------------------------------------------------------
@@ -314,9 +424,11 @@ def run_bot(
 
         if game_state != "SHOP":
             gs.last_logged_shop = None
+            gs.last_shop_signature = None  # reset so next SHOP entry counts as new visit
 
         if game_state == "SHOP":
             log_shop_state(gs, state)
+            _capture_shop_offer(gs, state)
 
         # Detect entry into a pack-opened state (any *_PACK or SMODS_BOOSTER_OPENED).
         # Counts every pack opened, whether bought, free from tags, or from effects.
@@ -326,7 +438,10 @@ def run_bot(
         )
         if _is_pack_state and not gs.in_pack_state:
             gs.packs_opened += 1
+            _capture_pack_offer(gs, state)
         gs.in_pack_state = _is_pack_state
+
+        _capture_tags_diff(gs, state)
 
         if game_state == "BLIND_SELECT":
             log_blind_transition(gs, state)
@@ -389,6 +504,12 @@ def run_bot(
         _buying_consumable = None
         _buying_pack_label = None
         _picking_pack_card_label = None
+        _selling_joker_label = None
+        if method == "sell" and params and "joker" in params:
+            jokers_list = state.get("jokers", {}).get("cards", []) or []
+            jidx = params["joker"]
+            if jidx < len(jokers_list):
+                _selling_joker_label = jokers_list[jidx].get("label", "?")
         if method == "buy" and params and "card" in params:
             shop_cards = state.get("shop", {}).get("cards", [])
             idx = params["card"]
@@ -544,13 +665,18 @@ def run_bot(
             if method == "sell":
                 sold_name = getattr(action, "reason", "") or "?"
                 item_type: str | None = None
-                if hasattr(action, "index"):
-                    if "joker" in (params or {}):
-                        item_type = "joker"
-                        sold_name = "joker"
-                    elif "consumable" in (params or {}):
-                        item_type = "consumable"
-                        sold_name = "consumable"
+                if "joker" in (params or {}):
+                    item_type = "joker"
+                    if _selling_joker_label:
+                        sold_name = _selling_joker_label
+                        # Tag latest matching jokers_bought entry with sell_ante (FIFO)
+                        for jb in gs.jokers_bought:
+                            if jb["joker_name"] == _selling_joker_label and jb.get("sell_ante") is None:
+                                jb["sell_ante"] = state.get("ante_num")
+                                break
+                elif "consumable" in (params or {}):
+                    item_type = "consumable"
+                    sold_name = "consumable"
                 gs.shop_events.append({
                     "ante": _ante, "event_type": "sell",
                     "item_name": sold_name, "item_type": item_type,
@@ -561,6 +687,22 @@ def run_bot(
                     "ante": _ante, "event_type": "reroll",
                     "item_name": None, "item_type": None,
                     "cost": _pre_money - _post_money, "money_after": _post_money,
+                })
+
+            if game_state == "BLIND_SELECT" and method in ("select", "skip"):
+                # Snapshot blind context from PRE-action state (captured above as state vars).
+                _blind_name = gs.current_blind_name
+                _blind_target = gs.current_blind_target
+                _is_boss = bool(_blind_name and _blind_name not in ("Small Blind", "Big Blind"))
+                gs.blind_decisions.append({
+                    "ante": _ante,
+                    "round": state.get("round_num"),
+                    "blind_name": _blind_name,
+                    "blind_target": _blind_target if isinstance(_blind_target, int) else None,
+                    "is_boss": _is_boss,
+                    "action": method,
+                    "money_at_decision": _pre_money,
+                    "joker_count": len(state.get("jokers", {}).get("cards", []) or []),
                 })
             if _buying_pack_label is not None:
                 gs.shop_events.append({
@@ -666,6 +808,37 @@ def run_bot(
                     state["_boss_disabled"] = True
     log_game_over(gs, state)
 
+    # Death cause: derive from last failed round
+    if not gs.actually_won:
+        last_lost = next(
+            (r for r in reversed(gs.round_results) if not r.get("won", False)),
+            None,
+        )
+        if last_lost:
+            gs.death_info = {
+                "ante": last_lost.get("ante"),
+                "blind_name": last_lost.get("blind_name"),
+                "is_boss": last_lost.get("is_boss"),
+                "scored": last_lost.get("scored"),
+                "needed": last_lost.get("needed"),
+                "deficit": (last_lost.get("needed") or 0) - (last_lost.get("scored") or 0),
+                "hands_left_at_death": last_lost.get("hands_used"),
+                "discards_left_at_death": last_lost.get("discards_used"),
+            }
+
+    # Final deck composition (rank/suit/enhancement counts of remaining draw pile)
+    _final_deck = state.get("cards", {}).get("cards", []) or []
+    _deck_comp = {"total": len(_final_deck), "ranks": {}, "suits": {}, "enhancements": {}}
+    for c in _final_deck:
+        v = c.get("value") or {}
+        m = c.get("modifier") if isinstance(c.get("modifier"), dict) else {}
+        rank = v.get("rank") or "STONE"
+        suit = v.get("suit") or "NONE"
+        enh = (m or {}).get("enhancement") or "NONE"
+        _deck_comp["ranks"][rank] = _deck_comp["ranks"].get(rank, 0) + 1
+        _deck_comp["suits"][suit] = _deck_comp["suits"].get(suit, 0) + 1
+        _deck_comp["enhancements"][enh] = _deck_comp["enhancements"].get(enh, 0) + 1
+
     # Capture log text AFTER log_game_over (includes game summary lines).
     # flush_win() no longer clears the buffer, so it's intact for both wins and losses.
     _captured_log_text = _win_handler.get_log_text() if _win_handler else None
@@ -706,6 +879,7 @@ def run_bot(
                     "joker_name": jb["joker_name"],
                     "in_final_roster": jb["joker_name"] in final_roster,
                     "buy_ante": jb["buy_ante"],
+                    "sell_ante": jb.get("sell_ante"),
                     "final_chips": (gs.joker_scaling.get(jb["joker_name"]) or {}).get("chips"),
                     "final_mult": (gs.joker_scaling.get(jb["joker_name"]) or {}).get("mult"),
                     "final_xmult": (gs.joker_scaling.get(jb["joker_name"]) or {}).get("xmult"),
@@ -719,6 +893,12 @@ def run_bot(
             "hand_scores": gs.hand_scores,
             "shop_events": gs.shop_events,
             "earnings": state.get("earnings", []),
+            "shop_offers": gs.shop_offers,
+            "pack_offers": gs.pack_offers,
+            "tags_seen": gs.tags_seen,
+            "blind_decisions": gs.blind_decisions,
+            "death_info": gs.death_info,
+            "final_deck": _deck_comp,
         })
 
     return gs.actually_won
