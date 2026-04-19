@@ -36,6 +36,17 @@ Valuation refactor epic (#32). Eight phases folded the ad-hoc cascade of post-ho
 - Zero-value trap on face/rank-affinity jokers in shop valuation fixed.
 - Blueprint/Brainstorm copy-incompatibility plumbed through valuation.
 
+### Post-release valuation audit
+
+Review turned up several jokers that were unmodeled or mis-modeled. All fixed under v1.1.0:
+
+- **Caino typo**: codebase referenced `j_canio` everywhere (scaling registry, effect dispatch, lifetime anchor, projection); the real game key is `j_caino`. Caino was completely unmodeled — no anchor parsing, no effect fires, no projection floor. Now wired correctly.
+- **Card Sharp**: fired on `played_this_round > 0` but the sim always built hand_levels with 0, so the X3 mult never triggered. Now synthesizes `played_this_round=1` during valuation and scales `raw_delta × 0.65` to account for the ~2-of-3.5 proc rate on repeat-type plays.
+- **Acrobat**: the sim defaults `hands_left=1`, so Acrobat's finisher-only X3 always fired in the sim, overvaluing it 2-3×. Now scaled by `× 0.45` to reflect "fires on 1 of 3.5 hands, but the planned finisher."
+- **Golden Ticket / Rough Gem / Chaos**: no ROI valuator. Added entries in `utility_value.py`.
+- **Money threading**: `Bull`, `Bootstraps`, and `Banner` depend on `ScoreContext.money` / `discards_left`, which defaulted to 0 in the sim. Added `money` and `discards_left` fields to `SimContext`, threaded through `evaluate_joker_value` → `score_hand`, and wired `shop_evaluator` to pull from the live state.
+- **Half Joker**: sim's synthetic hand pads every play to 5 cards; Half only fires at `played_cards ≤ 3`. Live bot already drops padding when Half is in the roster (`FEWER_CARDS_JOKERS`). Sim now mirrors that on High Card / Pair / Three of a Kind.
+
 ### Tooling
 
 - Test count: 380 → 454
