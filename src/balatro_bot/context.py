@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.scoring.base import arm_reduce_hand_levels, flint_halve_hand_levels
 from balatro_bot.cards import joker_key
+from balatro_bot.domain.scoring.mouth_commit import choose_mouth_commit
 from balatro_bot.domain.scoring.search import HandCandidate, best_hand
 from balatro_bot.infrastructure.state_adapter import adapt_state
 from balatro_bot.scaling import FINAL_HAND_JOKERS
@@ -47,6 +48,7 @@ class RoundContext:
     deck_cards: list[dict]
     deck_profile: DeckProfile = field(default_factory=DeckProfile)
     mouth_locked_hand: str | None = None
+    committed_hand_type: str | None = None
     score_discount: float = 1.0
     forced_card_idx: int | None = None
     ancient_suit: str | None = None
@@ -190,13 +192,34 @@ class RoundContext:
         # so boss-specific scoring effects (The Tooth, The Ox, etc.) don't fire.
         effective_blind = "" if boss_disabled else blind_name
 
+        # The Mouth pre-lock: pick the hand type with best round-total EV
+        # before the first play locks it. Once locked, mouth_locked_hand wins.
+        committed_hand_type = None
+        if (effective_blind == "The Mouth"
+                and mouth_locked_hand is None
+                and hands_left > 0):
+            committed_hand_type = choose_mouth_commit(
+                hand_cards, hand_levels,
+                jokers=jokers, joker_limit=snapshot.joker_limit,
+                hands_left=hands_left, discards_left=discards_left,
+                money=money,
+                deck_cards=deck_cards, deck_profile=deck_profile,
+                ancient_suit=ancient_suit,
+                idol_rank=idol_rank, idol_suit=idol_suit,
+                forced_card_idx=forced_card_idx,
+                blind_name=effective_blind,
+                ox_most_played=ox_most_played,
+            )
+
+        effective_commit = mouth_locked_hand or committed_hand_type
+
         best = best_hand(
             hand_cards, hand_levels,
             min_select=min_cards, jokers=jokers,
             money=money, discards_left=discards_left,
             hands_left=hands_left,
             joker_limit=snapshot.joker_limit,
-            required_hand=mouth_locked_hand,
+            required_hand=effective_commit,
             required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
             ancient_suit=ancient_suit,
             excluded_hands=eye_used_hands,
@@ -218,7 +241,7 @@ class RoundContext:
                 money=money, discards_left=discards_left,
                 hands_left=1,
                 joker_limit=snapshot.joker_limit,
-                required_hand=mouth_locked_hand,
+                required_hand=effective_commit,
                 required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
                 ancient_suit=ancient_suit,
                 excluded_hands=eye_used_hands,
@@ -241,6 +264,7 @@ class RoundContext:
             jokers=jokers,
             best=best,
             mouth_locked_hand=mouth_locked_hand,
+            committed_hand_type=committed_hand_type,
             score_discount=score_discount,
             forced_card_idx=forced_card_idx,
             ancient_suit=ancient_suit,

@@ -23,19 +23,21 @@ from balatro_bot.constants import (
 )
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.shop_valuation import (
-    _KEY_TO_CATEGORY, evaluate_joker_value, parse_effect_value,
+    _KEY_TO_CATEGORY, evaluate_joker_value,
 )
+from balatro_bot.joker_effects.parsers import parse_effect_value
 from balatro_bot.joker_effects.scoring_phase import (
     get_joker_phase, get_joker_edition_phase,
     PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
 )
 from balatro_bot.rules._helpers import score_consumable, evaluate_hex
-from balatro_bot.scaling import check_anti_synergy
+from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE, check_anti_synergy
 from balatro_bot.strategy import compute_strategy
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from balatro_bot.domain.policy.sim_context import LiveRunStats
     from balatro_bot.strategy import Strategy
 
 log = logging.getLogger("balatro_bot")
@@ -194,6 +196,7 @@ def score_roster(
     deck_profile: DeckProfile | None = None,
     ante: int = 1,
     unique_planets_used: int = 0,
+    live_stats: "LiveRunStats | None" = None,
 ) -> list[JokerScore]:
     """Compute live EV delta for each owned joker."""
     scores: list[JokerScore] = []
@@ -212,6 +215,7 @@ def score_roster(
             ante=ante, strategy=strategy, joker_limit=joker_limit,
             deck_profile=deck_profile,
             unique_planets_used=unique_planets_used,
+            live_stats=live_stats,
         )
 
         # Fodder value: if Dagger is owned and this isn't Dagger itself,
@@ -322,11 +326,14 @@ def _compute_optimal_order(
         else:
             desired_order.append(ceremonial_idx)
 
-    # Blueprint: left of best xmult target
+    # Blueprint: left of best xmult target, skipping copy-incompatible jokers
     if blueprint_idx is not None:
         best_copy_pos = None
         for pos, idx in enumerate(desired_order):
-            phase = get_joker_phase(joker_key(owned[idx]))
+            key = joker_key(owned[idx])
+            if key in BLUEPRINT_INCOMPATIBLE:
+                continue
+            phase = get_joker_phase(key)
             if phase == PHASE_XMULT:
                 best_copy_pos = pos
             elif phase == PHASE_MULT and best_copy_pos is None:
@@ -336,14 +343,18 @@ def _compute_optimal_order(
         else:
             desired_order.append(blueprint_idx)
 
-    # Brainstorm: at end, ensure slot 0 is good
+    # Brainstorm: at end, ensure slot 0 is good (not noop, not incompatible)
     if brainstorm_idx is not None:
         desired_order.append(brainstorm_idx)
-        if desired_order and get_joker_phase(joker_key(owned[desired_order[0]])) == PHASE_NOOP:
-            for pos in range(1, len(desired_order)):
-                if get_joker_phase(joker_key(owned[desired_order[pos]])) != PHASE_NOOP:
-                    desired_order[0], desired_order[pos] = desired_order[pos], desired_order[0]
-                    break
+        if desired_order:
+            first_key = joker_key(owned[desired_order[0]])
+            if get_joker_phase(first_key) == PHASE_NOOP or first_key in BLUEPRINT_INCOMPATIBLE:
+                for pos in range(1, len(desired_order)):
+                    swap_key = joker_key(owned[desired_order[pos]])
+                    if (get_joker_phase(swap_key) != PHASE_NOOP
+                            and swap_key not in BLUEPRINT_INCOMPATIBLE):
+                        desired_order[0], desired_order[pos] = desired_order[pos], desired_order[0]
+                        break
 
     # Check if order actually changed
     if desired_order == list(range(len(owned))):
@@ -364,6 +375,7 @@ def _score_shop_joker(
     joker_limit: int,
     deck_profile: DeckProfile | None,
     unique_planets_used: int = 0,
+    live_stats: "LiveRunStats | None" = None,
 ) -> float:
     """Score a shop joker using the valuation engine."""
     return evaluate_joker_value(
@@ -371,6 +383,7 @@ def _score_shop_joker(
         ante=ante, strategy=strategy, joker_limit=joker_limit,
         deck_profile=deck_profile,
         unique_planets_used=unique_planets_used,
+        live_stats=live_stats,
     )
 
 
@@ -763,11 +776,18 @@ class ShopEvaluator:
         budget = compute_budget(money, ante, joker_count, owned_jokers=owned,
                                 owned_vouchers=owned_vouchers)
 
+        # Issue #41: bot attaches its observed per-run averages (discards/round,
+        # sells/ante) on the state dict. Thread into every valuation call so
+        # scaling-xmult projections reflect real play behavior instead of the
+        # conservative 1.5/1.5 defaults.
+        live_stats = state.get("_live_stats")
+
         # ── Score roster ──
         roster = score_roster(
             owned, hand_levels, strat,
             joker_limit=joker_limit, deck_profile=deck_profile, ante=ante,
             unique_planets_used=unique_planets_used,
+            live_stats=live_stats,
         )
 
         # ── Enumerate all candidate plans ──
@@ -824,6 +844,7 @@ class ShopEvaluator:
             shop_value = _score_shop_joker(
                 card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
                 unique_planets_used=unique_planets_used,
+                live_stats=live_stats,
             )
 
             # Riff-Raff slot reservation: penalize buys that fill spawn slots
@@ -881,6 +902,7 @@ class ShopEvaluator:
                             card, post_sell_owned, hand_levels,
                             post_sell_strategy, ante, joker_limit, deck_profile,
                             unique_planets_used=unique_planets_used,
+                            live_stats=live_stats,
                         )
                         upgrade_delta = shop_value_post - sc.ev_delta
                     opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
@@ -1045,6 +1067,7 @@ class ShopEvaluator:
                 card.get("set") == "JOKER" and _score_shop_joker(
                     card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
                     unique_planets_used=unique_planets_used,
+                    live_stats=live_stats,
                 ) >= 6.0
                 for card in shop.get("cards", [])
             )

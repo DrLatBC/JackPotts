@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,11 @@ class ScoreContext:
     blind_name: str = ""
     idol_rank: str | None = None
     idol_suit: str | None = None
+    # Oops! All 6s flag — doubles probability-based trigger rates during sampling.
+    oops: bool = False
+    # Monte Carlo RNG — when present, stochastic jokers (Misprint, Lucky Cat,
+    # Bloodstone) draw actual outcomes instead of using expected-value shortcuts.
+    rng: random.Random | None = None
 
 
 def _count_suit_in_scoring(ctx: ScoreContext, suit: str) -> int:

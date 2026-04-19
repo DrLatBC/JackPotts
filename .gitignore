@@ -26,3 +26,5 @@ CLAUDE.md
 
 # Local config (machine-specific paths)
 .env.local
+vm.json
+vm_dump.html

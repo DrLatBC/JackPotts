@@ -25,6 +25,7 @@ from balatro_bot.cards import (
 )
 from balatro_bot.constants import EVEN_RANKS, FACE_RANKS, FIBONACCI_RANKS, ODD_RANKS
 from balatro_bot.joker_effects.parsers import _ability
+from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE
 
 
 @dataclass(frozen=True)
@@ -102,13 +103,15 @@ def build_per_card_effects(
         if k == "j_blueprint":
             if i + 1 < len(joker_list):
                 target = joker_list[i + 1]
-                if not is_joker_debuffed(target):
-                    _add(joker_key(target), target)
+                tkey = joker_key(target)
+                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
+                    _add(tkey, target)
         elif k == "j_brainstorm":
             if joker_list and joker_list[0] is not j:
                 target = joker_list[0]
-                if not is_joker_debuffed(target):
-                    _add(joker_key(target), target)
+                tkey = joker_key(target)
+                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
+                    _add(tkey, target)
         else:
             _add(k, j)
     return effects

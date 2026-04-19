@@ -110,6 +110,16 @@ SCENARIOS: list[tuple[str, list[dict], int]] = [
 # Effect-text synthesis
 # ---------------------------------------------------------------------------
 
+# Starting "(Currently X…)" baseline per scaling joker. Jokers that have a
+# non-X1.0 fresh value (Glass at X1.5, Ramen at X2, static-xmult scalers)
+# read wrong if synthesized at X1.0.
+_SCALING_START_XMULT: dict[str, float] = {
+    "j_glass": 1.5,
+    "j_ramen": 2.0,
+    "j_cavendish": 3.0,
+}
+
+
 def _synthesize_effect(key: str, effect_hint: str) -> str:
     """Produce plausible effect text for parse_effect_value().
 
@@ -118,9 +128,8 @@ def _synthesize_effect(key: str, effect_hint: str) -> str:
     via the registry dispatch, so empty text is fine.
     """
     if key in ALL_SCALING:
-        # "(Currently X1.0)" works for xmult scalers; mult/chip scalers still
-        # round to ~0 power so they get their value from scoring_delta.
-        return f"{effect_hint} (Currently X1.0)".strip()
+        start = _SCALING_START_XMULT.get(key, 1.0)
+        return f"{effect_hint} (Currently X{start})".strip()
     return effect_hint
 
 

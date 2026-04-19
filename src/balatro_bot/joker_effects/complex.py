@@ -58,6 +58,9 @@ def _misprint(ctx: ScoreContext, j: dict) -> None:
     ab = _ability(j)
     lo = ab.get("min", 0)
     hi = ab.get("max", 23)
+    if ctx.rng is not None:
+        ctx.mult += ctx.rng.uniform(lo, hi)
+        return
     # Risk-adjusted: with fewer hands left, estimate conservatively.
     # percentile 0.0 = lo, 1.0 = hi, 0.5 = midpoint (EV).
     # 1 hand → 25th percentile, 4+ hands → midpoint.
@@ -275,8 +278,7 @@ def _lucky_cat(ctx: ScoreContext, j: dict) -> None:
     from balatro_bot.joker_effects import retrigger_count
     base_xmult = _ab_xmult(j, fallback=1.5)
     extra = _ability(j).get("extra", 0.25)
-    has_oops = any(joker_key(jk) == "j_oops" for jk in ctx.jokers)
-    prob = 2 / 5 if has_oops else 1 / 5
+    prob = 2 / 5 if ctx.oops else 1 / 5
     lucky_triggers = sum(
         retrigger_count(c, ctx)
         for c in ctx.scoring_cards
@@ -284,7 +286,11 @@ def _lucky_cat(ctx: ScoreContext, j: dict) -> None:
         and (c.modifier.enhancement if isinstance(c, Card)
              else _modifier(c).get("enhancement")) == "LUCKY"
     )
-    ctx.mult *= base_xmult + extra * prob * lucky_triggers
+    if ctx.rng is not None:
+        fires = sum(1 for _ in range(lucky_triggers) if ctx.rng.random() < prob)
+        ctx.mult *= base_xmult + extra * fires
+    else:
+        ctx.mult *= base_xmult + extra * prob * lucky_triggers
 
 
 def _vampire(ctx: ScoreContext, j: dict) -> None:

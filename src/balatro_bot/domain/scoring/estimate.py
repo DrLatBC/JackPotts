@@ -27,6 +27,7 @@ from balatro_bot.cards import (
 from balatro_bot.constants import HAND_INFO, RANK_CHIPS
 from balatro_bot.domain.models.card import Card
 from balatro_bot.joker_effects.parsers import _ability
+from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE
 
 if TYPE_CHECKING:
     from typing import Any
@@ -202,7 +203,13 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
                     elif kind == "suit_xmult" and eff[1] and eff[1] in suits:
                         ctx.mult *= eff[2]
                     elif kind == "suit_expected_xmult" and eff[1] in suits:
-                        ctx.mult *= eff[2] ** (1.0 / eff[3])
+                        odds = eff[3]
+                        prob_factor = 2.0 if ctx.oops else 1.0
+                        if ctx.rng is not None:
+                            if ctx.rng.random() < prob_factor / odds:
+                                ctx.mult *= eff[2]
+                        else:
+                            ctx.mult *= eff[2] ** (prob_factor / odds)
                     elif kind == "ranks_xmult" and rank in eff[1]:
                         ctx.mult *= eff[2]
                     elif kind == "rank_suit_xmult" and rank == eff[1] and eff[2] in suits:
@@ -251,13 +258,15 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
         if k == "j_blueprint":
             if i + 1 < len(joker_list):
                 target = joker_list[i + 1]
-                if not is_joker_debuffed(target):
-                    _count_held_phase(joker_key(target), target)
+                tkey = joker_key(target)
+                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
+                    _count_held_phase(tkey, target)
         elif k == "j_brainstorm":
             if joker_list and joker_list[0] is not j:
                 target = joker_list[0]
-                if not is_joker_debuffed(target):
-                    _count_held_phase(joker_key(target), target)
+                tkey = joker_key(target)
+                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
+                    _count_held_phase(tkey, target)
         else:
             _count_held_phase(k, j)
 
@@ -329,6 +338,7 @@ def score_hand(
     ox_most_played: str | None = None,
     idol_rank: str | None = None,
     idol_suit: str | None = None,
+    rng=None,
 ) -> tuple[int, int, int]:
     """Compute (chips, mult, total) for a hand."""
     base_chips, base_mult, _ = HAND_INFO[hand_name]
@@ -389,6 +399,8 @@ def score_hand(
         blind_name=blind_name,
         idol_rank=idol_rank,
         idol_suit=idol_suit,
+        oops="j_oops" in joker_keys_set,
+        rng=rng,
     )
 
     effective_scoring, effective_played, vampire_xmult = _apply_before_phase(
@@ -510,6 +522,7 @@ def score_hand_detailed(
         blind_name=blind_name,
         idol_rank=idol_rank,
         idol_suit=idol_suit,
+        oops="j_oops" in joker_keys_set,
     )
 
     effective_scoring, effective_played, vampire_xmult = _apply_before_phase(

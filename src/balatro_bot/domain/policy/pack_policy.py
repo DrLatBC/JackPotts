@@ -143,6 +143,7 @@ def choose_from_buffoon_pack(
     strat: Strategy,
     always_buy_keys: set[str],
     deck_profile: DeckProfile | None = None,
+    blind_name: str | None = None,
 ) -> tuple[int, float, str]:
     """Pick the best joker from a Buffoon pack.
 
@@ -179,6 +180,7 @@ def choose_from_buffoon_pack(
             card, owned_jokers=owned_jokers,
             hand_levels=hand_levels, ante=ante, strategy=strat,
             joker_limit=joker_limit, deck_profile=deck_profile,
+            blind_name=blind_name,
         )
         # S-tier jokers get a massive boost
         if key in always_buy_keys:

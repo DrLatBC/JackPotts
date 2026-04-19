@@ -85,10 +85,12 @@ class UseConsumables:
         discards_left = rnd.get("discards_left", 0)
         hands_left = rnd.get("hands_left", 1)
         blind_score = 0
+        blind_name: str | None = None
         chips_scored = rnd.get("chips", 0)
         for b in state.get("blinds", {}).values():
             if isinstance(b, dict) and b.get("status") == "CURRENT":
                 blind_score = b.get("score", 0)
+                blind_name = b.get("name")
                 break
         chips_remaining = max(0, blind_score - chips_scored)
 
@@ -110,7 +112,7 @@ class UseConsumables:
         slots_full = len(consumables) >= consumable_limit
 
         # Hex sell-down: if mid-sequence, continue selling before anything else
-        hex_action = self._handle_hex_selldown(consumables, jokers, hand_levels, ante)
+        hex_action = self._handle_hex_selldown(consumables, jokers, hand_levels, ante, blind_name)
         if hex_action is not None:
             return hex_action
 
@@ -127,7 +129,7 @@ class UseConsumables:
 
             # Hex: evaluate whether to sell, use, or start sell-down
             if key == "c_hex":
-                hex_score = evaluate_hex(jokers, ante, hand_levels)
+                hex_score = evaluate_hex(jokers, ante, hand_levels, blind_name=blind_name)
                 if hex_score <= 0.0:
                     return SellConsumable(i, reason="sell Hex (not worth using — lineup too valuable)")
                 if len(jokers) == 1:
@@ -138,11 +140,11 @@ class UseConsumables:
                         return SellConsumable(i, reason="sell Hex (only joker already has edition)")
                 if len(jokers) > 1:
                     # Multiple jokers — start sell-down sequence
-                    target = self._find_hex_target(jokers, hand_levels, ante)
+                    target = self._find_hex_target(jokers, hand_levels, ante, blind_name)
                     self._hex_selling_down = True
                     self._hex_target_key = target.get("key")
                     # Sell the weakest non-target joker this tick
-                    return self._handle_hex_selldown(consumables, jokers, hand_levels, ante)
+                    return self._handle_hex_selldown(consumables, jokers, hand_levels, ante, blind_name)
 
             # --- Compute use_value and hold_value via policy ---
             use_value, action_args = score_use_now(
@@ -218,12 +220,12 @@ class UseConsumables:
         mod = joker.get("modifier", [])
         return isinstance(mod, dict) and bool(mod.get("edition"))
 
-    def _find_hex_target(self, jokers, hand_levels, ante):
+    def _find_hex_target(self, jokers, hand_levels, ante, blind_name: str | None = None):
         """Find the best joker to keep for Hex. Prefer uneditioned jokers."""
         strat = compute_strategy(jokers, hand_levels)
         scored = []
         for j in jokers:
-            val = evaluate_joker_value(j, jokers, hand_levels, ante, strat)
+            val = evaluate_joker_value(j, jokers, hand_levels, ante, strat, blind_name=blind_name)
             has_ed = self._has_edition(j)
             scored.append((j, val, has_ed))
 
@@ -237,7 +239,7 @@ class UseConsumables:
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[0][0]
 
-    def _handle_hex_selldown(self, consumables, jokers, hand_levels, ante) -> Action | None:
+    def _handle_hex_selldown(self, consumables, jokers, hand_levels, ante, blind_name: str | None = None) -> Action | None:
         """Multi-tick sell-down for Hex: sell weak jokers, then use Hex on the survivor."""
         if not self._hex_selling_down:
             return None
@@ -280,7 +282,7 @@ class UseConsumables:
         for i, j in enumerate(jokers):
             if joker_key(j) == self._hex_target_key:
                 continue
-            val = evaluate_joker_value(j, jokers, hand_levels, ante, strat)
+            val = evaluate_joker_value(j, jokers, hand_levels, ante, strat, blind_name=blind_name)
             if val < worst_val:
                 worst_val = val
                 worst_idx = i
