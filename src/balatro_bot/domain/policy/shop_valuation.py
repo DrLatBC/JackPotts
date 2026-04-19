@@ -611,6 +611,15 @@ def _scoring_delta(
             for h, v in hand_levels.items()
         }
 
+    # Mystic Summit fires at discards_left <= 0. With Mystic in the roster
+    # the bot actively burns discards to 0 to guarantee the proc on the
+    # finisher. Force discards_left=0 for this eval; proc-rate correction
+    # in evaluate_joker_value then discounts for the fact that not every
+    # hand of a round is at zero discards.
+    sim_discards_left = ctx.discards_left
+    if "j_mystic_summit" in (set(ctx.owned_keys) | {candidate_key_early}):
+        sim_discards_left = 0
+
     # Filter candidate from owned to handle sell evaluations correctly
     candidate_key = ctx.candidate_key
     baseline_jokers = [j for j in owned_jokers if j is not ctx.candidate]
@@ -702,7 +711,7 @@ def _scoring_delta(
                 held_cards=held_cards,
                 joker_limit=joker_limit,
                 ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
-                money=ctx.money, discards_left=ctx.discards_left,
+                money=ctx.money, discards_left=sim_discards_left,
                 rng=rng,
             )
 
@@ -1076,6 +1085,12 @@ def evaluate_joker_value(
         # repeat hands are the later/bigger ones, so rate > pure 2/3.5.
         elif key == "j_card_sharp":
             raw_delta *= 0.65
+        # Mystic Summit fires at discards_left <= 0. Bot can deliberately
+        # burn discards to reach the condition — usually on the last 1-2
+        # hands of a round. Fires guaranteed once committed, so rate ~=
+        # matches Acrobat's finisher weighting.
+        elif key == "j_mystic_summit":
+            raw_delta *= 0.45
         # Phase 3: rank-per-card jokers fire once per scored target rank. The
         # synthetic hand forces its target rank into a scoring slot (so the
         # effect fires at all), but how often that rank realistically shows up
