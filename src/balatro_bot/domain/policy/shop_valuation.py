@@ -21,6 +21,9 @@ from balatro_bot.domain.policy.scaling_projection import (
     project_additive_total,
     project_total_xmult,
 )
+from balatro_bot.domain.policy.boss_adjustment import (
+    boss_multiplier, shop_blended_multiplier,
+)
 from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
@@ -941,6 +944,7 @@ def evaluate_joker_value(
     joker_limit: int = 5,
     deck_profile: DeckProfile | None = None,
     unique_planets_used: int = 0,
+    blind_name: str | None = None,
 ) -> float:
     """Unified joker valuation. Returns ~0.0 to ~15.0.
 
@@ -959,6 +963,7 @@ def evaluate_joker_value(
         joker_limit=joker_limit,
         deck_profile=deck_profile,
         unique_planets_used=unique_planets_used,
+        blind_name=blind_name,
     )
     key = ctx.candidate_key
     owned_keys = set(ctx.owned_keys)
@@ -1070,7 +1075,14 @@ def evaluate_joker_value(
     # Layer 3: context
     context = _context_scale(key, owned_jokers, ante)
 
-    return base_value * synergy * context + _edition_bonus(candidate)
+    # Layer 4 (Phase 7): boss-blind adjustment. In-round uses the active boss;
+    # shop phase blends across the upcoming-boss pool.
+    if ctx.boss is not None:
+        boss_mult = boss_multiplier(key, ctx.boss)
+    else:
+        boss_mult = shop_blended_multiplier(key)
+
+    return base_value * synergy * context * boss_mult + _edition_bonus(candidate)
 
 
 def _edition_bonus(card: dict) -> float:

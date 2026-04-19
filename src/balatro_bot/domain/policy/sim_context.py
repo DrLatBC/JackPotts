@@ -110,6 +110,78 @@ class LifetimeState:
 
 
 @dataclass(frozen=True)
+class BossBlindState:
+    """Phase 7: boss-blind effects threaded into the shop sim.
+
+    Construct via ``from_name`` (templates for the ~8 impactful bosses) or
+    directly for tests. ``name`` is the display name (e.g. "The Plant"),
+    matching ``RoundContext.blind_name``. All flag fields default to off so
+    an empty instance is a no-op.
+    """
+
+    name: str = ""
+    # Card-level debuffs applied while the boss is active
+    debuffs_faces: bool = False           # The Plant
+    debuffs_suit: str | None = None       # The Club / Window / Head / Goad etc.
+    # Hand/discard/size deltas vs baseline
+    hand_size_delta: int = 0              # The Manacle: -1
+    hands_delta: int = 0                  # The Needle: -N (down to 1)
+    discards_delta: int = 0               # The Hook: random discards forced (modelled as -2 effective)
+    # Hand-level deltas
+    hand_levels_halved: bool = False      # The Flint
+    hand_levels_reduced: bool = False     # The Arm
+    # Scoring-suit restriction (only matching suit scores)
+    scoring_suit: str | None = None
+    # Eye: can't replay a hand type this round
+    excludes_repeat_hand: bool = False
+    # Pillar: previously scored cards can't score again this ante
+    pillar_replay_lock: bool = False
+    # Mouth: hand type locked to first played
+    locks_hand_type: bool = False
+
+    @classmethod
+    def from_name(cls, name: str) -> "BossBlindState | None":
+        tmpl = _BOSS_TEMPLATES.get(name)
+        if tmpl is None:
+            return None
+        return cls(name=name, **tmpl)
+
+
+_BOSS_TEMPLATES: dict[str, dict] = {
+    "The Plant":   {"debuffs_faces": True},
+    "The Needle":  {"hands_delta": -3},  # 4 base → 1
+    "The Hook":    {"discards_delta": -2},
+    "The Manacle": {"hand_size_delta": -1},
+    "The Pillar":  {"pillar_replay_lock": True},
+    "The Arm":     {"hand_levels_reduced": True},
+    "The Flint":   {"hand_levels_halved": True},
+    "The Eye":     {"excludes_repeat_hand": True},
+    "The Mouth":   {"locks_hand_type": True},
+    "The Head":    {"scoring_suit": "H"},
+    "The Club":    {"scoring_suit": "C"},
+    "The Window":  {"scoring_suit": "D"},
+    "The Goad":    {"debuffs_suit": "S"},
+}
+
+# Weights for shop-phase "average boss ahead" blend. Covers the top-impact
+# bosses; sums to 1.0 across entries we actually template.
+BOSS_WEIGHT: dict[str, float] = {
+    "The Plant":   0.14,
+    "The Needle":  0.12,
+    "The Hook":    0.14,
+    "The Manacle": 0.10,
+    "The Pillar":  0.08,
+    "The Arm":     0.08,
+    "The Eye":     0.08,
+    "The Mouth":   0.06,
+    "The Head":    0.05,
+    "The Club":    0.05,
+    "The Window":  0.05,
+    "The Goad":    0.05,
+}
+
+
+@dataclass(frozen=True)
 class SimContext:
     candidate: dict
     owned_jokers: tuple[dict, ...]
@@ -125,7 +197,7 @@ class SimContext:
     lifetime: "LifetimeState | None" = None
     round_state: object | None = None
     economy: object | None = None
-    boss: object | None = None
+    boss: BossBlindState | None = None
 
     # Derived
     candidate_key: str = field(default="", repr=False)
@@ -149,6 +221,7 @@ class SimContext:
         joker_limit: int = 5,
         deck_profile: "DeckProfile | None" = None,
         unique_planets_used: int = 0,
+        blind_name: str | None = None,
     ) -> "SimContext":
         rank_density: dict[str, float] = {}
         suit_density: dict[str, float] = {}
@@ -163,6 +236,7 @@ class SimContext:
         lifetime = LifetimeState.from_owned(
             owned_jokers, unique_planets_used=unique_planets_used,
         )
+        boss = BossBlindState.from_name(blind_name) if blind_name else None
         return cls(
             candidate=candidate,
             owned_jokers=tuple(owned_jokers),
@@ -178,4 +252,5 @@ class SimContext:
             suit_density=suit_density,
             enhancement_density=enhancement_density,
             lifetime=lifetime,
+            boss=boss,
         )
