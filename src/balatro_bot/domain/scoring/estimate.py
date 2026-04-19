@@ -27,6 +27,7 @@ from balatro_bot.cards import (
 from balatro_bot.constants import HAND_INFO, RANK_CHIPS
 from balatro_bot.domain.models.card import Card
 from balatro_bot.joker_effects.parsers import _ability
+from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE
 
 if TYPE_CHECKING:
     from typing import Any
@@ -251,13 +252,15 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
         if k == "j_blueprint":
             if i + 1 < len(joker_list):
                 target = joker_list[i + 1]
-                if not is_joker_debuffed(target):
-                    _count_held_phase(joker_key(target), target)
+                tkey = joker_key(target)
+                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
+                    _count_held_phase(tkey, target)
         elif k == "j_brainstorm":
             if joker_list and joker_list[0] is not j:
                 target = joker_list[0]
-                if not is_joker_debuffed(target):
-                    _count_held_phase(joker_key(target), target)
+                tkey = joker_key(target)
+                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
+                    _count_held_phase(tkey, target)
         else:
             _count_held_phase(k, j)
 

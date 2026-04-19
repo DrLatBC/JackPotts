@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from balatro_bot.actions import RearrangeJokers, Action
 from balatro_bot.cards import joker_key
 from balatro_bot.context import RoundContext
+from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE
 
 if TYPE_CHECKING:
     from typing import Any
@@ -106,12 +107,15 @@ class ReorderJokersForScoring:
 
         # --- Blueprint: place immediately left of best xmult joker to copy ---
         if blueprint_idx is not None:
-            # Find rightmost xmult joker position (best copy target)
+            # Find rightmost xmult joker position (best copy target).
+            # Skip copy-incompatible jokers (Blueprint produces nothing from them).
             best_target_pos = None
             for pos in range(len(desired_order) - 1, -1, -1):
                 idx = desired_order[pos]
                 key = joker_key(owned[idx])
                 if key in ("j_blueprint", "j_brainstorm"):
+                    continue
+                if key in BLUEPRINT_INCOMPATIBLE:
                     continue
                 phase = get_joker_phase(key)
                 if phase == PHASE_XMULT:
@@ -122,6 +126,8 @@ class ReorderJokersForScoring:
                 for pos in range(len(desired_order) - 1, -1, -1):
                     idx = desired_order[pos]
                     key = joker_key(owned[idx])
+                    if key in BLUEPRINT_INCOMPATIBLE:
+                        continue
                     if get_joker_phase(key) == PHASE_MULT:
                         best_target_pos = pos
                         break
@@ -133,15 +139,19 @@ class ReorderJokersForScoring:
         # --- Brainstorm: copies leftmost joker, place anywhere except pos 0 ---
         if brainstorm_idx is not None:
             desired_order.append(brainstorm_idx)
-            # Ensure position 0 is a good copyable effect (not noop/brainstorm)
+            # Ensure position 0 is a good copyable effect (not noop/brainstorm/incompatible)
             if desired_order:
                 first_key = joker_key(owned[desired_order[0]])
                 first_phase = get_joker_phase(first_key)
-                if first_phase == PHASE_NOOP and len(desired_order) > 1:
+                needs_swap = (
+                    first_phase == PHASE_NOOP or first_key in BLUEPRINT_INCOMPATIBLE
+                )
+                if needs_swap and len(desired_order) > 1:
                     for swap_pos in range(1, len(desired_order)):
                         swap_key = joker_key(owned[desired_order[swap_pos]])
                         if (get_joker_phase(swap_key) != PHASE_NOOP
-                                and swap_key != "j_brainstorm"):
+                                and swap_key != "j_brainstorm"
+                                and swap_key not in BLUEPRINT_INCOMPATIBLE):
                             desired_order[0], desired_order[swap_pos] = \
                                 desired_order[swap_pos], desired_order[0]
                             break

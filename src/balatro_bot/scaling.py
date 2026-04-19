@@ -292,6 +292,20 @@ FIRST_HAND_JOKERS = frozenset({"j_sixth_sense", "j_dna"})
 # First-discard jokers: benefit from strategic first discard of round
 FIRST_DISCARD_JOKERS = frozenset({"j_burnt"})
 
+# Jokers that Blueprint/Brainstorm cannot copy. Per the Balatro wiki: jokers
+# whose effect fires outside the scoring hand (end of round, blind select,
+# passive triggers, etc.) or is a passive state rather than a triggered
+# effect. Copying them produces no value, so both positioning and valuation
+# must skip over them when picking a copy target.
+BLUEPRINT_INCOMPATIBLE = frozenset({
+    "j_astronomer", "j_chaos", "j_chicot", "j_cloud_9", "j_credit_card",
+    "j_delayed_grat", "j_drunkard", "j_egg", "j_four_fingers", "j_gift",
+    "j_golden", "j_invisible", "j_juggler", "j_merry_andy", "j_midas_mask",
+    "j_mr_bones", "j_oops", "j_pareidolia", "j_rocket", "j_satellite",
+    "j_shortcut", "j_ring_master", "j_sixth_sense", "j_smeared", "j_splash",
+    "j_to_the_moon", "j_trading", "j_troubadour", "j_turtle_bean",
+})
+
 
 # ---------------------------------------------------------------------------
 # Anti-synergy map: joker pairs that directly conflict.

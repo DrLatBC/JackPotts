@@ -19,7 +19,7 @@ from balatro_bot.domain.models.card import Card, CardValue
 from balatro_bot.domain.policy import utility_value
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
-from balatro_bot.scaling import SCALING_REGISTRY
+from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE, SCALING_REGISTRY
 from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,
     JOKER_HAND_AFFINITY,
@@ -364,6 +364,31 @@ def _scoring_delta(
     candidate_key = candidate.get("key", "")
     baseline_jokers = [j for j in owned_jokers if j is not candidate]
 
+    # Blueprint/Brainstorm only produce value when positioned to copy a
+    # compatible joker. Appending to the end (Blueprint) or leaving leftmost
+    # unchanged (Brainstorm) can yield a sim value of zero even when the
+    # candidate would be strong in practice. Place the copy joker adjacent to
+    # the best compatible target.
+    def _place_candidate(base: list[dict]) -> list[dict]:
+        if not base:
+            return [candidate]
+        copyable = [
+            (i, j) for i, j in enumerate(base)
+            if joker_key(j) not in BLUEPRINT_INCOMPATIBLE
+            and joker_key(j) not in ("j_blueprint", "j_brainstorm")
+        ]
+        if not copyable:
+            return base + [candidate]
+        if candidate_key == "j_blueprint":
+            target_i, _ = copyable[-1]  # rightmost compatible
+            return base[:target_i] + [candidate] + base[target_i:]
+        if candidate_key == "j_brainstorm":
+            target_i, target_j = copyable[0]  # leftmost compatible
+            # Ensure the target sits at index 0, Brainstorm right after.
+            rest = [j for k, j in enumerate(base) if k != target_i]
+            return [target_j, candidate] + rest
+        return base + [candidate]
+
     weighted_delta = 0.0
 
     for hand_name, weight in hand_types:
@@ -376,7 +401,7 @@ def _scoring_delta(
         )
         with_candidate = score_hand(
             hand_name, scoring_cards, hand_levels,
-            jokers=baseline_jokers + [candidate], played_cards=played_cards,
+            jokers=_place_candidate(baseline_jokers), played_cards=played_cards,
             joker_limit=joker_limit,
         )
 
