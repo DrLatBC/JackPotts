@@ -201,7 +201,8 @@ class RoundContext:
             committed_hand_type = choose_mouth_commit(
                 hand_cards, hand_levels,
                 jokers=jokers, joker_limit=snapshot.joker_limit,
-                hands_left=hands_left,
+                hands_left=hands_left, discards_left=discards_left,
+                money=money,
                 deck_cards=deck_cards, deck_profile=deck_profile,
                 ancient_suit=ancient_suit,
                 idol_rank=idol_rank, idol_suit=idol_suit,
