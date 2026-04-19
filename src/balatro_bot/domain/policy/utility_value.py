@@ -264,6 +264,48 @@ def _juggler_dollars(
     return per_round * decay * rounds_remaining(ante)
 
 
+def _8_ball_dollars(
+    ante: int,
+    deck_profile: DeckProfile | None = None,
+    owned_keys: frozenset[str] = frozenset(),
+    **_: object,
+) -> float:
+    """8 Ball: 1-in-4 chance per scored 8 to create a Planet card.
+
+    Planet ≈ $3 value (shop-price equivalent — a level in a hand you care
+    about is worth more, but not every planet lines up). Oops doubles the
+    probability to 1-in-2.
+    """
+    if deck_profile and deck_profile.total_cards > 0:
+        eights = deck_profile.rank_counts.get("8", 0)
+        eight_ratio = eights / deck_profile.total_cards
+    else:
+        eight_ratio = 4.0 / 52.0
+    eights_scored_per_hand = SCORED_CARDS_PER_HAND * eight_ratio
+    trigger_prob = 0.25 * (2.0 if "j_oops" in owned_keys else 1.0)
+    planet_value = 3.0
+    per_hand = eights_scored_per_hand * trigger_prob * planet_value
+    return per_hand * HANDS_PER_ROUND * rounds_remaining(ante)
+
+
+def _sixth_sense_dollars(
+    ante: int,
+    deck_profile: DeckProfile | None = None,
+    **_: object,
+) -> float:
+    """Sixth Sense: if first hand of round is a single 6, destroy it → Spectral.
+
+    Guaranteed trigger (not probability-based, so Oops does not apply).
+    Bot can line it up when a 6 is in the opening draw; spectral ≈ $4.
+    Trigger rate scales with 6-count in the deck.
+    """
+    sixes = deck_profile.rank_counts.get("6", 0) if deck_profile else 4
+    # P(6 in opening 8-card draw) plus bot willingness to burn a hand on it.
+    trigger_rate = min(0.6, 0.15 + sixes * 0.05)
+    spectral_value = 4.0
+    return trigger_rate * spectral_value * rounds_remaining(ante)
+
+
 _DISCARD_SCALERS = frozenset({
     "j_castle", "j_yorick", "j_hit_the_road", "j_mail",
 })
@@ -388,6 +430,8 @@ UTILITY_ROI_VALUATORS: dict[str, Callable[..., float]] = {
     "j_faceless":         _faceless_dollars,
     # Deck-state-scaled
     "j_cloud_9":          _cloud_9_dollars,
+    "j_8_ball":           _8_ball_dollars,
+    "j_sixth_sense":      _sixth_sense_dollars,
     # Run-state-scaled
     "j_satellite":        _satellite_dollars,
     # Sell-value ramps (delayed payout, discounted)

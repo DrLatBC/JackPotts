@@ -23,6 +23,7 @@ from balatro_bot.scaling import SCALING_REGISTRY
 from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,
     JOKER_HAND_AFFINITY,
+    JOKER_RANK_AFFINITY,
     Strategy,
     compute_strategy,
 )
@@ -161,6 +162,14 @@ _TYPICAL_RANK = "7"  # ~average chip value
 _FILLER_RANKS = ["3", "4", "5", "6", "9"]  # ranks unlikely to form pairs
 _STRAIGHT_RANKS = ["5", "6", "7", "8", "9"]
 
+# Jokers whose value derives from face cards (J/Q/K) but which are intentionally
+# absent from JOKER_RANK_AFFINITY because face-card targeting is driven by the
+# face_card archetype rather than hand-type affinity.
+_FACE_CARD_JOKERS = frozenset({
+    "j_photograph", "j_scary_face", "j_smiley",
+    "j_sock_and_buskin", "j_triboulet", "j_pareidolia",
+})
+
 
 def _make_card(rank: str, suit: str) -> Card:
     """Build a minimal synthetic Card for scoring simulation."""
@@ -179,7 +188,22 @@ def _preferred_suit(strategy: Strategy | None) -> str:
     return _DEFAULT_SUIT
 
 
-def _preferred_rank(strategy: Strategy | None) -> str:
+def _preferred_rank(
+    strategy: Strategy | None,
+    candidate_key: str | None = None,
+) -> str:
+    # Candidate's own rank affinity wins — evaluating Scholar should produce aces
+    # even against a roster whose preferred_ranks point elsewhere.
+    if candidate_key:
+        cand_ranks = JOKER_RANK_AFFINITY.get(candidate_key)
+        if cand_ranks and cand_ranks[1] > 0:
+            return cand_ranks[0][0]
+        if candidate_key in _FACE_CARD_JOKERS:
+            return "K"
+    if strategy and any(
+        a.name == "face_card" for a in strategy.active_archetypes
+    ):
+        return "K"
     if strategy and strategy.preferred_ranks:
         return strategy.preferred_ranks[0][0]
     return _TYPICAL_RANK
@@ -193,6 +217,7 @@ def _alt_suit(primary: str) -> str:
 def _synthetic_hand(
     hand_name: str,
     strategy: Strategy | None = None,
+    candidate_key: str | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Build (scoring_cards, played_cards) for a typical hand of given type.
 
@@ -200,7 +225,7 @@ def _synthetic_hand(
     played_cards: all 5 cards played
     """
     suit = _preferred_suit(strategy)
-    rank = _preferred_rank(strategy)
+    rank = _preferred_rank(strategy, candidate_key)
     alt = _alt_suit(suit)
 
     if hand_name == "High Card":
@@ -342,7 +367,7 @@ def _scoring_delta(
     weighted_delta = 0.0
 
     for hand_name, weight in hand_types:
-        scoring_cards, played_cards = _synthetic_hand(hand_name, strategy)
+        scoring_cards, played_cards = _synthetic_hand(hand_name, strategy, candidate_key)
 
         baseline = score_hand(
             hand_name, scoring_cards, hand_levels,
