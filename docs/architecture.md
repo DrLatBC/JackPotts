@@ -35,11 +35,18 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | File | Role |
 |------|------|
 | `src/balatro_bot/bot.py` | Game loop, polls state, dispatches actions, collects per-game data |
+| `src/balatro_bot/cli.py` | CLI entry (`balatro-bot`) — flags, logging setup, `run_bot()` wiring |
 | `src/balatro_bot/engine.py` | Priority-ordered rule engine |
 | `src/balatro_bot/context.py` | `RoundContext` — per-tick cached context with boss blind mutations; exposes `card_protection` |
 | `src/balatro_bot/actions.py` | Action dataclasses + `Rule` protocol |
 | `src/balatro_bot/strategy.py` | Hand/suit/rank/enhancement affinity from owned jokers; builds `CardProtection` |
-| `src/balatro_bot/scaling.py` | Scaling joker registry, anti-synergy map, derived joker sets |
+| `src/balatro_bot/cards.py` | Low-level card accessors (rank, suit, chips, debuff); shared by scoring and joker effects to break the import cycle |
+| `src/balatro_bot/constants.py` | `RANK_ORDER`, `HAND_INFO`, etc. |
+| `src/balatro_bot/scaling.py` | `ScalingProfile` registry, anti-synergy map, derived joker sets |
+| `src/balatro_bot/joker_registry.py` | Static joker metadata (key, name, rarity, cost) auto-extracted from `game.lua` |
+| `src/balatro_bot/value_map.py` | Canonical-scenario value map generator — runs every joker through `evaluate_joker_value`; pushed to the dashboard's `/value-map` page |
+| `src/balatro_bot/bot_logging.py` | Game loop logging helpers |
+| `src/balatro_bot/bot_format.py` | Card/deck formatting utilities |
 
 ### Policy (`domain/policy/`)
 
@@ -81,6 +88,20 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | `per_card.py` | Per-scored-card effect model (Fibonacci, Photograph, Triboulet, Idol, Bloodstone) |
 | `scoring_phase.py` | Phase classification (chips/mult/xmult) + `reorder_for_scoring` |
 | `simple.py` / `complex.py` | Individual joker effect functions |
+
+### Rules (`rules/`)
+
+Thin rule classes per game state. Each has `match(state, ctx)` and `action(state, ctx)`; the engine iterates them in priority order and the first match fires.
+
+| File | Role |
+|------|------|
+| `playing.py` | `SELECTING_HAND` rules (consumables, reorder, winning/high-value plays, discard-to-improve, last-resort fallback) |
+| `shop.py` | `SHOP` rules — single `UnifiedShopRule` delegates to `ShopEvaluator` |
+| `blind.py` | `BLIND_SELECT` rules (skip/select policy) |
+| `packs.py` | `*_PACK` rules (tarot / planet / buffoon / spectral pick) |
+| `consumables.py` | Consumable use rules (including Hex selldown) |
+| `round_eval.py` | `ROUND_EVAL` rules (cash out) |
+| `_helpers.py` | Shared rule helpers (`_pad_with_junk`, `_sort_play_order`) |
 
 ### Data models (`domain/models/`)
 
@@ -145,4 +166,9 @@ Before the consolidation, six separate parameters were plumbed through every `ca
 
 ### Boss blind handling
 
-All boss-specific mutations live in `context.py` and the relevant scoring transforms live in `domain/scoring/base.py`. See [scoring.md](scoring.md) for the full list of handled bosses.
+Split across two concerns:
+
+- **Play-time / scoring.** Boss-specific mutations to `RoundContext` (debuffs, scoring-suit restriction, hand lock, forced card, hand-size / hand-count deltas) live in `context.py`. Hand-level transforms (Flint halving, Arm reduction) live in `domain/scoring/base.py`.
+- **Valuation-time.** `domain/policy/boss_adjustment.py` applies per-joker multipliers against the active boss or, during the shop phase, a weighted blend across the upcoming-boss pool (`BOSS_WEIGHT` in `sim_context.py`). Boss templates live in `BossBlindState._BOSS_TEMPLATES`.
+
+See [scoring.md](scoring.md) for the full list of handled bosses.
