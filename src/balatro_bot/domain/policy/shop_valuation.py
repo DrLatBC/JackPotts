@@ -864,6 +864,32 @@ def evaluate_joker_value(
             floor *= max(0.4, (6 - ante) / 5.0)
             base_value = max(base_value, floor)
 
+    # Passive xmult scalers (milk_priority=0: Madness, Hologram, Canio,
+    # Lucky Cat, Glass) read at X1.0 baseline in the sim but accumulate
+    # meaningful xmult over remaining rounds with no play commitment. Project
+    # a future-value floor = gain_per × estimated trigger count × sim coeff.
+    if ante <= 6:
+        profile = SCALING_REGISTRY.get(key)
+        if (
+            profile
+            and profile.milk_priority == 0
+            and profile.gain_type == "xmult"
+            and profile.gain_per > 0
+        ):
+            rounds_left = max(0, 8 - ante + 1)
+            # Per-round trigger estimate: once/blind for passives (Madness,
+            # Canio on blind), a few per round for per-card (Lucky Cat,
+            # Hologram, Glass).
+            if key in ("j_madness", "j_canio"):
+                triggers_per_round = 1.0
+            else:
+                triggers_per_round = 2.0
+            projected_xmult_gain = profile.gain_per * triggers_per_round * rounds_left
+            # Halve — not all rounds realize full gain (bosses, early death).
+            projected_xmult_gain *= 0.5
+            floor = math.log2(1.0 + projected_xmult_gain) * SIM_COEFF_XMULT
+            base_value = max(base_value, floor)
+
     # Madness fodder: extra bodies dilute Madness's random-eat, protecting real
     # scalers. No bonus when slots are full (no room for fodder) or when the
     # candidate is Madness itself.
