@@ -81,7 +81,7 @@ def choose_discard(ctx: RoundContext) -> Action | None:
             deck_cards=ctx.deck_cards,
             chips_remaining=ctx.chips_remaining,
             jokers=ctx.jokers,
-            required_hand=ctx.mouth_locked_hand,
+            required_hand=ctx.mouth_locked_hand or ctx.committed_hand_type,
             protection=ctx.card_protection,
         )
         best_chase = _best_chase(suggestions, ctx, play_ev)
