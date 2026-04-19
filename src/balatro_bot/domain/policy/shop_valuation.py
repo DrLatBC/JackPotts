@@ -352,6 +352,10 @@ _PER_CARD_SCORING_JOKERS = frozenset({
     "j_smiley", "j_scary_face", "j_walkie_talkie",
     "j_photograph", "j_triboulet", "j_ancient",
     "j_arrowhead", "j_onyx_agate", "j_bloodstone", "j_idol", "j_hiker",
+    # Retrigger jokers — fire via retrigger_count() during per-card scoring,
+    # not via JOKER_EFFECTS dispatch, but they DO produce real sim deltas.
+    "j_hanging_chad", "j_hack", "j_sock_and_buskin",
+    "j_dusk", "j_selzer",
 })
 
 
