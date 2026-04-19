@@ -416,84 +416,64 @@ class TestDeckCompositionAdjustment:
 
 
 class TestHeldCardJokerValuation:
-    """Held-card jokers (Baron, Shoot the Moon, Raised Fist) need explicit
-    deck-composition bonuses because _scoring_delta runs the synthetic hand
-    with no held_cards and their effects never trigger in the simulation."""
+    """Held-phase jokers (Baron, Shoot the Moon, Raised Fist, Mime, Blackboard)
+    are driven by _synthetic_held_cards in _scoring_delta (Phase 2).
+    These tests pin the end-to-end evaluate_joker_value behavior."""
 
-    def _deck_with_ranks(self, **rank_counts):
-        """Build a 52-card DeckProfile with specific rank counts."""
-        cards = []
-        for rank, count in rank_counts.items():
-            for _ in range(count):
-                cards.append(card(rank, "H"))
-        for _ in range(52 - len(cards)):
-            cards.append(card("2", "S"))
-        return DeckProfile.from_cards(cards)
+    _HL = {h: {"level": 1, "chips": c, "mult": m} for h, c, m in [
+        ("High Card", 5, 1), ("Pair", 10, 2), ("Two Pair", 20, 2),
+        ("Three of a Kind", 30, 3), ("Straight", 30, 4), ("Flush", 35, 4),
+        ("Full House", 40, 4), ("Four of a Kind", 60, 7),
+    ]}
+    _VANILLA = DeckProfile(
+        total_cards=52,
+        rank_counts={r: 4 for r in "23456789TJQKA"},
+        suit_counts={s: 13 for s in "HDCS"},
+    )
 
-    def _deck_with_steel(self, steel_count):
-        cards = [card("A", "H", enhancement="STEEL") for _ in range(steel_count)]
-        for _ in range(52 - steel_count):
-            cards.append(card("2", "S"))
-        return DeckProfile.from_cards(cards)
+    def _cand(self, key, effect, rarity=2):
+        return {"key": key, "label": key,
+                "value": {"effect": effect, "rarity": rarity},
+                "cost": {"buy": 8, "sell": 4}}
 
-    # --- Baron ---
-    def test_baron_scales_with_king_count(self):
-        dp4 = self._deck_with_ranks(K=4)
-        dp8 = self._deck_with_ranks(K=8)
-        adj4 = _deck_composition_adjustment("j_baron", 0.0, dp4, None)
-        adj8 = _deck_composition_adjustment("j_baron", 0.0, dp8, None)
-        assert adj4 > 0, "Baron with 4 Kings should have nonzero value"
-        assert adj8 > adj4, "More Kings → more value"
+    def test_baron_empty_roster_exceeds_floor(self):
+        cand = self._cand("j_baron", "Each King held in hand gives X1.5 Mult")
+        v = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
+        assert v > 6.0, f"Baron empty-roster @ ante 3 should be >6.0, got {v}"
 
-    def test_baron_caps(self):
-        dp20 = self._deck_with_ranks(K=20)
-        adj = _deck_composition_adjustment("j_baron", 0.0, dp20, None)
-        assert adj <= 8.0, "Baron bonus should cap at 8.0"
+    def test_shoot_the_moon_empty_roster_exceeds_floor(self):
+        cand = self._cand("j_shoot_the_moon", "Each Queen held in hand gives +13 Mult")
+        v = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
+        assert v > 3.5, f"SttM empty-roster @ ante 3 should be >3.5, got {v}"
 
-    # --- Shoot the Moon ---
-    def test_shoot_the_moon_scales_with_queen_count(self):
-        dp4 = self._deck_with_ranks(Q=4)
-        dp8 = self._deck_with_ranks(Q=8)
-        adj4 = _deck_composition_adjustment("j_shoot_the_moon", 0.0, dp4, None)
-        adj8 = _deck_composition_adjustment("j_shoot_the_moon", 0.0, dp8, None)
-        assert adj4 > 0
-        assert adj8 > adj4
+    def test_raised_fist_empty_roster_exceeds_floor(self):
+        cand = self._cand("j_raised_fist", "Adds 2x the rank of lowest card held in hand")
+        v = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
+        assert v > 3.0, f"RF empty-roster @ ante 3 should be >3.0, got {v}"
 
-    # --- Raised Fist ---
-    def test_raised_fist_early_ante_decent(self):
-        dp = self._deck_with_steel(0)
-        adj = _deck_composition_adjustment("j_raised_fist", 0.0, dp, None, ante=2)
-        assert adj >= 1.5, f"RF at ante 2 no Steel should be decent, got {adj}"
-
-    def test_raised_fist_mid_ante_weak(self):
-        dp = self._deck_with_steel(0)
-        adj_mid = _deck_composition_adjustment("j_raised_fist", 0.0, dp, None, ante=4)
-        assert adj_mid == 0.0, f"RF at ante 4 no Steel should be 0, got {adj_mid}"
-
-    def test_raised_fist_late_ante_bad_without_steel(self):
-        dp = self._deck_with_steel(0)
-        adj = _deck_composition_adjustment("j_raised_fist", 0.0, dp, None, ante=6)
-        assert adj == 0.0
-
-    def test_raised_fist_steel_overrides_ante_decay(self):
-        """With Steel deck rolling, RF retains value even at late ante."""
-        dp = self._deck_with_steel(6)
-        adj_late = _deck_composition_adjustment("j_raised_fist", 0.0, dp, None, ante=6)
-        assert adj_late >= 3.0, (
-            f"RF + 6 Steel at ante 6 should be solid, got {adj_late}"
+    def test_mime_scales_with_held_phase_roster(self):
+        """Mime's retriggers light up when Baron+SttM are owned."""
+        cand = self._cand("j_mime", "Retrigger all cards held in hand")
+        baron = self._cand("j_baron", "Each King held in hand gives X1.5 Mult")
+        sttm = self._cand("j_shoot_the_moon", "Each Queen held in hand gives +13 Mult")
+        v_empty = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
+        v_with = evaluate_joker_value(cand, [baron, sttm], self._HL, ante=3, deck_profile=self._VANILLA)
+        assert v_with > 2 * max(v_empty, 0.5), (
+            f"Mime value should scale ≥2× with Baron+SttM held, got {v_empty} → {v_with}"
         )
 
-    def test_raised_fist_monotonic_in_steel_count(self):
-        adj_0 = _deck_composition_adjustment(
-            "j_raised_fist", 0.0, self._deck_with_steel(0), None, ante=3,
+    def test_blackboard_scales_with_sc_deck_density(self):
+        cand = self._cand("j_blackboard", "X3 Mult if all held cards are Spades/Clubs")
+        heavy = DeckProfile(
+            total_cards=52,
+            rank_counts={r: 4 for r in "23456789TJQKA"},
+            suit_counts={"H": 8, "D": 8, "S": 18, "C": 18},  # 36 S+C
         )
-        adj_2 = _deck_composition_adjustment(
-            "j_raised_fist", 0.0, self._deck_with_steel(2), None, ante=3,
+        v_vanilla = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
+        v_heavy = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=heavy)
+        assert v_heavy >= 3.0 * v_vanilla, (
+            f"Blackboard with 36 S/C should be ≥3× vanilla, got {v_vanilla} → {v_heavy}"
         )
-        adj_4 = _deck_composition_adjustment(
-            "j_raised_fist", 0.0, self._deck_with_steel(4), None, ante=3,
-        )
-        assert adj_0 < adj_2 < adj_4
 
 
 class TestEvaluateJokerWithDeckProfile:

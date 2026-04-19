@@ -55,7 +55,7 @@ JOKER_SCORE_CATEGORY: dict[str, set[str]] = {
         "j_greedy_joker", "j_lusty_joker", "j_wrathful_joker", "j_gluttenous_joker",
         "j_onyx_agate",
         "j_smiley", "j_fibonacci", "j_even_steven",
-        "j_shoot_the_moon", "j_raised_fist",
+        "j_shoot_the_moon", "j_raised_fist", "j_mime",
         "j_half", "j_abstract", "j_mystic_summit", "j_bootstraps",
         "j_swashbuckler", "j_erosion",
         "j_ceremonial", "j_supernova", "j_ride_the_bus", "j_green_joker",
@@ -146,7 +146,6 @@ UTILITY_VALUE: dict[str, float] = {
     "j_dusk":          1.5,
     "j_sock_and_buskin": 1.0,
     "j_selzer":       1.5,
-    "j_mime":          1.0,
     "j_luchador":      1.0,
     "j_invisible":     1.0,
     "j_diet_cola":     0.5,
@@ -356,12 +355,62 @@ _PER_CARD_SCORING_JOKERS = frozenset({
     "j_dusk", "j_selzer",
 })
 
+# Held-in-hand phase jokers. These are _noop in JOKER_EFFECTS but fire via
+# the held-card loop in estimate._apply_card_scoring. Sim sees them only when
+# ctx.held_cards is non-empty — see _synthetic_held_cards().
+_HELD_SCORING_JOKERS = frozenset({
+    "j_baron", "j_shoot_the_moon", "j_raised_fist", "j_mime",
+    # Blackboard already routes (has a complex effect), listed for clarity.
+    "j_blackboard",
+})
+
 
 def _has_scoring_effect(key: str) -> bool:
     if key in _PER_CARD_SCORING_JOKERS:
         return True
+    if key in _HELD_SCORING_JOKERS:
+        return True
     effect = JOKER_EFFECTS.get(key)
     return effect is not None and effect is not _noop
+
+
+def _synthetic_held_cards(ctx: SimContext) -> list[Card]:
+    """Build synthetic held cards for held-phase joker sim.
+
+    Returns 0-3 cards based on which held-phase jokers are in owned+candidate.
+    Drives Baron (Kings), Shoot the Moon (Queens), Raised Fist (low card),
+    Mime (retrigger), Blackboard (all S/C).
+    """
+    relevant = ctx.owned_keys | {ctx.candidate_key}
+    has_baron = "j_baron" in relevant
+    has_sttm = "j_shoot_the_moon" in relevant
+    has_rf = "j_raised_fist" in relevant
+    has_mime = "j_mime" in relevant
+    has_bb = "j_blackboard" in relevant
+
+    if not (has_baron or has_sttm or has_rf or has_mime or has_bb):
+        return []
+
+    suit = "S" if has_bb else _preferred_suit(ctx)
+    alt = "C" if has_bb else _alt_suit(suit)
+
+    # Baron + SttM together — mix Kings and Queens.
+    if has_baron and has_sttm:
+        return [_make_card("K", suit), _make_card("K", alt), _make_card("Q", suit)]
+    if has_baron:
+        return [_make_card("K", suit), _make_card("K", alt), _make_card("K", suit)]
+    if has_sttm:
+        return [_make_card("Q", suit), _make_card("Q", alt), _make_card("Q", suit)]
+    if has_rf:
+        # Lowest-held drives RF value — pick "2" plus two filler.
+        return [_make_card("2", suit), _make_card("5", alt), _make_card("7", suit)]
+    if has_mime:
+        # Mime alone retriggers whatever's held — give it face cards to chew.
+        return [_make_card("K", suit), _make_card("Q", alt), _make_card("J", suit)]
+    if has_bb:
+        # Blackboard with no other held-phase signal — all held S/C.
+        return [_make_card("T", suit), _make_card("9", alt), _make_card("8", suit)]
+    return []
 
 
 def _scoring_delta(
@@ -428,6 +477,8 @@ def _scoring_delta(
     want_flower_pot = "j_flower_pot" in candidate_keys
     want_seeing_double = "j_seeing_double" in candidate_keys
 
+    held_cards = _synthetic_held_cards(ctx)
+
     def _rewrite_suits(cards: list, pattern: list[str]) -> list:
         out = []
         for i, c in enumerate(cards):
@@ -451,12 +502,14 @@ def _scoring_delta(
         baseline = score_hand(
             hand_name, scoring_cards, hand_levels,
             jokers=baseline_jokers, played_cards=played_cards,
+            held_cards=held_cards,
             joker_limit=joker_limit,
             ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
         )
         with_candidate = score_hand(
             hand_name, scoring_cards, hand_levels,
             jokers=_place_candidate(baseline_jokers), played_cards=played_cards,
+            held_cards=held_cards,
             joker_limit=joker_limit,
             ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
         )
@@ -759,31 +812,23 @@ def _deck_composition_adjustment(
             # Enhanced cards in the suit retrigger/score extra → suit joker more valuable
             base_value += min(enh_total * 0.3, 2.0)
 
-    # --- Held-card jokers: value scales with deck composition ---
-    # These contribute nothing in _scoring_delta because the synthetic hand
-    # has no held_cards, so we need an explicit bonus tied to the deck.
-    if key == "j_baron":
-        kings = deck_profile.rank_counts.get("K", 0)
-        # 4 Kings (vanilla) → +3.0; each additional King adds xmult ceiling.
-        base_value += min(kings * 0.75, 8.0)
-    elif key == "j_shoot_the_moon":
-        queens = deck_profile.rank_counts.get("Q", 0)
-        # Additive mult — caps sooner than Baron's multiplicative stack.
-        base_value += min(queens * 0.65, 6.0)
-    elif key == "j_raised_fist":
-        steel = deck_profile.enhancement_counts.get("STEEL", 0)
-        if steel >= 4:
-            # Steel deck rolling — RF's held-mult stacks with Steel's held-xmult.
-            base_value += 3.0 + min((steel - 4) * 0.4, 2.0)
-        elif steel >= 2:
-            # Steel build plausibly in progress.
-            base_value += 1.5 + (steel - 2) * 0.4
+    # --- Blackboard: value scales with deck Spade/Club density ---
+    # Activation requires ALL held cards to be S/C; higher S/C share in the
+    # deck means proc rate climbs. Vanilla 26/52 is baseline (1.0×); 30+
+    # S/C (Smeared, Midas Mask mid-game, Strength tarots toward dark suits,
+    # spectral conversions) compounds into a substantial multiplier.
+    if key == "j_blackboard":
+        sc = deck_profile.suit_counts.get("S", 0) + deck_profile.suit_counts.get("C", 0)
+        if sc >= 40:
+            base_value *= 4.0
+        elif sc >= 34:
+            base_value *= 3.0
+        elif sc >= 30:
+            base_value *= 2.0
+        elif sc >= 26:
+            base_value *= 1.0
         else:
-            # No Steel plan — RF arc: decent early, rapidly obsolete after.
-            if ante <= 2:
-                base_value += 2.0
-            elif ante == 3:
-                base_value += 0.5
+            base_value *= 0.4
 
     return base_value
 
