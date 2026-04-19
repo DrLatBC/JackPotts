@@ -56,7 +56,7 @@ def _project_throwback_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
     return 2.0 * 0.25 * remaining_fraction
 
 
-def _project_canio_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
+def _project_caino_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
     # Face destruction is rare (Spectral cards, Glass break). Expect ~0.5 procs
     # over a full run — less when ante is high.
     return 0.5 * (_ante_remaining(ctx.ante) / 8.0)
@@ -156,7 +156,7 @@ def _project_glass_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
 _XMULT_PROJECTORS = {
     "j_madness":       _project_madness_gain,
     "j_throwback":     _project_throwback_gain,
-    "j_canio":         _project_canio_gain,
+    "j_caino":         _project_caino_gain,
     "j_hologram":      _project_hologram_gain,
     "j_obelisk":       _project_obelisk_gain,
     "j_vampire":       _project_vampire_gain,
@@ -172,7 +172,7 @@ _XMULT_PROJECTORS = {
 _XMULT_ANCHOR_ATTR: dict[str, str] = {
     "j_madness":       "madness_xmult",
     "j_throwback":     "throwback_xmult",
-    "j_canio":         "canio_xmult",
+    "j_caino":         "caino_xmult",
     "j_hologram":      "hologram_xmult",
     "j_obelisk":       "obelisk_xmult",
     "j_vampire":       "vampire_xmult",

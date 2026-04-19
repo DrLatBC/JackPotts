@@ -189,8 +189,8 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
         "j_lucky_cat", "passive", "xmult", 0.25, True, 0,
         "Scales on Lucky card triggers. Stack Lucky enhancements.",
     ),
-    "j_canio": ScalingProfile(
-        "j_canio", "passive", "xmult", 1, True, 0,
+    "j_caino": ScalingProfile(
+        "j_caino", "passive", "xmult", 1, True, 0,
         "Scales when face cards destroyed (Glass, Spectral). Not directly triggerable.",
     ),
     "j_madness": ScalingProfile(

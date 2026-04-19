@@ -121,7 +121,7 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     ("j_hit_the_road",  "parsed_xmult", {"fallback": 1.5}),
     ("j_glass",         "parsed_xmult", {"fallback": 1.5}),
     ("j_throwback",     "parsed_xmult", {"fallback": 1.5}),
-    ("j_canio",         "parsed_xmult", {"fallback": 2.0}),
+    ("j_caino",         "parsed_xmult", {"fallback": 2.0}),
     # j_yorick — moved to complex.py (Hook boss discard advances discard counter)
 
     # j_steel_joker: moved to complex.py (dynamic Steel card counting)

@@ -155,6 +155,7 @@ def build_value_map() -> list[dict[str, Any]]:
                 v = evaluate_joker_value(
                     cand, owned, _HAND_LEVELS, ante,
                     strategy=strategy, deck_profile=_VANILLA_DECK,
+                    money=20, discards_left=2,
                 )
             except Exception:  # defensive — never let one joker break the map
                 v = 0.0

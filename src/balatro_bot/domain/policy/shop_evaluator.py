@@ -197,6 +197,7 @@ def score_roster(
     ante: int = 1,
     unique_planets_used: int = 0,
     live_stats: "LiveRunStats | None" = None,
+    money: int = 0,
 ) -> list[JokerScore]:
     """Compute live EV delta for each owned joker."""
     scores: list[JokerScore] = []
@@ -216,6 +217,7 @@ def score_roster(
             deck_profile=deck_profile,
             unique_planets_used=unique_planets_used,
             live_stats=live_stats,
+            money=money,
         )
 
         # Fodder value: if Dagger is owned and this isn't Dagger itself,
@@ -376,6 +378,7 @@ def _score_shop_joker(
     deck_profile: DeckProfile | None,
     unique_planets_used: int = 0,
     live_stats: "LiveRunStats | None" = None,
+    money: int = 0,
 ) -> float:
     """Score a shop joker using the valuation engine."""
     return evaluate_joker_value(
@@ -384,6 +387,7 @@ def _score_shop_joker(
         deck_profile=deck_profile,
         unique_planets_used=unique_planets_used,
         live_stats=live_stats,
+        money=money,
     )
 
 
@@ -782,12 +786,15 @@ class ShopEvaluator:
         # conservative 1.5/1.5 defaults.
         live_stats = state.get("_live_stats")
 
+        money = state.get("money", 0)
+
         # ── Score roster ──
         roster = score_roster(
             owned, hand_levels, strat,
             joker_limit=joker_limit, deck_profile=deck_profile, ante=ante,
             unique_planets_used=unique_planets_used,
             live_stats=live_stats,
+            money=money,
         )
 
         # ── Enumerate all candidate plans ──
@@ -845,6 +852,7 @@ class ShopEvaluator:
                 card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
                 unique_planets_used=unique_planets_used,
                 live_stats=live_stats,
+                money=money,
             )
 
             # Riff-Raff slot reservation: penalize buys that fill spawn slots
@@ -903,6 +911,7 @@ class ShopEvaluator:
                             post_sell_strategy, ante, joker_limit, deck_profile,
                             unique_planets_used=unique_planets_used,
                             live_stats=live_stats,
+                            money=money,
                         )
                         upgrade_delta = shop_value_post - sc.ev_delta
                     opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
@@ -1068,6 +1077,7 @@ class ShopEvaluator:
                     card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
                     unique_planets_used=unique_planets_used,
                     live_stats=live_stats,
+                    money=money,
                 ) >= 6.0
                 for card in shop.get("cards", [])
             )

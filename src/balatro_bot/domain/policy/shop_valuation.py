@@ -56,7 +56,7 @@ JOKER_SCORE_CATEGORY: dict[str, set[str]] = {
         "j_steel_joker", "j_loyalty_card", "j_drivers_license",
         "j_madness", "j_vampire", "j_hologram", "j_obelisk",
         "j_lucky_cat", "j_glass", "j_campfire", "j_throwback",
-        "j_card_sharp", "j_ancient", "j_baseball", "j_canio",
+        "j_card_sharp", "j_ancient", "j_baseball", "j_caino",
         "j_yorick", "j_hit_the_road", "j_constellation", "j_idol",
     },
     "mult": {
@@ -688,6 +688,13 @@ def _scoring_delta(
             scoring_cards = _rewrite_suits(scoring_cards, ["C"] + ["H"] * (len(scoring_cards) - 1))
             played_cards = scoring_cards + played_cards[len(scoring_cards):]
 
+        # Half Joker fires when played_cards <= 3. Live bot doesn't pad past
+        # the scoring subset when Half is in the roster (FEWER_CARDS_JOKERS
+        # in rules/_helpers.py). Mirror that here so Half actually fires in
+        # the sim on hands where scoring ≤ 3 (High Card, Pair, 3-of-a-Kind).
+        if "j_half" in candidate_keys and len(scoring_cards) <= 3:
+            played_cards = list(scoring_cards)
+
         def _score(jokers: list, rng=None) -> tuple[int, int, int]:
             return score_hand(
                 hand_name, scoring_cards, hand_levels,
@@ -695,6 +702,7 @@ def _scoring_delta(
                 held_cards=held_cards,
                 joker_limit=joker_limit,
                 ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
+                money=ctx.money, discards_left=ctx.discards_left,
                 rng=rng,
             )
 
@@ -771,7 +779,7 @@ _XMULT_COPY_TARGETS = frozenset({
     "j_cavendish", "j_stencil", "j_duo", "j_trio", "j_family",
     "j_order", "j_tribe", "j_acrobat", "j_blackboard", "j_flower_pot",
     "j_madness", "j_vampire", "j_hologram", "j_constellation",
-    "j_campfire", "j_lucky_cat", "j_canio", "j_obelisk",
+    "j_campfire", "j_lucky_cat", "j_caino", "j_obelisk",
     "j_card_sharp", "j_seeing_double",
 })
 
@@ -994,6 +1002,8 @@ def evaluate_joker_value(
     unique_planets_used: int = 0,
     blind_name: str | None = None,
     live_stats: "LiveRunStats | None" = None,
+    money: int = 0,
+    discards_left: int = 0,
 ) -> float:
     """Unified joker valuation. Returns ~0.0 to ~15.0.
 
@@ -1023,6 +1033,8 @@ def evaluate_joker_value(
         blind_name=blind_name,
         monte_carlo_samples=mc_samples,
         live_stats=live_stats,
+        money=money,
+        discards_left=discards_left,
     )
     key = ctx.candidate_key
     owned_keys = set(ctx.owned_keys)

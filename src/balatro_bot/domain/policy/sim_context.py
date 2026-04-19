@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 _XMULT_ANCHOR_FIELD: dict[str, str] = {
     "j_madness": "madness_xmult",
     "j_hologram": "hologram_xmult",
-    "j_canio": "canio_xmult",
+    "j_caino": "caino_xmult",
     "j_vampire": "vampire_xmult",
     "j_obelisk": "obelisk_xmult",
     "j_yorick": "yorick_xmult",
@@ -76,7 +76,7 @@ class LifetimeState:
     # Live xmult anchors — "Currently X…" parsed from owned jokers.
     madness_xmult: float = 1.0
     hologram_xmult: float = 1.0
-    canio_xmult: float = 1.0
+    caino_xmult: float = 1.0
     vampire_xmult: float = 1.0
     obelisk_xmult: float = 1.0
     yorick_xmult: float = 1.0
@@ -229,6 +229,13 @@ class SimContext:
     # fast expected-value path for non-stochastic candidates.
     monte_carlo_samples: int = 0
 
+    # Live round/wallet state used by money-scaling jokers (Bull, Bootstraps)
+    # and discard-scaling jokers (Banner, Mystic Summit). Zero defaults when
+    # unknown; real bot calls pass current values from ``RoundContext``, and
+    # shop-phase / value-map callers pass reasonable projected averages.
+    money: int = 0
+    discards_left: int = 0
+
     # Derived
     candidate_key: str = field(default="", repr=False)
     owned_keys: frozenset[str] = field(default_factory=frozenset, repr=False)
@@ -254,6 +261,8 @@ class SimContext:
         blind_name: str | None = None,
         monte_carlo_samples: int = 0,
         live_stats: "LiveRunStats | None" = None,
+        money: int = 0,
+        discards_left: int = 0,
     ) -> "SimContext":
         rank_density: dict[str, float] = {}
         suit_density: dict[str, float] = {}
@@ -288,4 +297,6 @@ class SimContext:
             lifetime=lifetime,
             boss=boss,
             monte_carlo_samples=monte_carlo_samples,
+            money=money,
+            discards_left=discards_left,
         )

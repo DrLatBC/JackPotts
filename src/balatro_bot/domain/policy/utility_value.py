@@ -422,6 +422,33 @@ def _gold_ticket_dollars(
     return per_hand * HANDS_PER_ROUND * rounds_remaining(ante)
 
 
+def _rough_gem_dollars(
+    ante: int, deck_profile: DeckProfile | None = None, **_: object
+) -> float:
+    """Rough Gem: +$1 per scored Diamond card.
+
+    Expected $ = diamond_density × SCORED_CARDS_PER_HAND × $1 × hands × rounds.
+    Vanilla deck has 13/52 Diamonds; scales with deck composition.
+    """
+    if deck_profile and deck_profile.total_cards > 0:
+        diamond_ratio = deck_profile.suit_counts.get("D", 0) / deck_profile.total_cards
+    else:
+        diamond_ratio = 13.0 / 52.0
+    diamonds_scored_per_hand = SCORED_CARDS_PER_HAND * diamond_ratio
+    per_hand = 1.0 * diamonds_scored_per_hand
+    return per_hand * HANDS_PER_ROUND * rounds_remaining(ante)
+
+
+def _chaos_dollars(ante: int, **_: object) -> float:
+    """Chaos the Clown: first reroll in shop is free each Ante.
+
+    Bot rerolls 0-3×/ante; the free first reroll saves ≈$5 per visited ante.
+    Flat savings decay with ante urgency (scoring pressure takes slot
+    priority over eco by SPEND phase).
+    """
+    return 5.0 * max(1, 8 - ante)
+
+
 def _matador_dollars(ante: int, **_: object) -> float:
     """Matador: +$8 if played hand triggers the boss blind ability.
 
@@ -729,6 +756,8 @@ UTILITY_ROI_VALUATORS: dict[str, Callable[..., float]] = {
     "j_mail":             _mail_in_rebate_dollars,
     "j_faceless":         _faceless_dollars,
     "j_ticket":           _gold_ticket_dollars,
+    "j_rough_gem":        _rough_gem_dollars,
+    "j_chaos":            _chaos_dollars,
     "j_matador":          _matador_dollars,
     # Deck-state-scaled
     "j_cloud_9":          _cloud_9_dollars,
