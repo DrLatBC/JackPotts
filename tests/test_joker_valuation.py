@@ -14,8 +14,35 @@ from balatro_bot.domain.policy.shop_valuation import (
     evaluate_joker_value,
     UTILITY_VALUE,
 )
+from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring.classify import classify_hand
 from balatro_bot.strategy import compute_strategy, Strategy
+
+
+def _ctx(
+    candidate: dict | None = None,
+    owned: list[dict] | None = None,
+    hand_levels: dict | None = None,
+    strategy: Strategy | None = None,
+    ante: int = 1,
+) -> SimContext:
+    """Tiny factory for tests that exercise the internal helpers directly."""
+    cand = candidate if candidate is not None else {"key": "j_joker", "label": "Joker"}
+    owned = owned if owned is not None else []
+    hand_levels = hand_levels if hand_levels is not None else {
+        "Pair": {"chips": 10, "mult": 2, "level": 1},
+        "High Card": {"chips": 5, "mult": 1, "level": 1},
+        "Flush": {"chips": 35, "mult": 4, "level": 1},
+    }
+    if strategy is None:
+        strategy = compute_strategy(owned, hand_levels)
+    return SimContext.build(
+        candidate=cand,
+        owned_jokers=owned,
+        hand_levels=hand_levels,
+        strategy=strategy,
+        ante=ante,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -24,50 +51,50 @@ from balatro_bot.strategy import compute_strategy, Strategy
 
 class TestSyntheticHand:
     def test_pair_produces_pair(self):
-        scoring, played = _synthetic_hand("Pair")
+        scoring, played = _synthetic_hand(_ctx(), "Pair")
         assert len(scoring) == 2
         assert len(played) == 5
         # Both scoring cards should have the same rank
         assert scoring[0].value.rank == scoring[1].value.rank
 
     def test_flush_produces_flush(self):
-        scoring, played = _synthetic_hand("Flush")
+        scoring, played = _synthetic_hand(_ctx(), "Flush")
         assert len(scoring) == 5
         suits = {c.value.suit for c in scoring}
         assert len(suits) == 1
 
     def test_straight_produces_straight(self):
-        scoring, played = _synthetic_hand("Straight")
+        scoring, played = _synthetic_hand(_ctx(), "Straight")
         assert len(scoring) == 5
         ranks = [c.value.rank for c in scoring]
         assert len(set(ranks)) == 5  # all different ranks
 
     def test_three_of_a_kind(self):
-        scoring, played = _synthetic_hand("Three of a Kind")
+        scoring, played = _synthetic_hand(_ctx(), "Three of a Kind")
         assert len(scoring) == 3
         assert len(played) == 5
         ranks = [c.value.rank for c in scoring]
         assert len(set(ranks)) == 1
 
     def test_full_house(self):
-        scoring, played = _synthetic_hand("Full House")
+        scoring, played = _synthetic_hand(_ctx(), "Full House")
         assert len(scoring) == 5
         assert len(played) == 5
 
     def test_four_of_a_kind(self):
-        scoring, played = _synthetic_hand("Four of a Kind")
+        scoring, played = _synthetic_hand(_ctx(), "Four of a Kind")
         assert len(scoring) == 4
         assert len(played) == 5
         ranks = [c.value.rank for c in scoring]
         assert len(set(ranks)) == 1
 
     def test_high_card(self):
-        scoring, played = _synthetic_hand("High Card")
+        scoring, played = _synthetic_hand(_ctx(), "High Card")
         assert len(scoring) == 1
         assert len(played) == 5
 
     def test_two_pair(self):
-        scoring, played = _synthetic_hand("Two Pair")
+        scoring, played = _synthetic_hand(_ctx(), "Two Pair")
         assert len(scoring) == 4
         assert len(played) == 5
 
@@ -79,7 +106,7 @@ class TestSyntheticHand:
             preferred_ranks=[],
             active_archetypes=[],
         )
-        scoring, played = _synthetic_hand("Flush", strategy=strat)
+        scoring, played = _synthetic_hand(_ctx(strategy=strat), "Flush")
         suits = {c.value.suit for c in scoring}
         assert "S" in suits
 
@@ -96,7 +123,7 @@ class TestScoringDelta:
         hand_levels = {"Pair": {"chips": 10, "mult": 10, "level": 1}}
         hand_types = [("Pair", 1.0)]
 
-        delta = _scoring_delta(duo, [], hand_levels, hand_types)
+        delta = _scoring_delta(_ctx(candidate=duo, hand_levels=hand_levels), hand_types)
         assert delta > 0.5  # substantial improvement from X2
 
     def test_duo_with_flush_strategy(self):
@@ -106,7 +133,7 @@ class TestScoringDelta:
         hand_levels = {"Flush": {"chips": 35, "mult": 4, "level": 1}}
         hand_types = [("Flush", 1.0)]
 
-        delta = _scoring_delta(duo, [], hand_levels, hand_types)
+        delta = _scoring_delta(_ctx(candidate=duo, hand_levels=hand_levels), hand_types)
         assert delta < 0.1  # minimal improvement
 
     def test_unconditional_joker_always_contributes(self):
@@ -116,7 +143,7 @@ class TestScoringDelta:
         hand_levels = {"Pair": {"chips": 10, "mult": 10, "level": 1}}
         hand_types = [("Pair", 1.0)]
 
-        delta = _scoring_delta(j, [], hand_levels, hand_types)
+        delta = _scoring_delta(_ctx(candidate=j, hand_levels=hand_levels), hand_types)
         assert delta > 0  # some improvement
 
 

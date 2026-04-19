@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.card import Card, CardValue
 from balatro_bot.domain.policy import utility_value
+from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop, parse_effect_value
 from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE, SCALING_REGISTRY
@@ -183,10 +184,9 @@ def _make_card(rank: str, suit: str) -> Card:
     )
 
 
-def _preferred_suit(
-    strategy: Strategy | None,
-    candidate_key: str | None = None,
-) -> str:
+def _preferred_suit(ctx: SimContext) -> str:
+    candidate_key = ctx.candidate_key
+    strategy = ctx.strategy
     if candidate_key:
         cand_suit = JOKER_SUIT_AFFINITY.get(candidate_key)
         if cand_suit and cand_suit[1] > 0:
@@ -199,10 +199,9 @@ def _preferred_suit(
     return _DEFAULT_SUIT
 
 
-def _preferred_rank(
-    strategy: Strategy | None,
-    candidate_key: str | None = None,
-) -> str:
+def _preferred_rank(ctx: SimContext) -> str:
+    candidate_key = ctx.candidate_key
+    strategy = ctx.strategy
     # Candidate's own rank affinity wins — evaluating Scholar should produce aces
     # even against a roster whose preferred_ranks point elsewhere.
     if candidate_key:
@@ -224,17 +223,16 @@ def _alt_suit(primary: str) -> str:
 
 
 def _synthetic_hand(
+    ctx: SimContext,
     hand_name: str,
-    strategy: Strategy | None = None,
-    candidate_key: str | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Build (scoring_cards, played_cards) for a typical hand of given type.
 
     scoring_cards: subset that actually scores in Balatro
     played_cards: all 5 cards played
     """
-    suit = _preferred_suit(strategy, candidate_key)
-    rank = _preferred_rank(strategy, candidate_key)
+    suit = _preferred_suit(ctx)
+    rank = _preferred_rank(ctx)
     alt = _alt_suit(suit)
 
     if hand_name == "High Card":
@@ -367,12 +365,8 @@ def _has_scoring_effect(key: str) -> bool:
 
 
 def _scoring_delta(
-    candidate: dict,
-    owned_jokers: list[dict],
-    hand_levels: dict[str, dict],
+    ctx: SimContext,
     hand_types: list[tuple[str, float]],
-    joker_limit: int = 5,
-    strategy: Strategy | None = None,
 ) -> float:
     """Score with/without candidate across weighted hand types.
 
@@ -384,8 +378,14 @@ def _scoring_delta(
     if total_weight <= 0:
         return 0.0
 
+    candidate = ctx.candidate
+    owned_jokers = ctx.owned_jokers
+    hand_levels = ctx.hand_levels
+    joker_limit = ctx.joker_limit
+    strategy = ctx.strategy
+
     # Filter candidate from owned to handle sell evaluations correctly
-    candidate_key = candidate.get("key", "")
+    candidate_key = ctx.candidate_key
     baseline_jokers = [j for j in owned_jokers if j is not candidate]
 
     # Blueprint/Brainstorm only produce value when positioned to copy a
@@ -417,9 +417,9 @@ def _scoring_delta(
 
     # Contextual assumptions for round-variable per-card jokers during valuation:
     # pick the synthetic hand's preferred rank/suit so the effect actually fires.
-    sim_suit = _preferred_suit(strategy, candidate_key)
-    sim_rank = _preferred_rank(strategy, candidate_key)
-    owned_keys = {joker_key(j) for j in owned_jokers}
+    sim_suit = _preferred_suit(ctx)
+    sim_rank = _preferred_rank(ctx)
+    owned_keys = set(ctx.owned_keys)
     candidate_keys = owned_keys | {candidate_key}
     ancient_suit = sim_suit if "j_ancient" in candidate_keys else None
     idol_rank = sim_rank if "j_idol" in candidate_keys else None
@@ -436,7 +436,7 @@ def _scoring_delta(
         return out
 
     for hand_name, weight in hand_types:
-        scoring_cards, played_cards = _synthetic_hand(hand_name, strategy, candidate_key)
+        scoring_cards, played_cards = _synthetic_hand(ctx, hand_name)
 
         # Flower Pot needs 4+ scoring cards spanning all 4 suits. Seeing Double
         # needs Club + non-Club. Reshape suits so the condition can fire in
@@ -807,11 +807,21 @@ def evaluate_joker_value(
     Higher = more valuable to the current build.
     Used by both BuyJokersInShop and SellWeakJoker.
     """
-    key = candidate.get("key", "")
     if strategy is None:
         strategy = compute_strategy(owned_jokers, hand_levels)
 
-    owned_keys = {joker_key(j) for j in owned_jokers}
+    ctx = SimContext.build(
+        candidate=candidate,
+        owned_jokers=owned_jokers,
+        hand_levels=hand_levels,
+        strategy=strategy,
+        ante=ante,
+        joker_limit=joker_limit,
+        deck_profile=deck_profile,
+        unique_planets_used=unique_planets_used,
+    )
+    key = ctx.candidate_key
+    owned_keys = set(ctx.owned_keys)
 
     # Determine hand types to simulate
     if strategy.preferred_hands:
@@ -829,7 +839,7 @@ def evaluate_joker_value(
 
     # Layer 1: scoring simulation or utility fallback
     if _has_scoring_effect(key):
-        raw_delta = _scoring_delta(candidate, owned_jokers, hand_levels, hand_types, joker_limit, strategy)
+        raw_delta = _scoring_delta(ctx, hand_types)
         # Flower Pot's sim assumes a proc (all 4 suits). In practice Two Pair /
         # Flush hands span 4 suits only occasionally; Smeared halves the
         # requirement to 2 red + 2 black which is much easier to hit.
@@ -844,7 +854,7 @@ def evaluate_joker_value(
             owned_count=len(owned_jokers),
             unique_planets_used=unique_planets_used,
             strategy=strategy,
-            owned_keys=frozenset(owned_keys),
+            owned_keys=ctx.owned_keys,
             owned_jokers=owned_jokers,
         )
         base_value = roi if roi is not None else UTILITY_VALUE.get(key, 0.0)
