@@ -15,7 +15,7 @@ import math
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import joker_key
-from balatro_bot.domain.models.card import Card, CardValue
+from balatro_bot.domain.models.card import Card, CardModifier, CardValue
 from balatro_bot.domain.policy import utility_value
 from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring.estimate import score_hand
@@ -172,7 +172,7 @@ _FACE_CARD_JOKERS = frozenset({
 })
 
 
-def _make_card(rank: str, suit: str) -> Card:
+def _make_card(rank: str, suit: str, enhancement: str | None = None) -> Card:
     """Build a minimal synthetic Card for scoring simulation."""
     return Card(
         id=0,
@@ -180,6 +180,7 @@ def _make_card(rank: str, suit: str) -> Card:
         set_="DEFAULT",
         label=f"{rank} of {suit}",
         value=CardValue(rank=rank, suit=suit),
+        modifier=CardModifier(enhancement=enhancement) if enhancement else CardModifier(),
     )
 
 
@@ -221,14 +222,118 @@ def _alt_suit(primary: str) -> str:
     return "D" if primary != "D" else "C"
 
 
-def _synthetic_hand(
+# Enhancement awareness — which jokers want which enhancement on scoring cards
+# so their per-card triggers fire inside the sim. Steel is excluded (Steel on a
+# scoring card is a no-op; Steel Joker's xmult is projected separately).
+_ENH_RELEVANCE: dict[str, str] = {
+    "j_lucky_cat": "LUCKY",
+    "j_glass":     "GLASS",
+}
+
+# Enhancements that contribute chips/mult/xmult when on a scoring card. Ordered
+# by "intrinsic value" so Steel doesn't crowd out Lucky/Glass/Bonus/Mult when
+# deck densities compete for slots.
+_SCORING_ENH_PRIORITY: tuple[str, ...] = (
+    "GLASS", "LUCKY", "MULT", "BONUS", "STONE", "GOLD",
+)
+
+
+def _plan_enhancements(ctx: "SimContext", n_scoring: int) -> list[str | None]:
+    """Assign enhancements to scoring-card slots via analytic deck-density EV.
+
+    Slot i gets at most one enhancement; relevant enhancements (those any
+    owned/candidate joker cares about) are guaranteed one slot when present in
+    deck, even if density × n_scoring rounds to 0. Otherwise slots are filled
+    proportionally to deck density.
+    """
+    plan: list[str | None] = [None] * n_scoring
+    if n_scoring == 0 or not ctx.enhancement_density:
+        return plan
+
+    relevant = ctx.owned_keys | {ctx.candidate_key}
+    forced: list[str] = [
+        enh for jk, enh in _ENH_RELEVANCE.items()
+        if jk in relevant and ctx.enhancement_density.get(enh, 0.0) > 0.0
+    ]
+
+    used = 0
+
+    # Step 1: guarantee relevant enhancements get a slot so the joker's per-card
+    # effect fires in the sim even at low density (e.g. 4 Lucky in 52 = 0.077
+    # rounds to 0 slots for a Pair but still gives Lucky Cat something to chew).
+    for enh in forced:
+        if used >= n_scoring:
+            break
+        plan[used] = enh
+        used += 1
+
+    # Step 2: fill remaining slots proportional to deck density across the
+    # priority list. Skip Steel (no scoring effect) and anything already forced.
+    for enh in _SCORING_ENH_PRIORITY:
+        if enh in forced:
+            continue
+        density = ctx.enhancement_density.get(enh, 0.0)
+        if density <= 0:
+            continue
+        slots = round(n_scoring * density)
+        for _ in range(slots):
+            if used >= n_scoring:
+                break
+            plan[used] = enh
+            used += 1
+        if used >= n_scoring:
+            break
+
+    return plan
+
+
+# Rank-per-card jokers whose effect fires once per scored card of a target
+# rank. Value is proportional to how often those ranks appear in the deck.
+_RANK_PER_CARD_JOKERS: dict[str, tuple[str, ...]] = {
+    "j_wee":            ("2",),
+    "j_scholar":        ("A",),
+    "j_fibonacci":      ("A", "2", "3", "5", "8"),
+    "j_even_steven":    ("2", "4", "6", "8", "T"),
+    "j_odd_todd":       ("A", "3", "5", "7", "9"),
+    "j_triboulet":      ("K", "Q"),
+    "j_walkie_talkie":  ("T", "4"),
+    "j_hack":           ("2", "3", "4", "5"),  # retrigger
+}
+
+
+def _rank_density_factor(ctx: "SimContext", key: str) -> float:
+    """Scale a rank-per-card joker's sim delta by how dense its target ranks
+    are in the real deck. Baseline = 4 copies per rank (vanilla deck)."""
+    ranks = _RANK_PER_CARD_JOKERS.get(key)
+    if not ranks or ctx.deck_profile is None:
+        return 1.0
+    baseline = len(ranks) * 4
+    if baseline == 0:
+        return 1.0
+    count = sum(ctx.deck_profile.rank_counts.get(r, 0) for r in ranks)
+    return min(count / baseline, 2.0)
+
+
+def _apply_enh_plan(cards: list, plan: list[str | None]) -> list:
+    """Return a copy of *cards* with enhancements from *plan* applied slot-wise."""
+    out = []
+    for i, c in enumerate(cards):
+        enh = plan[i] if i < len(plan) else None
+        if enh:
+            out.append(_make_card(c.value.rank, c.value.suit, enhancement=enh))
+        else:
+            out.append(c)
+    return out
+
+
+def _synthetic_hand_base(
     ctx: SimContext,
     hand_name: str,
 ) -> tuple[list[dict], list[dict]]:
-    """Build (scoring_cards, played_cards) for a typical hand of given type.
+    """Unenhanced scoring + played cards for the given hand type.
 
-    scoring_cards: subset that actually scores in Balatro
-    played_cards: all 5 cards played
+    Kept separate from _synthetic_hand so the enhancement planner can reshape
+    the scoring subset without duplicating hand-type branching.
     """
     suit = _preferred_suit(ctx)
     rank = _preferred_rank(ctx)
@@ -310,6 +415,26 @@ def _synthetic_hand(
     scoring = [_make_card("A", suit)]
     filler = [_make_card(r, alt) for r in _FILLER_RANKS[:4]]
     return scoring, scoring + filler
+
+
+def _synthetic_hand(
+    ctx: SimContext,
+    hand_name: str,
+) -> tuple[list[dict], list[dict]]:
+    """Build (scoring_cards, played_cards) and decorate scoring with
+    density-planned enhancements so per-card enhancement jokers (Lucky Cat,
+    Glass, Vampire, …) fire inside the sim instead of via post-hoc adjustment.
+    """
+    scoring, played = _synthetic_hand_base(ctx, hand_name)
+    plan = _plan_enhancements(ctx, len(scoring))
+    if not any(plan):
+        return scoring, played
+
+    original_ids = {id(c) for c in scoring}
+    scoring_new = _apply_enh_plan(scoring, plan)
+    old_to_new = {id(old): new for old, new in zip(scoring, scoring_new)}
+    played_new = [old_to_new[id(c)] if id(c) in original_ids else c for c in played]
+    return scoring_new, played_new
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +538,49 @@ def _synthetic_held_cards(ctx: SimContext) -> list[Card]:
     return []
 
 
+# Deck-density xmult scalers — their parsed effect text is X1.0 at buy-time so
+# the raw sim sees zero delta. Project a forward xmult from deck composition
+# and feed it to the sim via a rewritten candidate copy. Previously handled by
+# the flat ``_deck_composition_adjustment`` post-hoc boost.
+_DECK_DENSITY_XMULT_EXTRA: dict[str, tuple[str, float]] = {
+    # joker_key -> (enhancement_counted, xmult_per_card)
+    "j_steel_joker": ("STEEL", 0.2),   # +X0.2 per Steel in deck (game formula)
+    "j_glass":       ("GLASS", 0.75),  # +X0.75 per Glass destroyed (EV via density below)
+}
+
+# Fraction of matching enhanced cards expected to realize their trigger over
+# the remaining runway. Steel is static (every scoring is multiplied) so it's
+# 1.0. Glass needs cards to break — conservative 0.3 of deck count as an EV.
+_DECK_DENSITY_REALIZATION: dict[str, float] = {
+    "j_steel_joker": 1.0,
+    "j_glass": 0.3,
+}
+
+
+def _project_deck_density_candidate(ctx: SimContext) -> dict:
+    """If the candidate is a deck-density xmult scaler, return a dict-copy with
+    its effect text rewritten to project its xmult from the current deck's
+    enhancement count. Otherwise return the candidate unchanged.
+    """
+    key = ctx.candidate_key
+    spec = _DECK_DENSITY_XMULT_EXTRA.get(key)
+    if spec is None or ctx.deck_profile is None:
+        return ctx.candidate
+    enh, per = spec
+    count = ctx.deck_profile.enhancement_counts.get(enh, 0)
+    if count <= 0:
+        return ctx.candidate
+    realization = _DECK_DENSITY_REALIZATION.get(key, 1.0)
+    projected = 1.0 + per * count * realization
+    if projected <= 1.0:
+        return ctx.candidate
+    new = dict(ctx.candidate)
+    val = dict(ctx.candidate.get("value", {}))
+    val["effect"] = f"X{projected:.2f} Mult"
+    new["value"] = val
+    return new
+
+
 def _scoring_delta(
     ctx: SimContext,
     hand_types: list[tuple[str, float]],
@@ -427,7 +595,7 @@ def _scoring_delta(
     if total_weight <= 0:
         return 0.0
 
-    candidate = ctx.candidate
+    candidate = _project_deck_density_candidate(ctx)
     owned_jokers = ctx.owned_jokers
     hand_levels = ctx.hand_levels
     joker_limit = ctx.joker_limit
@@ -435,7 +603,7 @@ def _scoring_delta(
 
     # Filter candidate from owned to handle sell evaluations correctly
     candidate_key = ctx.candidate_key
-    baseline_jokers = [j for j in owned_jokers if j is not candidate]
+    baseline_jokers = [j for j in owned_jokers if j is not ctx.candidate]
 
     # Blueprint/Brainstorm only produce value when positioned to copy a
     # compatible joker. Appending to the end (Blueprint) or leaving leftmost
@@ -483,7 +651,8 @@ def _scoring_delta(
         out = []
         for i, c in enumerate(cards):
             new_suit = pattern[i] if i < len(pattern) else pattern[-1]
-            out.append(_make_card(c.value.rank, new_suit))
+            enh = c.modifier.enhancement if c.modifier.enhancement else None
+            out.append(_make_card(c.value.rank, new_suit, enhancement=enh))
         return out
 
     for hand_name, weight in hand_types:
@@ -732,28 +901,6 @@ def _context_scale(
 # Deck composition adjustments
 # ---------------------------------------------------------------------------
 
-# Joker key -> enhancement it cares about
-_ENHANCEMENT_JOKERS: dict[str, str] = {
-    "j_steel_joker": "STEEL",
-    "j_lucky_cat": "LUCKY",
-    "j_glass": "GLASS",
-}
-
-# Suit-affinity jokers — key -> suit they care about
-_SUIT_JOKERS: dict[str, str] = {
-    "j_greedy_joker": "D",
-    "j_lusty_joker": "H",
-    "j_wrathful_joker": "S",
-    "j_gluttenous_joker": "C",
-    "j_arrowhead": "S",
-    "j_onyx_agate": "C",
-    "j_bloodstone": "H",
-    "j_rough_gem": "D",
-}
-
-_FACE_RANKS = frozenset({"J", "Q", "K"})
-
-
 def _deck_composition_adjustment(
     key: str,
     base_value: float,
@@ -761,39 +908,16 @@ def _deck_composition_adjustment(
     strategy: Strategy | None,
     ante: int = 1,
 ) -> float:
-    """Adjust base_value based on deck composition."""
-    # --- Enhancement-count jokers (Steel Joker, Lucky Cat, Glass Joker) ---
-    enh_type = _ENHANCEMENT_JOKERS.get(key)
-    if enh_type:
-        count = deck_profile.enhancement_counts.get(enh_type, 0)
-        if count == 0:
-            # No matching enhanced cards → heavily penalize
-            base_value *= 0.2
-        else:
-            # Each matching card adds value (diminishing)
-            base_value += math.log2(1 + count) * 1.5
+    """Adjust base_value based on deck composition.
 
-            # Suit-concentration synergy: if enhanced cards cluster in a suit
-            # the bot already favors, that's extra valuable
-            if strategy and strategy.preferred_suits:
-                conc_suit = deck_profile.enhancement_suit_concentration(enh_type)
-                if conc_suit:
-                    suit_aff = strategy.suit_affinity(conc_suit)
-                    if suit_aff > 0:
-                        base_value += min(suit_aff * 0.3, 1.5)
-
-            # Lucky Cat + face-card synergy: Lucky cards on face ranks
-            # synergize with face-card jokers
-            if key == "j_lucky_cat":
-                enh_by_rank = deck_profile.enhancements_by_rank
-                face_lucky = sum(
-                    enh_by_rank.get(r, {}).get("LUCKY", 0)
-                    for r in _FACE_RANKS
-                )
-                if face_lucky >= 2 and strategy and strategy.active_archetypes:
-                    if any(a == "face_card" for a, _ in strategy.active_archetypes):
-                        base_value += face_lucky * 0.4
-
+    Phase 3 moved Steel / Lucky / Glass / suit-enhancement boosts into the
+    sim itself (scoring cards now carry density-planned enhancements; Steel
+    & Glass candidates get their xmult projected from deck counts before the
+    sim runs — see ``_project_deck_density_candidate`` and
+    ``_plan_enhancements``). What stays here is only what the sim genuinely
+    cannot express: Drivers License (activation gate, not per-card) and
+    Blackboard (held-phase proc rate, driven by deck-wide S/C density).
+    """
     # --- Drivers License: gate on enhanced card count ---
     if key == "j_drivers_license":
         enh_count = deck_profile.enhanced_card_count
@@ -802,15 +926,6 @@ def _deck_composition_adjustment(
         elif enh_count < 16:
             base_value *= 0.5  # close but not there yet
         # >= 16: full value (already activated)
-
-    # --- Suit-affinity jokers: bonus when that suit has enhancements ---
-    suit = _SUIT_JOKERS.get(key)
-    if suit:
-        suit_enhancements = deck_profile.enhancements_by_suit.get(suit, {})
-        enh_total = sum(suit_enhancements.values())
-        if enh_total > 0:
-            # Enhanced cards in the suit retrigger/score extra → suit joker more valuable
-            base_value += min(enh_total * 0.3, 2.0)
 
     # --- Blackboard: value scales with deck Spade/Club density ---
     # Activation requires ALL held cards to be S/C; higher S/C share in the
@@ -891,6 +1006,13 @@ def evaluate_joker_value(
         if key == "j_flower_pot":
             proc_rate = 0.70 if "j_smeared" in owned_keys else 0.30
             raw_delta *= proc_rate
+        # Phase 3: rank-per-card jokers fire once per scored target rank. The
+        # synthetic hand forces its target rank into a scoring slot (so the
+        # effect fires at all), but how often that rank realistically shows up
+        # across the ante scales with deck density. Factor=1.0 at vanilla
+        # (4 copies baseline), linear out to 2.0 at 8+ copies, down to 0.25 at
+        # 1 copy — matches Wee/Scholar density intuition from issue #35.
+        raw_delta *= _rank_density_factor(ctx, key)
         coeff = _sim_coefficient(key)
         base_value = math.log2(1.0 + max(raw_delta, 0.0)) * coeff
     else:
@@ -980,6 +1102,16 @@ def evaluate_joker_value(
             projected_xmult_gain = profile.gain_per * triggers_per_round * rounds_left
             # Halve — not all rounds realize full gain (bosses, early death).
             projected_xmult_gain *= 0.5
+            # Phase 3: Lucky Cat and Glass gain only when the matching
+            # enhancement exists in the deck. Scale their projected floor by
+            # deck count so an empty-deck Lucky Cat doesn't float on a hollow
+            # floor identical to a 4-Lucky deck.
+            if key == "j_lucky_cat":
+                lucky_count = deck_profile.enhancement_counts.get("LUCKY", 0) if deck_profile else 0
+                projected_xmult_gain *= min(lucky_count / 4.0, 2.0)
+            elif key == "j_glass":
+                glass_count = deck_profile.enhancement_counts.get("GLASS", 0) if deck_profile else 0
+                projected_xmult_gain *= min(glass_count / 4.0, 2.0)
             floor = math.log2(1.0 + projected_xmult_gain) * SIM_COEFF_XMULT
             base_value = max(base_value, floor)
 

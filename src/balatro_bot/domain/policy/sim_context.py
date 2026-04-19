@@ -42,6 +42,12 @@ class SimContext:
     candidate_key: str = field(default="", repr=False)
     owned_keys: frozenset[str] = field(default_factory=frozenset, repr=False)
 
+    # Phase 3: density (fractions summing to ~1.0 per dimension) from deck_profile.
+    # Empty dict when deck_profile is None; callers must treat that as "no signal".
+    rank_density: dict[str, float] = field(default_factory=dict, repr=False)
+    suit_density: dict[str, float] = field(default_factory=dict, repr=False)
+    enhancement_density: dict[str, float] = field(default_factory=dict, repr=False)
+
     @classmethod
     def build(
         cls,
@@ -55,6 +61,16 @@ class SimContext:
         deck_profile: "DeckProfile | None" = None,
         unique_planets_used: int = 0,
     ) -> "SimContext":
+        rank_density: dict[str, float] = {}
+        suit_density: dict[str, float] = {}
+        enhancement_density: dict[str, float] = {}
+        if deck_profile is not None and deck_profile.total_cards > 0:
+            total = deck_profile.total_cards
+            rank_density = {r: c / total for r, c in deck_profile.rank_counts.items()}
+            suit_density = {s: c / total for s, c in deck_profile.suit_counts.items()}
+            enhancement_density = {
+                e: c / total for e, c in deck_profile.enhancement_counts.items()
+            }
         return cls(
             candidate=candidate,
             owned_jokers=tuple(owned_jokers),
@@ -66,4 +82,7 @@ class SimContext:
             unique_planets_used=unique_planets_used,
             candidate_key=candidate.get("key", "") or joker_key(candidate),
             owned_keys=frozenset(joker_key(j) for j in owned_jokers),
+            rank_density=rank_density,
+            suit_density=suit_density,
+            enhancement_density=enhancement_density,
         )

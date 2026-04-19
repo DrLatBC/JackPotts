@@ -335,84 +335,151 @@ class TestBaseballCardSynergy:
 
 
 class TestDeckCompositionAdjustment:
-    """Test _deck_composition_adjustment for enhancement-aware joker valuation."""
+    """What's left of ``_deck_composition_adjustment`` after Phase 3: only
+    Drivers License (activation gate) and Blackboard (held-phase proc rate
+    from deck-wide S/C density). Steel / Lucky / Glass / suit-enhancement
+    boosts moved into the sim itself — see ``TestPhase3DensityAwareSim``."""
 
     def _profile_with_enhancements(self, **enh_counts):
-        """Build a DeckProfile with specific enhancement counts."""
         cards = []
         for enh, count in enh_counts.items():
             for _ in range(count):
                 cards.append(card("A", "H", enhancement=enh))
-        # Pad with plain cards to make 52
         for _ in range(52 - len(cards)):
             cards.append(card("2", "S"))
         return DeckProfile.from_cards(cards)
-
-    def test_steel_joker_no_steel_cards(self):
-        dp = self._profile_with_enhancements()
-        base = 5.0
-        adjusted = _deck_composition_adjustment("j_steel_joker", base, dp, None)
-        assert adjusted < base  # penalized
-
-    def test_steel_joker_with_steel_cards(self):
-        dp = self._profile_with_enhancements(STEEL=5)
-        base = 5.0
-        adjusted = _deck_composition_adjustment("j_steel_joker", base, dp, None)
-        assert adjusted > base  # boosted
-
-    def test_lucky_cat_with_lucky_cards(self):
-        dp = self._profile_with_enhancements(LUCKY=4)
-        base = 3.0
-        adjusted = _deck_composition_adjustment("j_lucky_cat", base, dp, None)
-        assert adjusted > base
-
-    def test_glass_joker_no_glass(self):
-        dp = self._profile_with_enhancements()
-        base = 4.0
-        adjusted = _deck_composition_adjustment("j_glass", base, dp, None)
-        assert adjusted < base
 
     def test_drivers_license_below_threshold(self):
         dp = self._profile_with_enhancements(STEEL=5)
         base = 5.0
         adjusted = _deck_composition_adjustment("j_drivers_license", base, dp, None)
-        assert adjusted == base * 0.1  # only 5 enhanced < 12
+        assert adjusted == base * 0.1
 
     def test_drivers_license_near_threshold(self):
         dp = self._profile_with_enhancements(STEEL=14)
         base = 5.0
         adjusted = _deck_composition_adjustment("j_drivers_license", base, dp, None)
-        assert adjusted == base * 0.5  # 14 enhanced, between 12-16
+        assert adjusted == base * 0.5
 
     def test_drivers_license_above_threshold(self):
         dp = self._profile_with_enhancements(STEEL=16)
         base = 5.0
         adjusted = _deck_composition_adjustment("j_drivers_license", base, dp, None)
-        assert adjusted == base  # 16 >= 16, full value
-
-    def test_suit_joker_with_enhanced_suit(self):
-        """Bloodstone (Hearts) should get a bonus when Hearts cards are enhanced."""
-        cards = [card("A", "H", enhancement="STEEL") for _ in range(4)]
-        cards += [card("2", "S") for _ in range(48)]
-        dp = DeckProfile.from_cards(cards)
-        base = 3.0
-        adjusted = _deck_composition_adjustment("j_bloodstone", base, dp, None)
-        assert adjusted > base  # Hearts suit has 4 enhanced cards
-
-    def test_suit_joker_no_enhanced_suit(self):
-        """Bloodstone gets no bonus when Hearts cards aren't enhanced."""
-        cards = [card("A", "S", enhancement="STEEL") for _ in range(4)]  # Spades, not Hearts
-        cards += [card("2", "H") for _ in range(48)]  # Hearts unenhanced
-        dp = DeckProfile.from_cards(cards)
-        base = 3.0
-        adjusted = _deck_composition_adjustment("j_bloodstone", base, dp, None)
         assert adjusted == base
 
     def test_unrelated_joker_unaffected(self):
         dp = self._profile_with_enhancements(STEEL=10)
         base = 4.0
         adjusted = _deck_composition_adjustment("j_joker", base, dp, None)
-        assert adjusted == base  # plain Joker not in any deck-comp list
+        assert adjusted == base
+
+    def test_steel_joker_moved_to_sim(self):
+        """Steel Joker's deck-count boost is now a sim-input (projected xmult)."""
+        dp = self._profile_with_enhancements(STEEL=8)
+        base = 5.0
+        adjusted = _deck_composition_adjustment("j_steel_joker", base, dp, None)
+        assert adjusted == base
+
+
+class TestPhase3DensityAwareSim:
+    """Phase 3 (issue #35): deck-density-aware synthetic hands.
+
+    Replaces the Steel/Lucky/Glass/suit-enhancement branches of
+    ``_deck_composition_adjustment`` with sim inputs — scoring cards carry
+    density-planned enhancements; Steel & Glass get xmult projected from deck
+    counts before the sim runs."""
+
+    _HL = {h: {"level": 1, "chips": c, "mult": m, "played": 0} for h, c, m in [
+        ("High Card", 5, 1), ("Pair", 10, 2), ("Two Pair", 20, 2),
+        ("Three of a Kind", 30, 3), ("Straight", 30, 4), ("Flush", 35, 4),
+        ("Full House", 40, 4), ("Four of a Kind", 60, 7),
+    ]}
+
+    def _deck(self, **enh_counts):
+        cards = []
+        for enh, cnt in enh_counts.items():
+            for _ in range(cnt):
+                cards.append(card("A", "H", enhancement=enh))
+        for _ in range(52 - len(cards)):
+            cards.append(card("2", "S"))
+        return DeckProfile.from_cards(cards)
+
+    def _vanilla(self, rank_counts: dict[str, int] | None = None):
+        rc = rank_counts or {r: 4 for r in "23456789TJQKA"}
+        return DeckProfile(
+            total_cards=sum(rc.values()),
+            rank_counts=rc,
+            suit_counts={s: sum(rc.values()) // 4 for s in "HDCS"},
+        )
+
+    def _cand(self, key, effect, rarity=2):
+        return {"key": key, "label": key,
+                "value": {"effect": effect, "rarity": rarity},
+                "cost": {"buy": 8, "sell": 4}}
+
+    # --- Rank density: Wee, Scholar ---
+
+    def test_wee_scales_with_twos_in_deck(self):
+        cand = self._cand("j_wee", "+8 Chips, +1 Chip if scored 2", rarity=1)
+        baseline = evaluate_joker_value(cand, [], self._HL, ante=2,
+                                         deck_profile=self._vanilla())  # 4 twos
+        heavy = {r: 4 for r in "3456789TJQKA"}
+        heavy["2"] = 8
+        heavy_v = evaluate_joker_value(cand, [], self._HL, ante=2,
+                                         deck_profile=self._vanilla(heavy))
+        light = {r: 4 for r in "3456789TJQKA"}
+        light["2"] = 1
+        light_v = evaluate_joker_value(cand, [], self._HL, ante=2,
+                                         deck_profile=self._vanilla(light))
+        assert heavy_v > baseline, f"8 twos should beat 4 twos: {baseline} → {heavy_v}"
+        assert light_v < baseline, f"1 two should trail 4 twos: {baseline} → {light_v}"
+
+    def test_scholar_scales_with_ace_density(self):
+        cand = self._cand("j_scholar", "Aces give +20 Chips and +4 Mult", rarity=1)
+        baseline = evaluate_joker_value(cand, [], self._HL, ante=2,
+                                         deck_profile=self._vanilla())
+        heavy = {r: 4 for r in "23456789TJQK"}
+        heavy["A"] = 8
+        heavy_v = evaluate_joker_value(cand, [], self._HL, ante=2,
+                                         deck_profile=self._vanilla(heavy))
+        assert heavy_v > baseline, f"8 aces should beat 4: {baseline} → {heavy_v}"
+
+    # --- Steel Joker: sim-derived xmult projection ---
+
+    def test_steel_joker_sim_value_scales_with_deck(self):
+        cand = self._cand("j_steel_joker", "X1 Mult")
+        no_steel = evaluate_joker_value(cand, [], self._HL, ante=2,
+                                         deck_profile=self._deck())
+        with_steel = evaluate_joker_value(cand, [], self._HL, ante=2,
+                                            deck_profile=self._deck(STEEL=8))
+        assert with_steel > no_steel, (
+            f"Steel Joker w/ 8 Steel cards should beat empty: {no_steel} → {with_steel}"
+        )
+
+    # --- Lucky Cat: per-card triggers fire inside the sim ---
+
+    def test_lucky_cat_fires_with_lucky_cards_in_deck(self):
+        """With Lucky cards planted on scoring slots, the sim layer produces a
+        positive delta (the pre-Phase 3 sim with plain scoring cards returned
+        exactly 0 for Lucky Cat regardless of deck density)."""
+        cand = self._cand("j_lucky_cat", "X1.5 Mult, +X0.25 per Lucky trigger")
+        ctx = _ctx(candidate=cand, ante=2)
+        # No Lucky in deck → sim picks no Lucky scoring slots → delta 0
+        no_lucky_ctx = SimContext.build(
+            candidate=cand, owned_jokers=[], hand_levels=self._HL,
+            strategy=ctx.strategy, ante=2, deck_profile=self._deck(),
+        )
+        # 4 Lucky in deck → _plan_enhancements forces at least one Lucky
+        # scoring slot → Lucky Cat's per-card effect fires in the sim
+        with_lucky_ctx = SimContext.build(
+            candidate=cand, owned_jokers=[], hand_levels=self._HL,
+            strategy=ctx.strategy, ante=2, deck_profile=self._deck(LUCKY=4),
+        )
+        d_none = _scoring_delta(no_lucky_ctx, [("Flush", 1.0)])
+        d_lucky = _scoring_delta(with_lucky_ctx, [("Flush", 1.0)])
+        assert d_lucky > d_none, (
+            f"Lucky Cat sim delta w/ 4 Lucky should beat 0: {d_none} → {d_lucky}"
+        )
 
 
 class TestHeldCardJokerValuation:
