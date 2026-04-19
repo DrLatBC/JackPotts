@@ -122,8 +122,6 @@ UTILITY_VALUE: dict[str, float] = {
     "j_cartomancer":   2.0,
     "j_hallucination": 1.5,
     "j_space":         1.5,
-    "j_8_ball":        1.5,
-    "j_sixth_sense":   1.0,
     "j_seance":        1.0,
     "j_superposition": 1.0,
     "j_riff_raff":     1.0,

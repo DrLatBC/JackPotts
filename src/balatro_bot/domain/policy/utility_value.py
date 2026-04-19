@@ -395,6 +395,54 @@ def _drunkard_dollars(
     return per_round * decay * rounds_remaining(ante)
 
 
+def _credit_card_dollars(ante: int, **_: object) -> float:
+    """Credit Card: allows going to -$20.
+
+    Bot strategy doesn't dip negative on purpose — this is a marginal safety
+    net for rare shop over-commits. Flat tiny value, decays via ante curve.
+    """
+    return 3.0  # ≈ $3 total, not per-round
+
+
+def _gold_ticket_dollars(
+    ante: int, deck_profile: DeckProfile | None = None, **_: object
+) -> float:
+    """Golden Ticket: +$4 per scored Gold card.
+
+    Expected $ = gold_density × SCORED_CARDS_PER_HAND × $4 × hands × rounds.
+    Vanilla deck has zero Gold until enhancements land — value ramps with
+    actual deck composition.
+    """
+    if deck_profile and deck_profile.total_cards > 0:
+        gold_density = deck_profile.enhancement_counts.get("GOLD", 0) / deck_profile.total_cards
+    else:
+        gold_density = 0.0
+    gold_scored_per_hand = SCORED_CARDS_PER_HAND * gold_density
+    per_hand = 4.0 * gold_scored_per_hand
+    return per_hand * HANDS_PER_ROUND * rounds_remaining(ante)
+
+
+def _matador_dollars(ante: int, **_: object) -> float:
+    """Matador: +$8 if played hand triggers the boss blind ability.
+
+    Only ~1/3 of bosses have abilities triggerable by a played hand (Hook,
+    Club, Window, etc. — suit/rank debuffs don't count). Bot plays one boss
+    per remaining ante; conservative per-boss trigger rate ~40%.
+    """
+    bosses_remaining = max(0, 9 - ante)  # antes 1..8 each have one boss
+    trigger_rate = 0.35
+    return 8.0 * bosses_remaining * trigger_rate
+
+
+def _astronomer_dollars(ante: int, **_: object) -> float:
+    """Astronomer: Planet cards + Celestial packs in shop are free.
+
+    Typical savings: ~1 planet buy per 2 rounds ($3 each) + ~1 celestial
+    pack per ante ($4-6). Blend to ≈$2/round.
+    """
+    return 2.0 * rounds_remaining(ante)
+
+
 def _gift_card_dollars(
     ante: int, owned_count: int = 0, **_: object
 ) -> float:
@@ -423,11 +471,15 @@ UTILITY_ROI_VALUATORS: dict[str, Callable[..., float]] = {
     "j_to_the_moon":      _to_the_moon_dollars,
     "j_trading":          _trading_card_dollars,
     "j_todo_list":        _to_do_list_dollars,
+    "j_credit_card":      _credit_card_dollars,
+    "j_astronomer":       _astronomer_dollars,
     # Conditional per-hand trigger
     "j_business":         _business_card_dollars,
     "j_reserved_parking": _reserved_parking_dollars,
     "j_mail":             _mail_in_rebate_dollars,
     "j_faceless":         _faceless_dollars,
+    "j_ticket":           _gold_ticket_dollars,
+    "j_matador":          _matador_dollars,
     # Deck-state-scaled
     "j_cloud_9":          _cloud_9_dollars,
     "j_8_ball":           _8_ball_dollars,
