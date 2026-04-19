@@ -117,6 +117,11 @@ _SCALING_START_XMULT: dict[str, float] = {
     "j_glass": 1.5,
     "j_ramen": 2.0,
     "j_cavendish": 3.0,
+    # Card Sharp isn't scaling in the "(Currently X…)" sense — it's in
+    # SCALING_REGISTRY as a sequence-sensitive joker. Its effect function
+    # reads X via _ab_xmult which falls through to text parsing. Anchor at
+    # its native X3 so the parser returns the real value.
+    "j_card_sharp": 3.0,
 }
 
 
