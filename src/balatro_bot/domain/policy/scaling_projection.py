@@ -168,6 +168,12 @@ _XMULT_PROJECTORS = {
     "j_glass":         _project_glass_gain,
 }
 
+# Public frozen view — jokers whose xmult accrues over time (need runway).
+# Immediate-fire xmult (Cavendish, Triboulet, Photograph, Bloodstone) is NOT
+# in this set. Callers use it to distinguish "scales into late game" from
+# "fires now." See shop_valuation._context_scale for the late-ante carve-out.
+SCALING_XMULT_KEYS = frozenset(_XMULT_PROJECTORS.keys())
+
 
 _XMULT_ANCHOR_ATTR: dict[str, str] = {
     "j_madness":       "madness_xmult",

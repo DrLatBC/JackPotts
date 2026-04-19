@@ -19,6 +19,7 @@ from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.card import Card, CardModifier, CardValue
 from balatro_bot.domain.policy import utility_value
 from balatro_bot.domain.policy.scaling_projection import (
+    SCALING_XMULT_KEYS,
     project_additive_total,
     project_total_xmult,
 )
@@ -900,15 +901,27 @@ def _context_scale(
     candidate_key: str,
     owned_jokers: list[dict],
     ante: int,
+    candidate_anchor_xmult: float = 1.0,
 ) -> float:
     """Context-dependent scaling: ante urgency + diminishing returns."""
     cat = _KEY_TO_CATEGORY.get(candidate_key)
     factor = 1.0
 
-    # Ante urgency: xMult is always valuable; prefer it even early
+    # Ante urgency: xMult is always valuable; prefer it even early.
+    # Scaling xmult (Madness, Hologram, etc.) only gets the late-game boost
+    # if the anchor has actually accumulated — a fresh X1.0 Madness at
+    # ante 8 has no runway, but an X2.0 Constellation at ante 4 is
+    # effectively an immediate-fire X2 scorer. Threshold at X1.5 separates
+    # "mostly future value" from "already firing hard."
     if cat == "xmult":
+        is_fresh_scaling = (
+            candidate_key in SCALING_XMULT_KEYS
+            and candidate_anchor_xmult < 1.5
+        )
         if ante <= 3:
             factor *= 1.15                                     # mild early-game preference
+        elif is_fresh_scaling:
+            factor *= 1.0                                      # no late-game boost for un-accumulated scalers
         else:
             factor *= min(1.0 + (ante - 3) * 0.4, 2.6)        # 1.4 @ ante 4, 2.6 @ ante 7+
     elif cat and ante >= 4:
@@ -1172,8 +1185,31 @@ def evaluate_joker_value(
     # Layer 2: synergy
     synergy = _synergy_multiplier(key, owned_keys, strategy, owned_jokers, candidate)
 
-    # Layer 3: context
-    context = _context_scale(key, owned_jokers, ante)
+    # Layer 3: context. Pass live xmult anchor for scaling xmult candidates so
+    # the ante-urgency boost applies only when the joker is already firing.
+    candidate_anchor = 1.0
+    if ctx.lifetime is not None and key in SCALING_XMULT_KEYS:
+        # Re-parse anchor from the candidate's own effect text (covers
+        # buy-in-shop case where the candidate isn't in ctx.lifetime).
+        from balatro_bot.domain.policy.sim_context import LifetimeState
+        candidate_lt = LifetimeState.from_owned([candidate])
+        field_name = {
+            "j_madness": "madness_xmult",
+            "j_hologram": "hologram_xmult",
+            "j_caino": "caino_xmult",
+            "j_vampire": "vampire_xmult",
+            "j_obelisk": "obelisk_xmult",
+            "j_yorick": "yorick_xmult",
+            "j_campfire": "campfire_xmult",
+            "j_constellation": "constellation_xmult",
+            "j_throwback": "throwback_xmult",
+            "j_hit_the_road": "hit_the_road_xmult",
+            "j_lucky_cat": "lucky_cat_xmult",
+            "j_glass": "glass_xmult",
+        }.get(key)
+        if field_name:
+            candidate_anchor = getattr(candidate_lt, field_name, 1.0)
+    context = _context_scale(key, owned_jokers, ante, candidate_anchor)
 
     # Layer 4 (Phase 7): boss-blind adjustment. In-round uses the active boss;
     # shop phase blends across the upcoming-boss pool. Note: if the caller
