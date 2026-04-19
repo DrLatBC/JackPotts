@@ -60,19 +60,49 @@ _BLOODSTONE = _mk("j_bloodstone",
 _SLY = _mk("j_sly", "+50 Chips if hand contains a Pair")
 _JOLLY = _mk("j_jolly", "+8 Mult if hand contains a Pair")
 _ZANY = _mk("j_zany", "+12 Mult if hand contains Three of a Kind", rarity=2)
+_CRAZY = _mk("j_crazy", "+12 Mult if hand contains a Straight", rarity=2)
+_ABSTRACT = _mk("j_abstract", "+3 Mult per Joker")
+_TRIBOULET = _mk("j_triboulet", "Kings and Queens give X2 Mult", rarity=4)
+_SMILEY = _mk("j_smiley", "Face cards give +5 Mult")
+_SCARY = _mk("j_scary_face", "Face cards give +30 Chips")
+_PAREIDOLIA = _mk("j_pareidolia", "All cards are considered face cards", rarity=2)
+_DROLL = _mk("j_droll", "+10 Mult if hand contains a Flush")
+_FOUR_FINGERS = _mk("j_four_fingers", "All Flushes and Straights can be made with 4 cards", rarity=2)
 
+# ---------------------------------------------------------------------------
+# Archetypes — representative roster states the bot actually reaches.
+# Each evaluated at every ante so the dashboard can show how a joker's
+# value evolves across the run for a given build.
+# ---------------------------------------------------------------------------
+
+ARCHETYPES: list[tuple[str, list[dict]]] = [
+    ("empty",             []),
+    ("chip_1j",           [_BANNER]),
+    ("chip_mult_2j",      [_BANNER, _JOKER]),
+    ("triple_3j",         [_BANNER, _JOKER, _TRIBE]),
+    ("pair_2j",           [_SLY, _JOLLY]),
+    ("pair_3j",           [_BANNER, _SLY, _JOLLY]),
+    ("pair_full_5j",      [_BANNER, _SLY, _JOLLY, _ZANY, _ABSTRACT]),
+    ("flush_3j",          [_BANNER, _JOKER, _TRIBE]),
+    ("flush_5j",          [_BANNER, _JOKER, _TRIBE, _DROLL, _FOUR_FINGERS]),
+    ("flush_scorers_5j",  [_BANNER, _JOKER, _TRIBE, _PHOTO, _BLOODSTONE]),
+    ("straight_3j",       [_BANNER, _JOKER, _CRAZY]),
+    ("face_3j",           [_PHOTO, _SMILEY, _SCARY]),
+    ("face_5j",           [_PHOTO, _SMILEY, _SCARY, _TRIBOULET, _PAREIDOLIA]),
+]
+
+ANTES: list[int] = [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def _scenario_label(archetype: str, ante: int) -> str:
+    return f"{archetype}_a{ante}"
+
+
+# Flat scenario list — (label, owned_jokers, ante) for the evaluator loop.
 SCENARIOS: list[tuple[str, list[dict], int]] = [
-    # (label, owned_jokers, ante)
-    ("empty_a1",        [],                                            1),
-    ("empty_a3",        [],                                            3),
-    ("empty_a5",        [],                                            5),
-    ("chip_a1",         [_BANNER],                                     1),
-    ("chip_mult_a2",    [_BANNER, _JOKER],                             2),
-    ("pair_3j_a3",      [_BANNER, _SLY, _JOLLY],                       3),
-    ("pair_full_a5",    [_BANNER, _SLY, _JOLLY, _ZANY, _mk("j_abstract", "+3 Mult per Joker")], 5),
-    ("flush_3j_a3",     [_BANNER, _JOKER, _TRIBE],                     3),
-    ("flush_full_a5",   [_BANNER, _JOKER, _TRIBE, _PHOTO, _BLOODSTONE], 5),
-    ("flush_full_a7",   [_BANNER, _JOKER, _TRIBE, _PHOTO, _BLOODSTONE], 7),
+    (_scenario_label(name, ante), owned, ante)
+    for name, owned in ARCHETYPES
+    for ante in ANTES
 ]
 
 
@@ -136,6 +166,10 @@ def scenario_labels() -> list[str]:
     return [label for label, _, _ in SCENARIOS]
 
 
+def archetype_names() -> list[str]:
+    return [name for name, _ in ARCHETYPES]
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -152,7 +186,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     rows = build_value_map()
-    payload = {"scenarios": scenario_labels(), "rows": rows}
+    payload = {
+        "scenarios": scenario_labels(),
+        "archetypes": archetype_names(),
+        "antes": ANTES,
+        "rows": rows,
+    }
 
     if args.push:
         if args.batch_id is None:

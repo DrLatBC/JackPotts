@@ -446,12 +446,32 @@ class Supervisor:
             # Snapshot the joker value map at batch start so the dashboard can
             # show what the bot "thinks" each joker is worth under canonical
             # scenarios. Per-batch so valuator tuning is traceable over time.
-            try:
-                from balatro_bot.value_map import build_value_map, scenario_labels
-                payload = {"scenarios": scenario_labels(), "rows": build_value_map()}
-                dashboard_client.post_value_map(self.dashboard_batch_id, payload)
-            except Exception:
-                log.warning("value map snapshot failed", exc_info=True)
+            # Run in a background thread — 135 jokers × 100+ scenarios takes
+            # tens of seconds and we don't want to block batch startup.
+            import threading
+
+            def _snapshot_value_map(batch_id: int) -> None:
+                try:
+                    from balatro_bot.value_map import (
+                        build_value_map, scenario_labels, archetype_names, ANTES,
+                    )
+                    payload = {
+                        "scenarios": scenario_labels(),
+                        "archetypes": archetype_names(),
+                        "antes": ANTES,
+                        "rows": build_value_map(),
+                    }
+                    dashboard_client.post_value_map(batch_id, payload)
+                    log.info("value map snapshot pushed for batch %d", batch_id)
+                except Exception:
+                    log.warning("value map snapshot failed", exc_info=True)
+
+            threading.Thread(
+                target=_snapshot_value_map,
+                args=(self.dashboard_batch_id,),
+                daemon=True,
+                name="value-map-snapshot",
+            ).start()
         else:
             self.dashboard_batch_id = None
             self.session_num = compute_session_number()
