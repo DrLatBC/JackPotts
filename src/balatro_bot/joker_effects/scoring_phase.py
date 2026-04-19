@@ -147,6 +147,76 @@ def get_joker_phase(key: str) -> int:
     return _PHASE_MAP.get(key, PHASE_MULT)  # unknown jokers default to +mult (safe middle)
 
 
+def reorder_for_scoring(jokers: list) -> list:
+    """Return *jokers* in optimal scoring-phase order for the sim.
+
+    Applies the same chips→mult→xmult sort the live bot runs via
+    ``ReorderJokersForScoring``, but without Ceremonial Dagger fodder logic
+    (which is a live-play concern, not a scoring-sim concern).
+
+    Blueprint/Brainstorm copy-adjacency constraints are preserved:
+    - Blueprint sits left of the best xmult target (or last if none).
+    - Brainstorm sits last with a non-noop, copy-compatible joker at index 0.
+    """
+    from balatro_bot.cards import joker_key
+    from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE
+
+    if len(jokers) < 2:
+        return list(jokers)
+
+    blueprint_idx: int | None = None
+    brainstorm_idx: int | None = None
+    for i, j in enumerate(jokers):
+        k = joker_key(j)
+        if k == "j_blueprint":
+            blueprint_idx = i
+        elif k == "j_brainstorm":
+            brainstorm_idx = i
+
+    excluded = {blueprint_idx, brainstorm_idx} - {None}
+    sortable = []
+    for i, j in enumerate(jokers):
+        if i in excluded:
+            continue
+        k = joker_key(j)
+        phase = get_joker_phase(k)
+        ed_phase = get_joker_edition_phase(j)
+        sortable.append((i, phase, ed_phase))
+    sortable.sort(key=lambda x: (x[1], x[2], x[0]))
+    order = [i for i, _, _ in sortable]
+
+    if blueprint_idx is not None:
+        best_copy_pos = None
+        for pos, idx in enumerate(order):
+            k = joker_key(jokers[idx])
+            if k in BLUEPRINT_INCOMPATIBLE:
+                continue
+            phase = get_joker_phase(k)
+            if phase == PHASE_XMULT:
+                best_copy_pos = pos
+            elif phase == PHASE_MULT and best_copy_pos is None:
+                best_copy_pos = pos
+        if best_copy_pos is not None:
+            order.insert(best_copy_pos, blueprint_idx)
+        else:
+            order.append(blueprint_idx)
+
+    if brainstorm_idx is not None:
+        order.append(brainstorm_idx)
+        if order:
+            first_key = joker_key(jokers[order[0]])
+            if get_joker_phase(first_key) == PHASE_NOOP or first_key in BLUEPRINT_INCOMPATIBLE:
+                for pos in range(1, len(order)):
+                    sk = joker_key(jokers[order[pos]])
+                    if get_joker_phase(sk) != PHASE_NOOP and sk not in BLUEPRINT_INCOMPATIBLE:
+                        order[0], order[pos] = order[pos], order[0]
+                        break
+
+    if order == list(range(len(jokers))):
+        return list(jokers)
+    return [jokers[i] for i in order]
+
+
 def get_joker_edition_phase(joker) -> int:
     """Return the scoring phase implied by a joker's edition (if any).
 

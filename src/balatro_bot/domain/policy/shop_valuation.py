@@ -12,6 +12,7 @@ Three layers:
 from __future__ import annotations
 
 import math
+import random
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import joker_key
@@ -27,6 +28,7 @@ from balatro_bot.domain.policy.boss_adjustment import (
 from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
+from balatro_bot.joker_effects.scoring_phase import reorder_for_scoring
 from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE, SCALING_REGISTRY
 from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,
@@ -108,6 +110,18 @@ SIM_COEFF_DEFAULT = 3.0  # uncategorized jokers
 PIVOT_FLOOR_A1 = 2.5        # floor at ante 1
 PIVOT_FLOOR_DECAY = 0.5     # subtract this per ante (hits 0 at ante 6)
 PIVOT_FLOOR_THRESHOLD = 2.5  # sim base_value must be below this to trigger floor
+
+# Phase 8: stochastic joker set — presence of any of these in candidate or
+# owned flips the sim onto the Monte Carlo path. Kept tight so the default
+# expected-value path covers the vast majority of valuations.
+_STOCHASTIC_KEYS: frozenset[str] = frozenset({
+    "j_misprint", "j_bloodstone", "j_lucky_cat", "j_oops",
+})
+
+# Number of scoring trials when MC is active. Variance of the delta is
+# dominated by a handful of high-variance jokers; 16 samples keeps the mean
+# within a few % of truth without blowing up valuation cost.
+_MC_DEFAULT_SAMPLES = 16
 
 # ---------------------------------------------------------------------------
 # Utility joker base values (moved from shop.py)
@@ -638,6 +652,14 @@ def _scoring_delta(
             out.append(_make_card(c.value.rank, new_suit, enhancement=enh))
         return out
 
+    # Phase 8: normalize joker order to match the live bot's
+    # ReorderJokersForScoring (chips→mult→xmult). Without this the sim scores
+    # in owned order and understates jokers that benefit from being placed
+    # rightmost (Hologram after chips/mult) or left of xmult (Blueprint).
+    baseline_jokers = reorder_for_scoring(baseline_jokers)
+
+    samples = max(0, ctx.monte_carlo_samples)
+
     for hand_name, weight in hand_types:
         scoring_cards, played_cards = _synthetic_hand(ctx, hand_name)
 
@@ -651,23 +673,36 @@ def _scoring_delta(
             scoring_cards = _rewrite_suits(scoring_cards, ["C"] + ["H"] * (len(scoring_cards) - 1))
             played_cards = scoring_cards + played_cards[len(scoring_cards):]
 
-        baseline = score_hand(
-            hand_name, scoring_cards, hand_levels,
-            jokers=baseline_jokers, played_cards=played_cards,
-            held_cards=held_cards,
-            joker_limit=joker_limit,
-            ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
-        )
-        with_candidate = score_hand(
-            hand_name, scoring_cards, hand_levels,
-            jokers=_place_candidate(baseline_jokers), played_cards=played_cards,
-            held_cards=held_cards,
-            joker_limit=joker_limit,
-            ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
-        )
+        with_jokers = reorder_for_scoring(_place_candidate(list(baseline_jokers)))
 
-        base_total = max(baseline[2], 1)
-        delta = (with_candidate[2] - baseline[2]) / base_total
+        def _score(jokers: list, rng=None) -> tuple[int, int, int]:
+            return score_hand(
+                hand_name, scoring_cards, hand_levels,
+                jokers=jokers, played_cards=played_cards,
+                held_cards=held_cards,
+                joker_limit=joker_limit,
+                ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
+                rng=rng,
+            )
+
+        if samples > 0:
+            # Deterministic seeds per (candidate_key, hand_name, sample) so
+            # different candidates compared against each other share noise.
+            base_sum = 0.0
+            cand_sum = 0.0
+            for s in range(samples):
+                seed_b = hash((candidate_key, hand_name, "b", s)) & 0xFFFFFFFF
+                seed_c = hash((candidate_key, hand_name, "c", s)) & 0xFFFFFFFF
+                base_sum += _score(baseline_jokers, random.Random(seed_b))[2]
+                cand_sum += _score(with_jokers, random.Random(seed_c))[2]
+            baseline_total = base_sum / samples
+            candidate_total = cand_sum / samples
+        else:
+            baseline_total = _score(baseline_jokers)[2]
+            candidate_total = _score(with_jokers)[2]
+
+        base_total = max(baseline_total, 1)
+        delta = (candidate_total - baseline_total) / base_total
         weighted_delta += delta * (weight / total_weight)
 
     return weighted_delta
@@ -954,6 +989,14 @@ def evaluate_joker_value(
     if strategy is None:
         strategy = compute_strategy(owned_jokers, hand_levels)
 
+    cand_key = candidate.get("key", "") or joker_key(candidate)
+    owned_key_set = {joker_key(j) for j in owned_jokers}
+    # Phase 8: turn on Monte Carlo sampling only when a stochastic joker is
+    # involved. The expected-value path stays the default for speed.
+    mc_samples = _MC_DEFAULT_SAMPLES if (
+        cand_key in _STOCHASTIC_KEYS or owned_key_set & _STOCHASTIC_KEYS
+    ) else 0
+
     ctx = SimContext.build(
         candidate=candidate,
         owned_jokers=owned_jokers,
@@ -964,6 +1007,7 @@ def evaluate_joker_value(
         deck_profile=deck_profile,
         unique_planets_used=unique_planets_used,
         blind_name=blind_name,
+        monte_carlo_samples=mc_samples,
     )
     key = ctx.candidate_key
     owned_keys = set(ctx.owned_keys)

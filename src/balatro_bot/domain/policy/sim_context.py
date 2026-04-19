@@ -199,6 +199,12 @@ class SimContext:
     economy: object | None = None
     boss: BossBlindState | None = None
 
+    # Phase 8: Monte Carlo sample count. When > 0, the scoring sim runs N
+    # trials with RNG-driven branch selections (Misprint roll, Lucky card
+    # trigger, Bloodstone trigger) and returns the mean. Default 0 keeps the
+    # fast expected-value path for non-stochastic candidates.
+    monte_carlo_samples: int = 0
+
     # Derived
     candidate_key: str = field(default="", repr=False)
     owned_keys: frozenset[str] = field(default_factory=frozenset, repr=False)
@@ -222,6 +228,7 @@ class SimContext:
         deck_profile: "DeckProfile | None" = None,
         unique_planets_used: int = 0,
         blind_name: str | None = None,
+        monte_carlo_samples: int = 0,
     ) -> "SimContext":
         rank_density: dict[str, float] = {}
         suit_density: dict[str, float] = {}
@@ -253,4 +260,5 @@ class SimContext:
             enhancement_density=enhancement_density,
             lifetime=lifetime,
             boss=boss,
+            monte_carlo_samples=monte_carlo_samples,
         )
