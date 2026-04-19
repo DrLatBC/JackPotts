@@ -243,6 +243,13 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
         "j_popcorn", "passive", "mult", -4, False, 0,
         "LOSES 4 mult per round. Sell before it decays to 0.",
     ),
+
+    # --- Extinction mechanic (die for Cavendish) ---
+    "j_gros_michel": ScalingProfile(
+        "j_gros_michel", "passive", "mult", 0, True, 0,
+        "1-in-4 per round to go extinct; death unlocks Cavendish (X3 replacement). "
+        "Never actively sell — holding costs nothing and extinction is strict upgrade.",
+    ),
 }
 
 

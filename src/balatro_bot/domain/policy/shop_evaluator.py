@@ -31,7 +31,7 @@ from balatro_bot.joker_effects.scoring_phase import (
     PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
 )
 from balatro_bot.rules._helpers import score_consumable, evaluate_hex
-from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE, check_anti_synergy
+from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE, SELL_PROTECTED, check_anti_synergy
 from balatro_bot.strategy import compute_strategy
 
 if TYPE_CHECKING:
@@ -888,6 +888,13 @@ class ShopEvaluator:
                 sell_candidates = sorted(roster, key=lambda r: r.ev_delta)
                 for sc in sell_candidates:
                     if _get_edition(owned[sc.index]) == "POLYCHROME":
+                        continue
+                    # Scaling jokers with accumulated investment (Hologram,
+                    # Castle, Caino, Green Joker, etc.) and extinction-
+                    # mechanic jokers (Gros Michel) aren't sell candidates —
+                    # selling loses permanent accrued value or denies a
+                    # free Cavendish spawn.
+                    if joker_key(owned[sc.index]) in SELL_PROTECTED:
                         continue
                     sell_cash = sc.sell_value
                     effective_cost = cost - sell_cash
