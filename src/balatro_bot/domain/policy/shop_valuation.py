@@ -826,6 +826,12 @@ def evaluate_joker_value(
     # Layer 1: scoring simulation or utility fallback
     if _has_scoring_effect(key):
         raw_delta = _scoring_delta(candidate, owned_jokers, hand_levels, hand_types, joker_limit, strategy)
+        # Flower Pot's sim assumes a proc (all 4 suits). In practice Two Pair /
+        # Flush hands span 4 suits only occasionally; Smeared halves the
+        # requirement to 2 red + 2 black which is much easier to hit.
+        if key == "j_flower_pot":
+            proc_rate = 0.70 if "j_smeared" in owned_keys else 0.30
+            raw_delta *= proc_rate
         coeff = _sim_coefficient(key)
         base_value = math.log2(1.0 + max(raw_delta, 0.0)) * coeff
     else:
