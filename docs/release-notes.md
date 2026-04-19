@@ -1,5 +1,48 @@
 # Release notes
 
+## v1.1.0 — 2026-04-19
+
+Valuation refactor epic (#32). Eight phases folded the ad-hoc cascade of post-hoc floors, fallbacks, and patched-on adjustments in `evaluate_joker_value` into a single `SimContext` that carries everything the sim needs. Every new joker used to require its own patch layer; now it slots into a typed context that already knows about held cards, lifetime state, deck density, boss effects, and run-level observations.
+
+### Headline changes
+
+**`SimContext` consolidation.** Replaced the parameter cascade (`evaluate_joker_value` → `_scoring_delta` → `_synthetic_hand`) with one frozen dataclass carrying candidate, owned jokers, hand levels, strategy, ante, deck profile, held cards, lifetime state, live run stats, active boss, and MC sample count. All post-hoc floors and adjustments collapse into sim inputs.
+
+**Held-in-hand phase sim.** Baron, Shoot the Moon, Raised Fist, Mime, and Blackboard now fire in the synthetic hand. Previously their value was estimated via bolted-on multipliers; now the sim sees the actual held cards and their effects apply naturally through the joker pipeline.
+
+**Deck-density-aware synthetic hands.** Valuation now samples against the actual deck composition (rank / suit / enhancement density) rather than a vanilla 52-card assumption. Flush-build rosters get realistic flush-proc rates; Steel-heavy decks properly value Steel Joker.
+
+**`LifetimeState` for scaling xmult.** Live "Currently X…" anchors parsed from owned joker effect text for Madness, Hologram, Canio, Vampire, Obelisk, Yorick, Campfire, Constellation, Throwback, Hit the Road, Lucky Cat, and Glass. A mid-run Hologram at X4.5 is now projected against its actual anchor, not X1.0.
+
+**Economy joker ROI.** Unified dollars-to-value conversion (`DOLLARS_PER_VALUE_UNIT × ECO_ANTE_DECAY`) behind `utility_value.py`. Credit Card, Golden Ticket, Matador, Astronomer, Satellite, To Do List, Cloud 9, Delayed Gratification, Faceless, Gift Card, Business Card, and Rocket all share one ROI primitive.
+
+**Event-generator ROI.** Thirteen new valuators cover DNA, Space, Vagabond, Cartomancer, Hallucination, Seance, Perkeo, Riff-Raff, Midas Mask, Certificate, Burnt, Merry Andy, Turtle Bean, and Marble — each projecting expected dollars over remaining rounds with joker-specific realization rates.
+
+**Boss-blind-aware sim.** `BossBlindState` templates 13 bosses (Plant, Needle, Hook, Manacle, Pillar, Arm, Flint, Eye, Mouth, Head, Club, Window, Goad). In-round valuation uses the active boss; shop-phase valuation blends across the upcoming-boss pool weighted by `BOSS_WEIGHT`. Photograph collapses under Plant, Acrobat lifts under Needle, etc.
+
+**Joker-order normalization.** `reorder_for_scoring` ports the live bot's `ReorderJokersForScoring` logic into the sim (chips → mult → xmult, Blueprint rightmost-compatible, Brainstorm leftmost). Hologram, Blueprint, and Brainstorm are no longer understated by owned-order scoring.
+
+**Monte Carlo for stochastic jokers.** Misprint, Lucky Cat, Bloodstone, and Oops now route through an MC sample loop (default 16 samples) instead of expected-value approximations. Common random numbers — same seed for baseline and candidate — shrinks paired-difference variance.
+
+### Live-run plumbing
+
+- `LiveRunStats` observed by the bot each tick (`avg_discards_per_round`, `avg_sells_per_ante`, `avg_plays_per_round`) feed `LifetimeState`. Yorick and Campfire now project against actual per-run behavior instead of 1.5/1.5 defaults.
+- Mid-round `blind_name` threads into `evaluate_joker_value` call sites (Hex selldown targeting, Buffoon pack picks) so boss-aware valuation fires outside the shop.
+
+### Fixes
+
+- `shop_events` sell records now populate `item_type` (`"joker"` / `"consumable"`). The filter in `_compute_live_stats` was silently returning 0 joker sells, overriding the 1.5 default with 0.0 for any sell-scaling projection.
+- Retrigger jokers (Hanging Chad, Dusk, Sock and Buskin, Seltzer) now reach the scoring sim.
+- Zero-value trap on face/rank-affinity jokers in shop valuation fixed.
+- Blueprint/Brainstorm copy-incompatibility plumbed through valuation.
+
+### Tooling
+
+- Test count: 380 → 454
+- Issue #32 epic closed (all 8 phase sub-issues shipped: #33, #34, #35, #36, #37, #38, #39, #40)
+
+---
+
 ## v1.0.0 — 2026-04-18
 
 First stable release. The codebase has been through a structural overhaul since `v0.2.0-beta`; enough subsystems were rewritten that the old rules engine is barely recognizable.

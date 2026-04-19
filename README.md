@@ -2,12 +2,12 @@
 
 [![built with Python](https://img.shields.io/badge/built%20with-Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![version v1.0.0](https://img.shields.io/badge/version-v1.0.0-blue)](https://github.com/DrLatBC/JackPotts/releases)
-[![tests 380 passing](https://img.shields.io/badge/tests-380%20passing-brightgreen)](tests/)
+[![version v1.1.0](https://img.shields.io/badge/version-v1.1.0-blue)](https://github.com/DrLatBC/JackPotts/releases)
+[![tests 454 passing](https://img.shields.io/badge/tests-454%20passing-brightgreen)](tests/)
 [![platform Windows](https://img.shields.io/badge/platform-Windows-lightgrey)](https://github.com/DrLatBC/JackPotts)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/DrLatBC/JackPotts/pulls)
 
-Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/Balatro/) autonomously via the [balatrobot](https://github.com/coder/balatrobot) mod's JSON-RPC API. A priority-ordered rule engine evaluates every game state and the first rule that fires wins — no ML, no tree search, just hand-tuned heuristics backed by a full simulation of Balatro's scoring pipeline.
+Rule-based bot that plays [Balatro](https://store.steampowered.com/app/2379780/Balatro/) autonomously via the [balatrobot](https://github.com/coder/balatrobot) mod's JSON-RPC API. A priority-ordered rule engine evaluates every game state and the first rule that fires wins — no ML, no neural nets, just hand-tuned heuristics backed by combinatorial hand enumeration, Monte Carlo rollouts over future deck draws, and a full simulation of Balatro's scoring pipeline.
 
 Live stats dashboard: **[jackpotts.drlat.dev](https://jackpotts.drlat.dev)**
 
