@@ -36,21 +36,22 @@ def main() -> None:
                         help="Dashboard batch ID for reporting game results")
     args = parser.parse_args()
 
+    bot_log_root = Path(__file__).resolve().parent.parent.parent / "bot_log"
     if args.stream_log:
-        log_dir = Path("bot_log") / "stream"
+        log_dir = bot_log_root / "stream"
     else:
-        log_dir = Path("bot_log") / str(args.port)
-    wins_dir = Path("bot_log") / "wins"
+        log_dir = bot_log_root / str(args.port)
+    wins_dir = bot_log_root / "wins"
     log_dir.mkdir(parents=True, exist_ok=True)
     wins_dir.mkdir(exist_ok=True)
 
-    num_file = Path("bot_log") / "next_num.txt"
+    num_file = bot_log_root / "next_num.txt"
     if num_file.exists():
         session_num = int(num_file.read_text().strip())
     else:
         all_nums = [
             int(m.group(1))
-            for p in Path("bot_log").glob("*/game_*.log")
+            for p in bot_log_root.glob("*/game_*.log")
             if (m := re.match(r"game_(\d+)\.log", p.name))
         ]
         session_num = (max(all_nums) + 1) if all_nums else 1

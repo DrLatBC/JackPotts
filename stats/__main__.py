@@ -25,10 +25,13 @@ from .replay import find_winning_games, parse_win_game, generate_win_replay_md
 def main():
     parser = argparse.ArgumentParser(description="Balatro bot batch stats")
     parser.add_argument("batches", nargs="*", help="Batch numbers (e.g. 018 019). Default: latest")
-    parser.add_argument("--dir", default="bot_log", help="Log directory")
+    parser.add_argument("--dir", default=None, help="Log directory (default: <project>/bot_log)")
     args = parser.parse_args()
 
-    log_dir = Path(args.dir)
+    if args.dir is None:
+        log_dir = Path(__file__).resolve().parent.parent / "bot_log"
+    else:
+        log_dir = Path(args.dir)
     if not log_dir.exists():
         print(f"Log directory not found: {log_dir}")
         sys.exit(1)

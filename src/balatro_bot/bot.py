@@ -231,12 +231,13 @@ def run_bot(
             try:
                 state = client.call("start", start_params)
                 break
-            except APIError as e:
-                log.warning("start() failed (attempt %d): %s — retrying", _attempt + 1, e.message)
+            except (APIError, httpx.HTTPError) as e:
+                reason = e.message if isinstance(e, APIError) else f"{type(e).__name__}: {e}"
+                log.warning("start() failed (attempt %d): %s — retrying", _attempt + 1, reason)
                 time.sleep(1)
                 try:
                     client.call("menu")
-                except APIError:
+                except (APIError, httpx.HTTPError):
                     pass
                 time.sleep(1)
         else:

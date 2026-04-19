@@ -76,6 +76,36 @@ for _cat, _keys in JOKER_SCORE_CATEGORY.items():
 
 
 # ---------------------------------------------------------------------------
+# Layer 1 tuning — scoring simulation → base_value
+#
+# These are the dials that convert ``_scoring_delta`` (fractional improvement
+# from the synthetic-hand sim) into a base score. Split per category so we can
+# tune xmult independently of flat mult / chips without uniform sweeps.
+# See also: ``_context_scale`` for Layer 3 ante urgency (separate domain).
+# ---------------------------------------------------------------------------
+
+# Compression coefficient on ``log2(1 + raw_delta)``. Higher = aligned strong
+# jokers score bigger. Xmult uses a higher coefficient because its deltas are
+# genuinely larger; flat mult/chips stay at the historical 3.0.
+SIM_COEFF_XMULT = 5.0
+SIM_COEFF_MULT = 3.0
+SIM_COEFF_CHIPS = 3.0
+SIM_COEFF_DEFAULT = 3.0  # uncategorized jokers
+
+# Pivot-possible floor for hand-conditional Cat 1 xmult jokers (Duo/Trio/
+# Tribe/Family/Order) when the roster hasn't committed to their trigger hand.
+# Decays across antes: by mid-game there's no runway to pivot into their hand.
+PIVOT_FLOOR_A1 = 2.5        # floor at ante 1
+PIVOT_FLOOR_DECAY = 0.5     # subtract this per ante (hits 0 at ante 6)
+PIVOT_FLOOR_THRESHOLD = 2.5  # sim base_value must be below this to trigger floor
+
+# Gate the "Currently X…" effect-text floor to true scaling jokers only.
+# Before this existed, raw xmult × 5.0 was an unconditional floor that
+# clobbered correctly-low sim values for hand/suit/rank-conditional jokers.
+SCALING_DP_FLOOR_ENABLED = True
+
+
+# ---------------------------------------------------------------------------
 # Utility joker base values (moved from shop.py)
 # ---------------------------------------------------------------------------
 
@@ -270,6 +300,18 @@ def _dynamic_power(parsed: dict) -> float:
     return power
 
 
+def _sim_coefficient(key: str) -> float:
+    """Pick the per-category sim coefficient for a joker key."""
+    cat = _KEY_TO_CATEGORY.get(key)
+    if cat == "xmult":
+        return SIM_COEFF_XMULT
+    if cat == "mult":
+        return SIM_COEFF_MULT
+    if cat == "chips":
+        return SIM_COEFF_CHIPS
+    return SIM_COEFF_DEFAULT
+
+
 def _has_scoring_effect(key: str) -> bool:
     effect = JOKER_EFFECTS.get(key)
     return effect is not None and effect is not _noop
@@ -362,6 +404,9 @@ _COPY_JOKERS = frozenset({"j_blueprint", "j_brainstorm"})
 _PROBABILITY_JOKERS = frozenset({
     "j_oops", "j_lucky_cat", "j_bloodstone", "j_8_ball",
     "j_space", "j_sixth_sense",
+})
+_HAND_CONDITIONAL_XMULT = frozenset({
+    "j_duo", "j_trio", "j_tribe", "j_family", "j_order",
 })
 _XMULT_COPY_TARGETS = frozenset({
     "j_cavendish", "j_stencil", "j_duo", "j_trio", "j_family",
@@ -671,7 +716,8 @@ def evaluate_joker_value(
     # Layer 1: scoring simulation or utility fallback
     if _has_scoring_effect(key):
         raw_delta = _scoring_delta(candidate, owned_jokers, hand_levels, hand_types, joker_limit, strategy)
-        base_value = math.log2(1.0 + max(raw_delta, 0.0)) * 3.0
+        coeff = _sim_coefficient(key)
+        base_value = math.log2(1.0 + max(raw_delta, 0.0)) * coeff
     else:
         roi = utility_value.evaluate(
             key, ante=ante, deck_profile=deck_profile,
@@ -698,13 +744,27 @@ def evaluate_joker_value(
             # Room for Riff-Raff + 2 spawns — full value
             base_value = 2.0 if ante <= 3 else 1.0
 
-    # For jokers with parsed accumulated values (scaling jokers), take the
-    # max of simulation and dynamic power from effect text
+    # For scaling jokers (Madness, Hologram, Campfire, etc.) the effect text
+    # carries live "(Currently X…)" anchors worth trusting as a floor. For
+    # non-scaling conditional jokers (Duo/Trio/Tribe/Family/Order, Acrobat,
+    # Photograph, …) the parsed xmult × 5 is a misleading ceiling that
+    # ignores trigger conditions — let the scoring simulation speak instead.
     effect_text = candidate.get("value", {}).get("effect", "")
-    if effect_text:
+    if effect_text and SCALING_DP_FLOOR_ENABLED and key in SCALING_REGISTRY:
         parsed = parse_effect_value(effect_text)
         dp = _dynamic_power(parsed)
         base_value = max(base_value, dp)
+
+    # Hand-conditional xmult jokers read ~0 from the simulation when the
+    # roster hasn't committed to their trigger hand. Correct for committed
+    # builds but too harsh for cheap early blind-buys — apply a pivot floor
+    # that fades by mid-game.
+    if key in _HAND_CONDITIONAL_XMULT and base_value < PIVOT_FLOOR_THRESHOLD:
+        target_hands = JOKER_HAND_AFFINITY.get(key, ([], 0))[0]
+        aligned = any(strategy.hand_affinity(h) > 0 for h in target_hands)
+        if not aligned:
+            floor = max(0.0, PIVOT_FLOOR_A1 - (ante - 1) * PIVOT_FLOOR_DECAY)
+            base_value = max(base_value, floor)
 
     # Scaling runway floor: cheap scalers read at near-zero current power but
     # grow substantially over remaining rounds. Floor them early so they don't

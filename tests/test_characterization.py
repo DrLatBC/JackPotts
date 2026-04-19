@@ -153,16 +153,30 @@ class TestJokerValuationCharacterization:
         levels = {"Pair": {"chips": 10, "mult": 2, "level": 1}, "Flush": {"chips": 35, "mult": 4, "level": 1}}
         strat = compute_strategy([], levels)
         v = evaluate_joker_value(j, owned_jokers=[], hand_levels=levels, ante=3, strategy=strat)
-        assert v > 5.0  # exact: ~5.62, but allow minor float drift
+        assert v > 3.0  # exact: ~3.37, but allow minor float drift
 
-    def test_xmult_beats_flat_mult(self) -> None:
+    def test_xmult_beats_flat_mult_when_aligned(self) -> None:
+        # Conditional xMult (Duo fires on Pair) should beat flat +mult only
+        # when the roster is committed to the trigger hand. With an empty
+        # roster at mid-ante, the unconditional flat mult is the safer pick.
         levels = {"Pair": {"chips": 10, "mult": 2, "level": 1}, "Flush": {"chips": 35, "mult": 4, "level": 1}}
-        strat = compute_strategy([], levels)
         j_flat = _joker_with_effect("j_joker", "Joker", "+4 Mult")
         j_xmult = _joker_with_effect("j_duo", "The Duo", "X2 Mult if played hand contains a Pair")
-        v_flat = evaluate_joker_value(j_flat, owned_jokers=[], hand_levels=levels, ante=3, strategy=strat)
-        v_xmult = evaluate_joker_value(j_xmult, owned_jokers=[], hand_levels=levels, ante=3, strategy=strat)
-        assert v_xmult > v_flat
+
+        # Empty roster: flat mult wins (no Pair build commitment yet).
+        strat_empty = compute_strategy([], levels)
+        v_flat_empty = evaluate_joker_value(j_flat, owned_jokers=[], hand_levels=levels, ante=3, strategy=strat_empty)
+        v_xmult_empty = evaluate_joker_value(j_xmult, owned_jokers=[], hand_levels=levels, ante=3, strategy=strat_empty)
+        assert v_flat_empty > v_xmult_empty
+
+        # Pair-aligned roster: Duo's X2 mult dominates on every hand.
+        sly = _joker_with_effect("j_sly", "Sly Joker", "+50 Chips if hand contains a Pair")
+        jolly = _joker_with_effect("j_jolly", "Jolly Joker", "+8 Mult if hand contains a Pair")
+        pair_roster = [sly, jolly]
+        strat_pair = compute_strategy(pair_roster, levels)
+        v_flat_pair = evaluate_joker_value(j_flat, owned_jokers=pair_roster, hand_levels=levels, ante=3, strategy=strat_pair)
+        v_xmult_pair = evaluate_joker_value(j_xmult, owned_jokers=pair_roster, hand_levels=levels, ante=3, strategy=strat_pair)
+        assert v_xmult_pair > v_flat_pair
 
 
 # ── RoundContext.from_state() ────────────────────────────────────────

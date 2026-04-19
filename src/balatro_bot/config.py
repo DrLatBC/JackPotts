@@ -87,8 +87,8 @@ class SupervisorConfig:
     uvx_path: str = field(default_factory=_default_uvx_path)
     python_path: str = ""
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent)
-    log_dir: Path = field(default_factory=lambda: Path("bot_log"))
-    wins_dir: Path = field(default_factory=lambda: Path("bot_log/wins"))
+    log_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent / "bot_log")
+    wins_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent / "bot_log" / "wins")
     health_timeout: float = 30.0
     restart_cooldown: float = 30.0
     rapid_restart_window: float = 60.0

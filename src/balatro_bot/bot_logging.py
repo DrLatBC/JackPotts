@@ -104,7 +104,8 @@ def log_ante_transition(gs: GameLoopState, state: dict) -> None:
     )
 
     deck_cards = state.get("cards", {}).get("cards", [])
-    log.info("[ANTE %s] Deck %s", ante_num, format_deck_snapshot(deck_cards))
+    deck_snapshot = format_deck_snapshot(deck_cards)
+    log.info("[ANTE %s] Deck %s", ante_num, deck_snapshot)
 
     from balatro_bot.strategy import compute_strategy
     strat = compute_strategy(joker_cards, hand_levels)
@@ -146,6 +147,7 @@ def log_ante_transition(gs: GameLoopState, state: dict) -> None:
         "joker_roster": joker_roster_data,
         "hand_levels": leveled_dict or None,
         "deck_size": len(deck_cards),
+        "deck_snapshot": deck_snapshot,
         "strategy": strat.describes(),
     })
 

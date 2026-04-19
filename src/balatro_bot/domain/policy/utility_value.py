@@ -37,6 +37,16 @@ _FIVE_CARD_HANDS = frozenset({
 # on par with a decent scoring joker and well above flat-$1 utility entries.
 DOLLARS_PER_VALUE_UNIT = 0.15
 
+# Late-game opportunity cost — eco payoffs lose ground to scoring pressure
+# as antes tick up. By ante 6 the slot is better spent on chips/mult/xmult,
+# and even perfectly-performing eco has little runway left to compound.
+# Applied multiplicatively in ``dollars_to_value`` so every ROI valuator
+# gets the same curve without per-joker plumbing.
+ECO_ANTE_DECAY: dict[int, float] = {
+    1: 1.0, 2: 1.0, 3: 0.9,
+    4: 0.6, 5: 0.35, 6: 0.2, 7: 0.1, 8: 0.05,
+}
+
 # Typical hands played per blind (3 blinds per ante). Used by conditional
 # trigger valuators. 3.5 reflects: ~4 hands available, usually 2-4 played.
 HANDS_PER_ROUND = 3.5
@@ -68,9 +78,15 @@ def rounds_remaining(ante: int) -> int:
     return max(1, (8 - ante) * 3)
 
 
-def dollars_to_value(dollars: float) -> float:
-    """Convert expected net dollars to the shop_valuation value scale."""
-    return max(0.0, dollars) * DOLLARS_PER_VALUE_UNIT
+def dollars_to_value(dollars: float, ante: int = 1) -> float:
+    """Convert expected net dollars to the shop_valuation value scale.
+
+    Applies ``ECO_ANTE_DECAY[ante]`` so late-ante eco buys fall off the
+    valuation cliff — by ante 6 a scoring joker in the same slot is worth
+    far more than $X/round of dwindling runway.
+    """
+    decay = ECO_ANTE_DECAY.get(ante, 0.1)
+    return max(0.0, dollars) * DOLLARS_PER_VALUE_UNIT * decay
 
 
 def _face_ratio(deck_profile: DeckProfile) -> float:
@@ -407,4 +423,4 @@ def evaluate(
         owned_keys=owned_keys,
         owned_jokers=owned_jokers or [],
     )
-    return dollars_to_value(dollars)
+    return dollars_to_value(dollars, ante=ante)
