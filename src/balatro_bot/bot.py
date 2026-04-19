@@ -718,6 +718,7 @@ def run_bot(
             "ante_snapshots": gs.ante_snapshots,
             "hand_scores": gs.hand_scores,
             "shop_events": gs.shop_events,
+            "earnings": state.get("earnings", []),
         })
 
     return gs.actually_won
