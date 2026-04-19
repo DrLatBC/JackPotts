@@ -421,8 +421,28 @@ def _scoring_delta(
     idol_rank = sim_rank if "j_idol" in candidate_keys else None
     idol_suit = sim_suit if "j_idol" in candidate_keys else None
 
+    want_flower_pot = "j_flower_pot" in candidate_keys
+    want_seeing_double = "j_seeing_double" in candidate_keys
+
+    def _rewrite_suits(cards: list, pattern: list[str]) -> list:
+        out = []
+        for i, c in enumerate(cards):
+            new_suit = pattern[i] if i < len(pattern) else pattern[-1]
+            out.append(_make_card(c.value.rank, new_suit))
+        return out
+
     for hand_name, weight in hand_types:
         scoring_cards, played_cards = _synthetic_hand(hand_name, strategy, candidate_key)
+
+        # Flower Pot needs 4+ scoring cards spanning all 4 suits. Seeing Double
+        # needs Club + non-Club. Reshape suits so the condition can fire in
+        # whichever hand types satisfy the card-count requirement.
+        if want_flower_pot and len(scoring_cards) >= 4:
+            scoring_cards = _rewrite_suits(scoring_cards, ["H", "D", "C", "S", "H"])
+            played_cards = scoring_cards + played_cards[len(scoring_cards):]
+        elif want_seeing_double and len(scoring_cards) >= 2:
+            scoring_cards = _rewrite_suits(scoring_cards, ["C"] + ["H"] * (len(scoring_cards) - 1))
+            played_cards = scoring_cards + played_cards[len(scoring_cards):]
 
         baseline = score_hand(
             hand_name, scoring_cards, hand_levels,
@@ -794,6 +814,14 @@ def evaluate_joker_value(
         hand_types = strategy.preferred_hands[:3]
     else:
         hand_types = [("Pair", 1.0), ("High Card", 0.5)]
+
+    # Jokers that need 4+ scoring cards to trigger — bias the hand-type mix
+    # so the condition can actually fire during valuation.
+    if key == "j_flower_pot" or key == "j_seeing_double":
+        if not any(h in ("Two Pair", "Flush", "Full House", "Four of a Kind", "Straight")
+                   for h, _ in hand_types):
+            hand_types = [("Two Pair", 1.0), ("Flush", 0.6)] if key == "j_flower_pot" \
+                else [("Two Pair", 1.0), ("Pair", 0.6)]
 
     # Layer 1: scoring simulation or utility fallback
     if _has_scoring_effect(key):
