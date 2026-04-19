@@ -126,9 +126,11 @@ def _project_constellation_gain(ctx: "SimContext", lt: "LifetimeState") -> float
 
 
 def _project_hit_the_road_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # +X0.5 per Jack discarded, RESETS each round. Four Jacks in 52 = 0.077.
-    # ~1.5 discards × 5 cards × 0.077 ≈ 0.58 Jacks/round. Use 0.25 xmult avg.
-    return 0.25 * _rounds_remaining(ctx.ante)
+    # +X0.5 per Jack discarded, RESETS each round — NOT cumulative across the
+    # run. ~1.5 discards × 5 cards × (4/52) ≈ 0.58 Jacks/round → +X0.29 on the
+    # last scoring hand of each round, X1.0 on earlier hands. Per-scoring-hand
+    # average: ~+X0.15. Returned flat (no rounds_remaining scaling).
+    return 0.15
 
 
 def _project_lucky_cat_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
