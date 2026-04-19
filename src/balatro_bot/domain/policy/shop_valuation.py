@@ -24,6 +24,7 @@ from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,
     JOKER_HAND_AFFINITY,
     JOKER_RANK_AFFINITY,
+    JOKER_SUIT_AFFINITY,
     Strategy,
     compute_strategy,
 )
@@ -182,7 +183,17 @@ def _make_card(rank: str, suit: str) -> Card:
     )
 
 
-def _preferred_suit(strategy: Strategy | None) -> str:
+def _preferred_suit(
+    strategy: Strategy | None,
+    candidate_key: str | None = None,
+) -> str:
+    if candidate_key:
+        cand_suit = JOKER_SUIT_AFFINITY.get(candidate_key)
+        if cand_suit and cand_suit[1] > 0:
+            return cand_suit[0]
+        if candidate_key in ("j_ancient", "j_idol"):
+            # Round-variable — assume Hearts (matches default, common scoring).
+            return "H"
     if strategy and strategy.preferred_suits:
         return strategy.preferred_suits[0][0]
     return _DEFAULT_SUIT
@@ -200,9 +211,7 @@ def _preferred_rank(
             return cand_ranks[0][0]
         if candidate_key in _FACE_CARD_JOKERS:
             return "K"
-    if strategy and any(
-        a.name == "face_card" for a in strategy.active_archetypes
-    ):
+    if strategy and strategy.has_archetype("face_card"):
         return "K"
     if strategy and strategy.preferred_ranks:
         return strategy.preferred_ranks[0][0]
@@ -224,7 +233,7 @@ def _synthetic_hand(
     scoring_cards: subset that actually scores in Balatro
     played_cards: all 5 cards played
     """
-    suit = _preferred_suit(strategy)
+    suit = _preferred_suit(strategy, candidate_key)
     rank = _preferred_rank(strategy, candidate_key)
     alt = _alt_suit(suit)
 
@@ -337,7 +346,18 @@ def _sim_coefficient(key: str) -> float:
     return SIM_COEFF_DEFAULT
 
 
+_PER_CARD_SCORING_JOKERS = frozenset({
+    "j_greedy_joker", "j_lusty_joker", "j_wrathful_joker", "j_gluttenous_joker",
+    "j_fibonacci", "j_even_steven", "j_odd_todd", "j_scholar",
+    "j_smiley", "j_scary_face", "j_walkie_talkie",
+    "j_photograph", "j_triboulet", "j_ancient",
+    "j_arrowhead", "j_onyx_agate", "j_bloodstone", "j_idol", "j_hiker",
+})
+
+
 def _has_scoring_effect(key: str) -> bool:
+    if key in _PER_CARD_SCORING_JOKERS:
+        return True
     effect = JOKER_EFFECTS.get(key)
     return effect is not None and effect is not _noop
 
@@ -391,6 +411,16 @@ def _scoring_delta(
 
     weighted_delta = 0.0
 
+    # Contextual assumptions for round-variable per-card jokers during valuation:
+    # pick the synthetic hand's preferred rank/suit so the effect actually fires.
+    sim_suit = _preferred_suit(strategy, candidate_key)
+    sim_rank = _preferred_rank(strategy, candidate_key)
+    owned_keys = {joker_key(j) for j in owned_jokers}
+    candidate_keys = owned_keys | {candidate_key}
+    ancient_suit = sim_suit if "j_ancient" in candidate_keys else None
+    idol_rank = sim_rank if "j_idol" in candidate_keys else None
+    idol_suit = sim_suit if "j_idol" in candidate_keys else None
+
     for hand_name, weight in hand_types:
         scoring_cards, played_cards = _synthetic_hand(hand_name, strategy, candidate_key)
 
@@ -398,11 +428,13 @@ def _scoring_delta(
             hand_name, scoring_cards, hand_levels,
             jokers=baseline_jokers, played_cards=played_cards,
             joker_limit=joker_limit,
+            ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
         )
         with_candidate = score_hand(
             hand_name, scoring_cards, hand_levels,
             jokers=_place_candidate(baseline_jokers), played_cards=played_cards,
             joker_limit=joker_limit,
+            ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
         )
 
         base_total = max(baseline[2], 1)
