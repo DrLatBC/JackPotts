@@ -218,10 +218,16 @@ class PickFromBuffoonPack:
         strat = compute_strategy(owned_jokers, hand_levels)
 
         from balatro_bot.domain.policy.shop import ALWAYS_BUY, _get_deck_profile
+        blind_name = next(
+            (b.get("name") for b in state.get("blinds", {}).values()
+             if isinstance(b, dict) and b.get("status") == "CURRENT"),
+            None,
+        )
         best_idx, best_score, reason = choose_from_buffoon_pack(
             cards, owned_jokers, hand_levels, ante, joker_limit, strat,
             always_buy_keys=ALWAYS_BUY,
             deck_profile=_get_deck_profile(state),
+            blind_name=blind_name,
         )
 
         return PackAction(card_index=best_idx, reason=reason)

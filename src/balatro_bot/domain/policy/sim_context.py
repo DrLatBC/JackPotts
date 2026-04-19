@@ -47,6 +47,20 @@ _YORICK_REMAINING_PATTERN = re.compile(r"requires\s+(\d+)\s+more", re.IGNORECASE
 
 
 @dataclass(frozen=True)
+class LiveRunStats:
+    """Bot-observed per-run averages, threaded into ``LifetimeState`` (issue #41).
+
+    Populated by ``bot.py`` from ``GameLoopState`` each tick and attached to
+    ``state['_live_stats']``. When absent, ``LifetimeState`` falls back to its
+    own conservative defaults.
+    """
+
+    avg_discards_per_round: float = 1.5
+    avg_sells_per_ante: float = 1.5
+    avg_plays_per_round: float = 2.5
+
+
+@dataclass(frozen=True)
 class LifetimeState:
     """Live run-wide counters for scaling xmult jokers (Phase 4).
 
@@ -55,7 +69,8 @@ class LifetimeState:
     hypothetical joker that hasn't scaled yet.
 
     Run-rate fields (``avg_discards_per_round``, ``avg_sells_per_ante``) are
-    conservative defaults today; issue #41 will thread live bot stats through.
+    conservative defaults; ``from_owned`` overrides them from ``LiveRunStats``
+    when the bot passes its observed averages (issue #41).
     """
 
     # Live xmult anchors — "Currently X…" parsed from owned jokers.
@@ -88,9 +103,18 @@ class LifetimeState:
         owned_jokers: "list[dict] | tuple[dict, ...]",
         *,
         unique_planets_used: int = 0,
+        live_stats: "LiveRunStats | None" = None,
     ) -> "LifetimeState":
-        """Build from owned jokers by parsing their effect text."""
+        """Build from owned jokers by parsing their effect text.
+
+        When ``live_stats`` is provided, override the conservative defaults for
+        ``avg_discards_per_round`` / ``avg_sells_per_ante`` with the bot's
+        observed per-run averages (issue #41).
+        """
         kwargs: dict[str, float | int] = {"unique_planets_used": unique_planets_used}
+        if live_stats is not None:
+            kwargs["avg_discards_per_round"] = live_stats.avg_discards_per_round
+            kwargs["avg_sells_per_ante"] = live_stats.avg_sells_per_ante
         for joker in owned_jokers:
             k = joker_key(joker)
             text = joker.get("value", {}).get("effect", "") if isinstance(joker, dict) else ""
@@ -229,6 +253,7 @@ class SimContext:
         unique_planets_used: int = 0,
         blind_name: str | None = None,
         monte_carlo_samples: int = 0,
+        live_stats: "LiveRunStats | None" = None,
     ) -> "SimContext":
         rank_density: dict[str, float] = {}
         suit_density: dict[str, float] = {}
@@ -241,7 +266,9 @@ class SimContext:
                 e: c / total for e, c in deck_profile.enhancement_counts.items()
             }
         lifetime = LifetimeState.from_owned(
-            owned_jokers, unique_planets_used=unique_planets_used,
+            owned_jokers,
+            unique_planets_used=unique_planets_used,
+            live_stats=live_stats,
         )
         boss = BossBlindState.from_name(blind_name) if blind_name else None
         return cls(

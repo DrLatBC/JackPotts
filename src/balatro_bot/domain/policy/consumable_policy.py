@@ -322,7 +322,7 @@ def _score_targeting_tarot(
 # ---------------------------------------------------------------------------
 
 
-def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict) -> float:
+def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict, *, blind_name: str | None = None) -> float:
     """Score Hex usage/pick. Returns 0.0 to skip, or positive score.
 
     Hex adds Polychrome (x1.5) to a random joker and destroys the rest.
@@ -346,7 +346,7 @@ def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict) -> float:
     strat = compute_strategy(jokers, hand_levels)
     values = []
     for j in jokers:
-        val = evaluate_joker_value(j, jokers, hand_levels, ante, strat)
+        val = evaluate_joker_value(j, jokers, hand_levels, ante, strat, blind_name=blind_name)
         values.append((j, val))
     values.sort(key=lambda x: x[1], reverse=True)
 
@@ -453,7 +453,12 @@ def score_use_now(
         if key in ("c_ankh", "c_hex") and not jokers:
             return (0.0, None)
         if key == "c_hex":
-            hex_val = evaluate_hex(jokers, ante, hand_levels)
+            blind_name = next(
+                (b.get("name") for b in state.get("blinds", {}).values()
+                 if isinstance(b, dict) and b.get("status") == "CURRENT"),
+                None,
+            )
+            hex_val = evaluate_hex(jokers, ante, hand_levels, blind_name=blind_name)
             if hex_val <= 0.0:
                 return (0.0, None)
             return (hex_val, ("use", idx, f"use Hex (score={hex_val:.1f})"))

@@ -41,6 +41,7 @@ from balatro_bot.strategy import (
 
 if TYPE_CHECKING:
     from balatro_bot.domain.models.deck_profile import DeckProfile
+    from balatro_bot.domain.policy.sim_context import LiveRunStats
 
 # ---------------------------------------------------------------------------
 # Scoring category metadata (moved from BuyJokersInShop)
@@ -980,6 +981,7 @@ def evaluate_joker_value(
     deck_profile: DeckProfile | None = None,
     unique_planets_used: int = 0,
     blind_name: str | None = None,
+    live_stats: "LiveRunStats | None" = None,
 ) -> float:
     """Unified joker valuation. Returns ~0.0 to ~15.0.
 
@@ -1008,6 +1010,7 @@ def evaluate_joker_value(
         unique_planets_used=unique_planets_used,
         blind_name=blind_name,
         monte_carlo_samples=mc_samples,
+        live_stats=live_stats,
     )
     key = ctx.candidate_key
     owned_keys = set(ctx.owned_keys)

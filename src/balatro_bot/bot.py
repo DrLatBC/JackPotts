@@ -89,6 +89,34 @@ class WinCaptureHandler(logging.handlers.MemoryHandler):
 _win_handler: WinCaptureHandler | None = None
 
 
+def _compute_live_stats(gs: "GameLoopState"):
+    """Snapshot per-run averages from observed bot activity (issue #41).
+
+    Returns a ``LiveRunStats`` populated from ``gs``, or ``None`` when not enough
+    data has accumulated (rounds/antes still at zero) — callers then fall back
+    to ``LifetimeState``'s conservative defaults.
+    """
+    from balatro_bot.domain.policy.sim_context import LiveRunStats
+
+    rounds_played = len(gs.round_results)
+    if rounds_played <= 0:
+        return None
+
+    joker_sells = sum(
+        1 for ev in gs.shop_events
+        if ev.get("event_type") == "sell" and ev.get("item_type") == "joker"
+    )
+    # Antes are 1-indexed; use the highest ante we've actually seen play end in.
+    antes_played = max((r.get("ante", 0) for r in gs.round_results), default=0)
+    antes_played = max(1, antes_played)
+
+    return LiveRunStats(
+        avg_discards_per_round=gs.total_discards_used / rounds_played,
+        avg_sells_per_ante=joker_sells / antes_played,
+        avg_plays_per_round=gs.total_hands_played / rounds_played,
+    )
+
+
 def setup_logging(
     verbose: bool = False,
     log_file: str = "growing.txt",
@@ -317,6 +345,7 @@ def run_bot(
             if _boss_disabled_before:
                 state["_boss_disabled"] = True
 
+        state["_live_stats"] = _compute_live_stats(gs)
         action = engine.decide(state)
         if action is None:
             log.debug("No rule matched for state=%s, polling...", game_state)

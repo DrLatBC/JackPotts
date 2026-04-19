@@ -37,6 +37,7 @@ from balatro_bot.strategy import compute_strategy
 if TYPE_CHECKING:
     from typing import Any
 
+    from balatro_bot.domain.policy.sim_context import LiveRunStats
     from balatro_bot.strategy import Strategy
 
 log = logging.getLogger("balatro_bot")
@@ -195,6 +196,7 @@ def score_roster(
     deck_profile: DeckProfile | None = None,
     ante: int = 1,
     unique_planets_used: int = 0,
+    live_stats: "LiveRunStats | None" = None,
 ) -> list[JokerScore]:
     """Compute live EV delta for each owned joker."""
     scores: list[JokerScore] = []
@@ -213,6 +215,7 @@ def score_roster(
             ante=ante, strategy=strategy, joker_limit=joker_limit,
             deck_profile=deck_profile,
             unique_planets_used=unique_planets_used,
+            live_stats=live_stats,
         )
 
         # Fodder value: if Dagger is owned and this isn't Dagger itself,
@@ -372,6 +375,7 @@ def _score_shop_joker(
     joker_limit: int,
     deck_profile: DeckProfile | None,
     unique_planets_used: int = 0,
+    live_stats: "LiveRunStats | None" = None,
 ) -> float:
     """Score a shop joker using the valuation engine."""
     return evaluate_joker_value(
@@ -379,6 +383,7 @@ def _score_shop_joker(
         ante=ante, strategy=strategy, joker_limit=joker_limit,
         deck_profile=deck_profile,
         unique_planets_used=unique_planets_used,
+        live_stats=live_stats,
     )
 
 
@@ -771,11 +776,18 @@ class ShopEvaluator:
         budget = compute_budget(money, ante, joker_count, owned_jokers=owned,
                                 owned_vouchers=owned_vouchers)
 
+        # Issue #41: bot attaches its observed per-run averages (discards/round,
+        # sells/ante) on the state dict. Thread into every valuation call so
+        # scaling-xmult projections reflect real play behavior instead of the
+        # conservative 1.5/1.5 defaults.
+        live_stats = state.get("_live_stats")
+
         # ── Score roster ──
         roster = score_roster(
             owned, hand_levels, strat,
             joker_limit=joker_limit, deck_profile=deck_profile, ante=ante,
             unique_planets_used=unique_planets_used,
+            live_stats=live_stats,
         )
 
         # ── Enumerate all candidate plans ──
@@ -832,6 +844,7 @@ class ShopEvaluator:
             shop_value = _score_shop_joker(
                 card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
                 unique_planets_used=unique_planets_used,
+                live_stats=live_stats,
             )
 
             # Riff-Raff slot reservation: penalize buys that fill spawn slots
@@ -889,6 +902,7 @@ class ShopEvaluator:
                             card, post_sell_owned, hand_levels,
                             post_sell_strategy, ante, joker_limit, deck_profile,
                             unique_planets_used=unique_planets_used,
+                            live_stats=live_stats,
                         )
                         upgrade_delta = shop_value_post - sc.ev_delta
                     opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
@@ -1053,6 +1067,7 @@ class ShopEvaluator:
                 card.get("set") == "JOKER" and _score_shop_joker(
                     card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
                     unique_planets_used=unique_planets_used,
+                    live_stats=live_stats,
                 ) >= 6.0
                 for card in shop.get("cards", [])
             )
