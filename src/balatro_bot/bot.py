@@ -56,6 +56,7 @@ class GameLoopState:
     hands_scored: int = 0  # sequence counter for hand_scores
     packs_opened: int = 0  # incremented on transitions into a pack-opened state
     in_pack_state: bool = False
+    pack_stuck_count: int = 0  # force-skip-of-pack failures; abort game at 2
     shop_offers: list = field(default_factory=list)  # [{ante, shop_visit_seq, ...}]
     pack_offers: list = field(default_factory=list)  # [{ante, pack_seq, ...}]
     tags_seen: list = field(default_factory=list)    # [{ante, round, tag_key, ...}]
@@ -779,6 +780,31 @@ def run_bot(
                         rule._blocked_consumables.add(blocked_idx)
                         log.info("Blocked consumable index %d for this round", blocked_idx)
                         break
+
+            # Pack pick wedged on the mod side (NOT_ALLOWED: "already in
+            # progress"). Don't grind 5 retries — after 3 strikes, force-skip
+            # the pack. If the skip itself also raises, the Lua pack state
+            # machine is stuck and nothing short of restarting will unstick it.
+            if method == "pack" and e.name == "NOT_ALLOWED" and gs.consecutive_errors >= 3:
+                try:
+                    state = client.call("pack", {"skip": True})
+                    if _boss_disabled_before:
+                        state["_boss_disabled"] = True
+                    gs.consecutive_errors = 0
+                    gs.pack_stuck_count = 0
+                    log.warning("Pack pick wedged — forced skip succeeded")
+                    continue
+                except APIError as skip_err:
+                    gs.pack_stuck_count += 1
+                    log.error(
+                        "Pack force-skip also failed (%s: %s) — stuck %d/2",
+                        skip_err.name, skip_err.message, gs.pack_stuck_count,
+                    )
+                    if gs.pack_stuck_count >= 2:
+                        log.error("Pack state wedged, aborting game for supervisor restart")
+                        raise RuntimeError(
+                            f"pack state wedged: {skip_err.name}"
+                        ) from skip_err
 
             # If a joker buy was rejected due to full slots, tell the
             # shop evaluator so it stops trying to buy jokers this visit.

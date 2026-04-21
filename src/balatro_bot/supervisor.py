@@ -218,6 +218,9 @@ def _pick_princess_name(taken: set[str]) -> str:
 
 _MIN_REPS = 5  # require at least 5 full repetitions to flag a cycle
 _MAX_PERIOD = 4  # check cycles of period 1, 2, 3, 4
+_STALL_TIMEOUT = 600  # seconds without a new action seq before declaring stuck
+
+_ACTION_SEQ_RE = re.compile(r"\[#(\d+)\]")
 
 
 def _has_repeating_cycle(lines: list[str]) -> bool:
@@ -260,6 +263,8 @@ class Slot:
     last_reason: str = ""
     log_file: Path | None = None
     log_offset: int = 0
+    last_action_seq: int = -1
+    last_action_seq_time: float = 0.0
     recent_lines: deque = field(default_factory=lambda: deque(maxlen=40))
     loop_start: float = 0.0
     bot_launch_time: float = 0.0
@@ -333,9 +338,24 @@ class Slot:
         for line in raw.decode("utf-8", errors="replace").splitlines():
             line = line.strip()
             if line:
+                m = _ACTION_SEQ_RE.search(line)
+                if m:
+                    seq = int(m.group(1))
+                    if seq != self.last_action_seq:
+                        self.last_action_seq = seq
+                        self.last_action_seq_time = time.time()
                 stripped = self._LOG_PREFIX.sub("", line)
                 stripped = self._ACTION_COUNTER.sub("", stripped)
                 self.recent_lines.append(stripped)
+
+        # Wall-clock stall backstop: catches long-period loops the cycle
+        # detector can't see (e.g. the monotonic "retry N" counter produced
+        # an 11-line unique-per-iteration cycle that soft-locked for hours).
+        if (
+            self.last_action_seq_time > 0
+            and time.time() - self.last_action_seq_time >= _STALL_TIMEOUT
+        ):
+            return True
 
         if len(self.recent_lines) < 20:
             return False
@@ -561,6 +581,8 @@ class Supervisor:
         slot.log_offset = 0
         slot.recent_lines.clear()
         slot.loop_start = 0.0
+        slot.last_action_seq = -1
+        slot.last_action_seq_time = 0.0
         slot.bot_launch_time = time.time()
         log.info("%s (port %d): launching with %d games remaining [%s deck]", slot.name, slot.port, games, deck)
 
