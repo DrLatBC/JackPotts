@@ -118,9 +118,14 @@ class PickFromTarotPack:
         if not cards:
             return None
 
-        # Only handle Tarot packs
+        # Only handle Tarot packs — require the majority of cards to be
+        # tarots. Mixed SMODS packs (e.g. a Spectral pack containing a lone
+        # tarot via Hallucination/Perkeo or content mods) used to misroute
+        # here, then choose_from_tarot_pack would happily rank a spectral
+        # at score 0 and fire a targetless RPC that wedged the mod.
         known_keys = set(NO_TARGET_TAROTS) | set(TARGETING_TAROTS)
-        if not any(c.get("key", "") in known_keys for c in cards):
+        tarot_count = sum(1 for c in cards if c.get("key", "") in known_keys)
+        if tarot_count * 2 <= len(cards):
             return None
 
         hand_cards = state.get("hand", {}).get("cards", [])

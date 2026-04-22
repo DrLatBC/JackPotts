@@ -176,22 +176,59 @@ class TestChooseDiscard:
         ctx = _ctx(hand_cards=hand, blind_score=50)
         assert choose_discard(ctx) is None
 
-    def test_respects_keep_discard_jokers(self):
-        hand = [card("2", "H"), card("3", "D"), card("K", "C"), card("5", "S"), card("7", "H")]
-        jokers = [joker("j_banner")]
-        # Tight outlook (not hopeless), banner should block discards
-        ctx = _ctx(hand_cards=hand, jokers=jokers, blind_score=300, hands_left=4)
-        action = choose_discard(ctx)
-        assert action is None
+    def test_decay_joker_sim_adjustment_green(self):
+        """Green Joker's accumulated mult should be decremented by 1 in the
+        post-discard sim (floor 0). Proves the hard-block replacement: the
+        sim reads post-discard state, not the stale pre-discard value.
+        """
+        from balatro_bot.domain.policy.discard_policy import _adjust_jokers_for_discard
+        original = {
+            "key": "j_green_joker", "label": "Green Joker",
+            "value": {
+                "effect": "+1 Mult per hand played, -1 Mult per discard (Currently +15 Mult)",
+                "ability": {"mult": 15.0, "hand_add": 1},
+            },
+        }
+        adjusted = _adjust_jokers_for_discard([original], discard_count=3)
+        assert adjusted[0]["value"]["ability"]["mult"] == 14.0
+        # Original untouched
+        assert original["value"]["ability"]["mult"] == 15.0
+        # Floor at 0
+        zero_j = {"key": "j_green_joker", "value": {"ability": {"mult": 0.0}}}
+        adj = _adjust_jokers_for_discard([zero_j], discard_count=1)
+        assert adj[0]["value"]["ability"]["mult"] == 0.0
 
-    def test_ignores_keep_discard_when_hopeless(self):
+    def test_decay_joker_sim_adjustment_ramen(self):
+        """Ramen's xmult should decrement by 0.01 per card discarded, floor 1.0."""
+        from balatro_bot.domain.policy.discard_policy import _adjust_jokers_for_discard
+        original = {
+            "key": "j_ramen", "label": "Ramen",
+            "value": {
+                "effect": "X1.85 Mult, -X0.01 Mult per card discarded",
+                "ability": {"x_mult": 1.85},
+            },
+        }
+        adjusted = _adjust_jokers_for_discard([original], discard_count=4)
+        assert abs(adjusted[0]["value"]["ability"]["x_mult"] - 1.81) < 1e-9
+        # Floor at 1.0 — Ramen at X1.02, discarding 5 would go to X0.97
+        dying = {"key": "j_ramen", "value": {"ability": {"x_mult": 1.02}}}
+        adj = _adjust_jokers_for_discard([dying], discard_count=5)
+        assert adj[0]["value"]["ability"]["x_mult"] == 1.0
+
+    def test_decay_jokers_do_not_hard_block(self):
+        """Owning Green Joker or Ramen should NOT auto-block discard decisions.
+
+        The old hard-block has been replaced with per-joker sim adjustment.
+        Whether to chase is now purely an EV comparison.
+        """
         random.seed(42)
         hand = [card("2", "H"), card("3", "D"), card("5", "C"), card("7", "S"), card("9", "H")]
-        jokers = [joker("j_banner")]
         deck = [card(r, s) for s in "HDCS" for r in "23456789TJQKA"]
-        ctx = _ctx(hand_cards=hand, jokers=jokers, blind_score=99999, hands_left=1, deck_cards=deck)
+        # Hopeless outlook — should produce a discard regardless of decay jokers
+        jokers = [joker("j_green_joker")]
+        ctx = _ctx(hand_cards=hand, jokers=jokers, blind_score=99999,
+                   hands_left=1, deck_cards=deck)
         action = choose_discard(ctx)
-        # Hopeless overrides keep-discard protection
         assert action is not None
 
 

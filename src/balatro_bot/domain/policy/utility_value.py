@@ -790,6 +790,99 @@ UTILITY_ROI_VALUATORS: dict[str, Callable[..., float]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Eco overstack gate (batch 156 fix)
+#
+# Rationale: the bot stacks eco jokers (2-3 of them) behind a thin scoring
+# roster, then dies at ante 3-4 because slot + money opportunity cost outweighs
+# the eco payoff. Gate the 2nd+ eco purchase behind a proxy "real scorer" count.
+# Gate fires on acquisition only — retention (candidate already owned) is never
+# deflated, otherwise the bot would immediately sell its own Mail-In.
+# ---------------------------------------------------------------------------
+
+ECO_JOKERS: frozenset[str] = frozenset({
+    "j_golden", "j_mail", "j_delayed_grat", "j_reserved_parking", "j_cloud_9",
+    "j_to_the_moon", "j_trading", "j_todo_list", "j_credit_card",
+    "j_faceless", "j_ticket", "j_gift", "j_egg",
+})
+
+# "Real scorer" proxy — subset of JOKER_SCORE_CATEGORY that excludes rank-
+# conditional mult jokers (Scholar, Walkie Talkie, Odd Todd, etc.) which the
+# strategy layer over-values as scorers. Scaling jokers at fresh X1.0 still
+# count — they're directional commitment to scoring.
+UNCONDITIONAL_SCORERS: frozenset[str] = frozenset({
+    # Flat mult
+    "j_joker", "j_jolly", "j_zany", "j_mad", "j_crazy", "j_droll",
+    "j_greedy_joker", "j_lusty_joker", "j_wrathful_joker", "j_gluttenous_joker",
+    "j_misprint", "j_gros_michel", "j_popcorn",
+    "j_shoot_the_moon", "j_raised_fist", "j_mime",
+    "j_half", "j_abstract", "j_mystic_summit", "j_bootstraps",
+    "j_swashbuckler", "j_erosion",
+    "j_red_card", "j_flash", "j_fortune_teller", "j_trousers", "j_ramen",
+    # Hand-type mult/xmult (committed scorers)
+    "j_duo", "j_trio", "j_family", "j_order", "j_tribe",
+    "j_seeing_double", "j_flower_pot",
+    # Xmult
+    "j_cavendish", "j_stencil",
+    "j_photograph", "j_baron", "j_bloodstone", "j_triboulet",
+    "j_blackboard", "j_steel_joker", "j_loyalty_card", "j_drivers_license",
+    "j_baseball", "j_idol",
+    # Scaling (still count at X1.0 — commitment to scoring)
+    "j_madness", "j_vampire", "j_hologram", "j_obelisk",
+    "j_lucky_cat", "j_glass", "j_campfire", "j_throwback",
+    "j_ancient", "j_caino", "j_yorick", "j_hit_the_road",
+    "j_constellation", "j_ceremonial", "j_supernova", "j_green_joker",
+    "j_castle", "j_runner", "j_square", "j_hiker", "j_ice_cream", "j_stuntman",
+    # Flat chips (committed scorers)
+    "j_blue_joker", "j_sly", "j_wily", "j_clever", "j_devious", "j_crafty",
+    "j_banner", "j_bull", "j_stone",
+})
+
+# Jokers that multiply any roster — their value doesn't depend on the scorer
+# count, so they should bypass the gate entirely (both as a candidate, and
+# when counted toward the gate's "real scorer" floor).
+SCORING_AGNOSTIC: frozenset[str] = frozenset({
+    "j_card_sharp", "j_acrobat", "j_hanging_chad", "j_splash",
+    "j_blueprint", "j_brainstorm", "j_mr_bones", "j_chicot",
+})
+
+# Ante-indexed floor: need this many "real scorers" before the 2nd+ eco joker
+# stops getting penalized.
+ECO_UNLOCK_FLOOR: dict[int, int] = {
+    1: 0, 2: 1, 3: 1, 4: 2, 5: 2, 6: 2, 7: 3, 8: 3,
+}
+
+ECO_OVERSTACK_PENALTY = 0.25
+
+
+def _apply_eco_gate(
+    key: str,
+    dollars: float,
+    ante: int,
+    owned_keys: frozenset[str],
+) -> float:
+    """Deflate dollars when buying the 2nd+ eco joker on a thin scorer roster.
+
+    Skipped when:
+      - candidate isn't an eco joker
+      - candidate is already owned (retention, not acquisition)
+      - no existing eco jokers (first eco is always free)
+      - scorer count meets ante floor
+    """
+    if key not in ECO_JOKERS:
+        return dollars
+    if key in owned_keys:
+        return dollars  # retention — never deflate
+    existing_eco = len(owned_keys & ECO_JOKERS)
+    if existing_eco == 0:
+        return dollars
+    scorer_count = len(owned_keys & (UNCONDITIONAL_SCORERS | SCORING_AGNOSTIC))
+    floor = ECO_UNLOCK_FLOOR.get(ante, 3)
+    if scorer_count >= floor:
+        return dollars
+    return dollars * ECO_OVERSTACK_PENALTY
+
+
 def evaluate(
     key: str,
     ante: int,
@@ -813,4 +906,5 @@ def evaluate(
         owned_keys=owned_keys,
         owned_jokers=owned_jokers or [],
     )
+    dollars = _apply_eco_gate(key, dollars, ante, owned_keys)
     return dollars_to_value(dollars, ante=ante)

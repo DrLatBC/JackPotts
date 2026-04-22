@@ -23,7 +23,7 @@ from balatro_bot.constants import (
 )
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.shop_valuation import (
-    _KEY_TO_CATEGORY, evaluate_joker_value,
+    _KEY_TO_CATEGORY, _copy_target_score, evaluate_joker_value,
 )
 from balatro_bot.joker_effects.parsers import parse_effect_value
 from balatro_bot.joker_effects.scoring_phase import (
@@ -31,7 +31,7 @@ from balatro_bot.joker_effects.scoring_phase import (
     PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
 )
 from balatro_bot.rules._helpers import score_consumable, evaluate_hex
-from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE, SELL_PROTECTED, check_anti_synergy
+from balatro_bot.scaling import SELL_PROTECTED, check_anti_synergy
 from balatro_bot.strategy import compute_strategy
 
 if TYPE_CHECKING:
@@ -256,6 +256,28 @@ class ActionPlan:
 # Reorder computation (ported from ReorderJokersForScoring)
 # ---------------------------------------------------------------------------
 
+def _pick_copy_target_pos(
+    desired_order: list[int], owned: list[dict],
+) -> int | None:
+    """Return the position in desired_order of the best copy target, or None.
+
+    Skips Blueprint and Brainstorm themselves — they're not in
+    BLUEPRINT_INCOMPATIBLE but copying a copier is degenerate, so guard
+    explicitly.
+    """
+    best_pos: int | None = None
+    best_score = 0.0
+    for pos, idx in enumerate(desired_order):
+        key = joker_key(owned[idx])
+        if key in ("j_blueprint", "j_brainstorm"):
+            continue
+        score = _copy_target_score(owned[idx])
+        if score > best_score:
+            best_score = score
+            best_pos = pos
+    return best_pos
+
+
 def _compute_optimal_order(
     owned: list[dict],
     fodder_idx: int | None = None,
@@ -328,35 +350,23 @@ def _compute_optimal_order(
         else:
             desired_order.append(ceremonial_idx)
 
-    # Blueprint: left of best xmult target, skipping copy-incompatible jokers
+    # Blueprint: left of best copy target (highest expected xmult/mult,
+    # penalized for conditional triggers), skipping copy-incompatible jokers.
     if blueprint_idx is not None:
-        best_copy_pos = None
-        for pos, idx in enumerate(desired_order):
-            key = joker_key(owned[idx])
-            if key in BLUEPRINT_INCOMPATIBLE:
-                continue
-            phase = get_joker_phase(key)
-            if phase == PHASE_XMULT:
-                best_copy_pos = pos
-            elif phase == PHASE_MULT and best_copy_pos is None:
-                best_copy_pos = pos
+        best_copy_pos = _pick_copy_target_pos(desired_order, owned)
         if best_copy_pos is not None:
             desired_order.insert(best_copy_pos, blueprint_idx)
         else:
             desired_order.append(blueprint_idx)
 
-    # Brainstorm: at end, ensure slot 0 is good (not noop, not incompatible)
+    # Brainstorm: copies slot 0. Put the best copy target at slot 0, then
+    # Brainstorm at the end.
     if brainstorm_idx is not None:
         desired_order.append(brainstorm_idx)
-        if desired_order:
-            first_key = joker_key(owned[desired_order[0]])
-            if get_joker_phase(first_key) == PHASE_NOOP or first_key in BLUEPRINT_INCOMPATIBLE:
-                for pos in range(1, len(desired_order)):
-                    swap_key = joker_key(owned[desired_order[pos]])
-                    if (get_joker_phase(swap_key) != PHASE_NOOP
-                            and swap_key not in BLUEPRINT_INCOMPATIBLE):
-                        desired_order[0], desired_order[pos] = desired_order[pos], desired_order[0]
-                        break
+        target_pos = _pick_copy_target_pos(desired_order, owned)
+        if target_pos is not None and target_pos != 0:
+            target_idx = desired_order.pop(target_pos)
+            desired_order.insert(0, target_idx)
 
     # Check if order actually changed
     if desired_order == list(range(len(owned))):
@@ -940,21 +950,31 @@ class ShopEvaluator:
                     break  # only consider the single weakest
 
         # 3. Dagger fodder positioning (no sell needed — just reorder)
+        # Dagger only eats ONE joker (the one to its right) at blind select, so
+        # emit at most one plan — picking the best fodder. Emitting one plan per
+        # eligible fodder caused ping-pong between candidates with different
+        # target orders (each passed the _last_order check indefinitely).
         dagger_owned = any(joker_key(j) == "j_ceremonial" for j in owned)
         if dagger_owned and roster:
-            # Find jokers where ev_delta ≈ 0 but fodder_mult > 0
-            for r in roster:
-                if r.key == "j_ceremonial":
-                    continue
-                if r.ev_delta < 1.0 and r.fodder_mult > 0:
-                    # This joker is worth more as Dagger food
-                    new_order = _compute_optimal_order(owned, fodder_idx=r.index)
+            fodder_candidates = [
+                r for r in roster
+                if r.key != "j_ceremonial" and r.ev_delta < 1.0 and r.fodder_mult > 0
+            ]
+            if fodder_candidates:
+                best = max(fodder_candidates, key=lambda r: (r.fodder_mult, -r.index))
+                # Skip if best fodder is already right of Dagger (positioning done)
+                dagger_idx = next(i for i, j in enumerate(owned) if joker_key(j) == "j_ceremonial")
+                already_positioned = (
+                    dagger_idx + 1 < len(owned) and best.index == dagger_idx + 1
+                )
+                if not already_positioned:
+                    new_order = _compute_optimal_order(owned, fodder_idx=best.index)
                     if new_order is not None and new_order != self._last_order:
                         candidates.append(ActionPlan(
                             steps=[RearrangeJokers(order=new_order,
-                                                   reason=f"feed {r.label} to Dagger (+{r.fodder_mult:.0f} mult)")],
-                            net_value=r.fodder_mult * budget.scoring_aggression,
-                            description=f"feed {r.label} to Dagger",
+                                                   reason=f"feed {best.label} to Dagger (+{best.fodder_mult:.0f} mult)")],
+                            net_value=best.fodder_mult * budget.scoring_aggression,
+                            description=f"feed {best.label} to Dagger",
                         ))
 
         # 4. General reorder (scoring optimization)

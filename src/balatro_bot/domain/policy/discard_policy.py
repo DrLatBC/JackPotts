@@ -17,26 +17,60 @@ import random
 _stream_log = logging.getLogger("balatro_stream")
 from typing import TYPE_CHECKING
 
+import copy
+
 from balatro_bot.actions import DiscardCards, Action
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.scoring.search import (
     best_hand, cards_not_in, discard_candidates, ChaseCandidate,
 )
+from balatro_bot.joker_effects.parsers import _ab_mult, _ab_xmult
 
 if TYPE_CHECKING:
     from balatro_bot.context import RoundContext
 
 log = logging.getLogger("balatro_bot")
 
-# Jokers that LOSE value when discards are used.
-KEEP_DISCARDS_JOKERS = {
-    "j_banner",         # +30 chips per discard remaining
-    "j_delayed_grat",   # $2 per unused discard
-    "j_green_joker",    # -1 mult per discard
-    "j_ramen",          # -0.01 xmult per card discarded
-}
-
 N_SAMPLES = 30          # Monte Carlo samples per unique keep set
+
+
+# Jokers whose accumulated ability value DECAYS on discard. The scoring sim
+# reads their live values from the joker dict, so without adjustment the MC
+# over-estimates a chase's future-hand EV (the bot "sees" the pre-discard
+# Ramen xmult when it should see the post-discard value). We clone these
+# jokers with decremented ability fields before passing to best_hand.
+#
+# Incrementing-on-discard jokers (Yorick, Castle, Hit the Road, Trading,
+# Mail-in Rebate, Faceless, Burnt) are NOT handled here — they make the sim
+# under-estimate chase value, which is a conservativeness bias but not a
+# correctness bug. Add them here later if tuning shows the bot under-uses
+# discards in those builds.
+_DISCARD_DECAY_JOKERS = frozenset({"j_green_joker", "j_ramen"})
+
+
+def _adjust_jokers_for_discard(jokers: list[dict], discard_count: int) -> list[dict]:
+    """Return a joker list with decay-on-discard jokers decremented.
+
+    Shallow-copies the list, deep-copies only the jokers whose ability we're
+    mutating. Green Joker loses 1 flat mult (floor 0). Ramen loses 0.01 xmult
+    per discarded card (floor 1.0 — below X1 Ramen stops firing).
+    """
+    out: list[dict] = []
+    for j in jokers:
+        key = j.get("key") if isinstance(j, dict) else getattr(j, "key", None)
+        if key not in _DISCARD_DECAY_JOKERS:
+            out.append(j)
+            continue
+        new_j = copy.deepcopy(j)
+        ability = new_j.setdefault("value", {}).setdefault("ability", {})
+        if key == "j_green_joker":
+            cur = _ab_mult(new_j, fallback=0)
+            ability["mult"] = max(0.0, cur - 1.0)
+        elif key == "j_ramen":
+            cur = _ab_xmult(new_j, fallback=1.85)
+            ability["x_mult"] = max(1.0, cur - 0.01 * discard_count)
+        out.append(new_j)
+    return out
 
 
 def _discard_size_cap(ctx: RoundContext) -> int:
@@ -100,13 +134,6 @@ def choose_discard(ctx: RoundContext) -> Action | None:
                 )
         return None
 
-    joker_keys = {joker_key(j) for j in ctx.jokers}
-
-    # If we have jokers that reward keeping discards, be conservative
-    has_keep_discard_jokers = bool(joker_keys & KEEP_DISCARDS_JOKERS)
-    if has_keep_discard_jokers and outlook != "hopeless":
-        return None
-
     suggestions = discard_candidates(
         ctx.hand_cards, ctx.hand_levels,
         max_discard=min(5, ctx.discards_left, _discard_size_cap(ctx)),
@@ -155,6 +182,11 @@ def _expected_play_value(keep_indices: list[int], ctx: RoundContext) -> float:
     if not draw_pile or len(draw_pile) < discard_count:
         return ctx.best.total if ctx.best else 0.0
 
+    # Decrement decay-on-discard jokers (Green Joker, Ramen) to reflect the
+    # hypothetical discard we're about to model. Without this, the sim reads
+    # the pre-discard accumulated value and over-estimates future-hand EV.
+    sim_jokers = _adjust_jokers_for_discard(ctx.jokers, discard_count)
+
     total = 0.0
     for _ in range(N_SAMPLES):
         drawn = random.sample(draw_pile, discard_count)
@@ -162,7 +194,7 @@ def _expected_play_value(keep_indices: list[int], ctx: RoundContext) -> float:
         result = best_hand(
             new_hand,
             hand_levels=ctx.hand_levels,
-            jokers=ctx.jokers,
+            jokers=sim_jokers,
             money=ctx.money,
             discards_left=max(0, ctx.discards_left - 1),
             hands_left=ctx.hands_left,
@@ -178,7 +210,7 @@ def _expected_play_value(keep_indices: list[int], ctx: RoundContext) -> float:
 
 # Minimum EV multiplier a chase must beat play_ev by.
 # Scales with discard scarcity: burning your last discard needs a bigger payoff.
-_BASE_CHASE_MARGIN = 1.4       # chase must be at least 1.4× play_ev
+_BASE_CHASE_MARGIN = 1.25       # chase must be at least 1.4× play_ev
 _SCARCITY_BONUS_PER = 0.15     # +0.15× for each discard already used
 
 _HAND_ABBREV = {

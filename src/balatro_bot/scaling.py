@@ -276,8 +276,13 @@ SEQUENCE_JOKERS = _keys_where(lambda p: p.trigger == "play_same_type")
 # Jokers that scale from shop actions
 SHOP_SCALERS = _keys_where(lambda p: p.trigger in ("sell", "planet", "skip_pack", "reroll"))
 
-# Jokers that should never be sold
-SELL_PROTECTED = _keys_where(lambda p: p.protect_from_sell)
+# Jokers that should never be sold.
+# Copiers (Blueprint/Brainstorm) are always protected regardless of roster state —
+# if you need slot space, sell a weaker non-copier and let Blueprint copy the new
+# best scorer. There's no realistic scenario where selling Blueprint is correct.
+SELL_PROTECTED = _keys_where(lambda p: p.protect_from_sell) | frozenset({
+    "j_blueprint", "j_brainstorm",
+})
 
 # All jokers with any scaling behavior (for gates, logging, etc.)
 ALL_SCALING = frozenset(SCALING_REGISTRY.keys())
@@ -315,6 +320,21 @@ BLUEPRINT_INCOMPATIBLE = frozenset({
     "j_mr_bones", "j_oops", "j_pareidolia", "j_rocket", "j_satellite",
     "j_shortcut", "j_ring_master", "j_sixth_sense", "j_smeared", "j_splash",
     "j_to_the_moon", "j_trading", "j_troubadour", "j_turtle_bean",
+})
+
+
+# Xmult jokers whose trigger is conditional on hand/board state. Blueprint/
+# Brainstorm copy their *current* xmult value, but if the condition fails at
+# scoring time the copy produces x1. Discount these when ranking copy targets.
+CONDITIONAL_XMULT = frozenset({
+    "j_blackboard",       # all held cards must be Spades/Clubs
+    "j_baron",            # held Kings only
+    "j_acrobat",          # final hand only
+    "j_card_sharp",       # hand type played earlier this round
+    "j_flower_pot",       # one of each suit in scoring hand
+    "j_seeing_double",    # Club + other suit combo
+    "j_drivers_license",  # 16+ enhanced cards in full deck
+    "j_idol",             # specific rank+suit in scoring hand
 })
 
 

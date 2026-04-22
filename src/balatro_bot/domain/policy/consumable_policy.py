@@ -450,9 +450,16 @@ def score_use_now(
 
     # --- Safe spectral cards ---
     if key in SAFE_SPECTRAL_CONSUMABLES:
+        # Hex/Ectoplasm silently no-op if every joker already has an edition.
+        editionless_jokers = [
+            j for j in jokers
+            if not (isinstance(j.get("modifier"), dict) and j["modifier"].get("edition"))
+        ]
         if key in ("c_ankh", "c_hex") and not jokers:
             return (0.0, None)
         if key == "c_hex":
+            if not editionless_jokers:
+                return (0.0, None)
             blind_name = next(
                 (b.get("name") for b in state.get("blinds", {}).values()
                  if isinstance(b, dict) and b.get("status") == "CURRENT"),
@@ -466,7 +473,11 @@ def score_use_now(
             return (0.0, None)
         if key == "c_wraith" and joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
             return (0.0, None)
-        if key == "c_ectoplasm" and ante < 3:
+        if key == "c_ectoplasm" and (ante < 3 or not editionless_jokers):
+            return (0.0, None)
+        # Familiar/Grim/Incantation/Immolate destroy a random hand card —
+        # need ≥2 hand cards, else game's can_use_consumeable rejects.
+        if key in ("c_familiar", "c_grim", "c_incantation", "c_immolate") and len(hand_cards) < 2:
             return (0.0, None)
         return (_SAFE_SPECTRAL_USE_VALUE, ("use", idx, f"use spectral: {label}"))
 

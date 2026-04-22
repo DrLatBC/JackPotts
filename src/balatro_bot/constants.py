@@ -121,12 +121,14 @@ TACTICAL_TARGETING = {"suit_convert", "glass", "enhance", "gold"}
 
 SAFE_SPECTRAL_CONSUMABLES = {
     "c_ankh", "c_immolate", "c_ectoplasm", "c_hex", "c_wraith",
+    # Familiar/Grim/Incantation destroy a *random* hand card — highlights
+    # are ignored by the game. Classifying them as targeting wasted picks
+    # and sent targets the game discarded. They still require hand cards
+    # to exist; callers check that separately.
+    "c_familiar", "c_grim", "c_incantation",
 }
 
 SPECTRAL_TARGETING: dict[str, tuple] = {
-    "c_familiar": (1, "deck_enhance", "face"),
-    "c_grim": (1, "deck_enhance", "ace"),
-    "c_incantation": (1, "deck_enhance", "number"),
     "c_talisman": (1, "seal", "Gold"),
     "c_deja_vu": (1, "seal", "Red"),
     "c_trance": (1, "seal", "Blue"),

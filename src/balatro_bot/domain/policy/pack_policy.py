@@ -244,13 +244,22 @@ def score_spectral_card(
         return 0.0
 
     joker_keys = {joker_key(j) for j in jokers}
+    # Hex/Ectoplasm pick a random *editionless* joker. If every joker already
+    # has an edition (Foil/Holo/Poly/Negative), the game silently no-ops.
+    editionless_jokers = [
+        j for j in jokers
+        if not (isinstance(j.get("modifier"), dict) and j["modifier"].get("edition"))
+    ]
 
     # Apply runtime conditions
     if key in ("c_ankh", "c_hex") and not jokers:
         score = 0.0
     elif key == "c_hex":
-        # Nuanced Hex evaluation — considers joker dominance and ante
-        score = evaluate_hex(jokers, ante, hand_levels)
+        if not editionless_jokers:
+            score = 0.0
+        else:
+            # Nuanced Hex evaluation — considers joker dominance and ante
+            score = evaluate_hex(jokers, ante, hand_levels)
     elif key == "c_ankh":
         if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
             score = 0.0
@@ -258,7 +267,7 @@ def score_spectral_card(
         if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
             score = 0.0
     elif key == "c_ectoplasm":
-        if not jokers or ante < 3:
+        if not editionless_jokers or ante < 3:
             score = 0.0
         elif joker_keys & SCALING_JOKERS:
             score += _ECTOPLASM_SCALING_BONUS
@@ -305,8 +314,14 @@ def choose_from_spectral_pack(
 
     best_idx = None
     best_score = 0.0
+    # Familiar/Grim/Incantation need ≥2 hand cards (one gets destroyed,
+    # the others remain). Skip these if hand too small.
+    random_destroy = {"c_familiar", "c_grim", "c_incantation", "c_immolate"}
 
     for i, card in enumerate(cards):
+        key = card.get("key", "")
+        if key in random_destroy and len(hand_cards) < 2:
+            continue
         score = score_spectral_card(card, jokers, joker_slots, ante, hand_levels, strat)
         if score > best_score:
             best_score = score
@@ -350,11 +365,17 @@ def choose_from_tarot_pack(
     from balatro_bot.rules._helpers import _find_tarot_targets
 
     best_idx = None
-    best_score = -1.0
+    best_score = 0.0
     best_targets: list[int] | None = None
+    known_tarots = set(NO_TARGET_TAROTS) | set(TARGETING_TAROTS)
 
     for i, card in enumerate(cards):
         key = card.get("key", "")
+        # Skip non-tarots outright — mixed packs used to let a spectral at
+        # score 0 win here and the bot would then fire pack({card: i})
+        # without targets, wedging the mod's pack-selection guard.
+        if key not in known_tarots:
+            continue
         score = score_consumable(key, state, strat)
         if score <= best_score:
             continue

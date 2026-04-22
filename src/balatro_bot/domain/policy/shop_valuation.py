@@ -12,7 +12,9 @@ Three layers:
 from __future__ import annotations
 
 import math
+import os
 import random
+import zlib
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import joker_key
@@ -29,8 +31,13 @@ from balatro_bot.domain.policy.boss_adjustment import (
 from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
-from balatro_bot.joker_effects.scoring_phase import reorder_for_scoring
-from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE, SCALING_REGISTRY
+from balatro_bot.joker_effects.parsers import _get_parsed_value
+from balatro_bot.joker_effects.scoring_phase import (
+    PHASE_MULT, PHASE_XMULT, get_joker_phase, reorder_for_scoring,
+)
+from balatro_bot.scaling import (
+    BLUEPRINT_INCOMPATIBLE, CONDITIONAL_XMULT, SCALING_REGISTRY,
+)
 from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,
     JOKER_HAND_AFFINITY,
@@ -113,16 +120,45 @@ PIVOT_FLOOR_A1 = 2.5        # floor at ante 1
 PIVOT_FLOOR_DECAY = 0.5     # subtract this per ante (hits 0 at ante 6)
 PIVOT_FLOOR_THRESHOLD = 2.5  # sim base_value must be below this to trigger floor
 
-# Phase 8: stochastic joker set — presence of any of these in candidate or
-# owned flips the sim onto the Monte Carlo path. Kept tight so the default
-# expected-value path covers the vast majority of valuations.
+# Phase 9: deck-sampled Monte Carlo. Every scoring valuation now samples hands
+# from the actual deck profile (rank/suit/enhancement counts) rather than
+# fabricating a hand engineered to make the candidate proc. This fixes the
+# chronic overvaluation of rank-conditional flat-mult jokers (Scholar, Walkie
+# Talkie) that die at ante 4 when their target rank shows up once every 3 hands
+# instead of once per hand.
+#
+# Opt-out via ``BALATRO_MC_VALUATION=0`` for A/B comparison in shadow batches.
+_MC_SAMPLING_ENABLED = os.environ.get("BALATRO_MC_VALUATION", "1") != "0"
+
+# Jokers whose sim delta is invariant across hand composition: their
+# contribution is either a global xmult/mult (Hologram, Stencil) or is driven
+# entirely by a runway projection floor that bypasses the sim (anything in
+# SCALING_XMULT_KEYS — see the ``max(base_value, projected_floor)`` gate).
+# Use N=1 for these. Every other candidate takes the full N=16 pass.
+_CARD_AGNOSTIC: frozenset[str] = SCALING_XMULT_KEYS | frozenset({
+    "j_joker",         # +4 mult flat
+    "j_stencil",       # xmult per empty joker slot
+    "j_swashbuckler",  # mult per joker sell value
+    "j_erosion",       # mult per missing deck card
+    "j_flash",         # mult per reroll this run
+    "j_red_card",      # mult per pack skipped
+    "j_ride_the_bus",  # mult per consecutive no-face hand (run-history)
+    "j_supernova",     # mult per hand played
+    "j_obelisk",       # xmult per non-repeat hand
+})
+
+# Default sample counts.
+_MC_FULL_SAMPLES = 32
+_MC_AGNOSTIC_SAMPLES = 1
+
+# Stochastic jokers still bump the per-sample rng so score_hand's probability
+# branches (Misprint, Lucky, Bloodstone) cancel across CRN pairs. Sampling
+# itself is always on when _MC_SAMPLING_ENABLED.
 _STOCHASTIC_KEYS: frozenset[str] = frozenset({
     "j_misprint", "j_bloodstone", "j_lucky_cat", "j_oops",
 })
 
-# Number of scoring trials when MC is active. Variance of the delta is
-# dominated by a handful of high-variance jokers; 16 samples keeps the mean
-# within a few % of truth without blowing up valuation cost.
+# Kept for transitional fallback when _MC_SAMPLING_ENABLED is off.
 _MC_DEFAULT_SAMPLES = 16
 
 # ---------------------------------------------------------------------------
@@ -182,6 +218,476 @@ def _make_card(rank: str, suit: str, enhancement: str | None = None) -> Card:
         modifier=CardModifier(enhancement=enhancement) if enhancement else CardModifier(),
     )
 
+
+# ---------------------------------------------------------------------------
+# Phase 9: deck-sampled Monte Carlo hand generator
+# ---------------------------------------------------------------------------
+
+_ALL_RANKS: tuple[str, ...] = ("2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A")
+_RANK_ORDER: dict[str, int] = {r: i for i, r in enumerate(_ALL_RANKS)}
+_ALL_SUITS: tuple[str, ...] = ("H", "D", "C", "S")
+
+# Scoring-relevant enhancements. STONE breaks hand-type constraints and is
+# handled specially. WILD is suit-promiscuous. Others add chips/mult on scoring.
+_SAMPLING_ENHANCEMENTS: tuple[str, ...] = (
+    "BONUS", "MULT", "WILD", "GLASS", "STEEL", "GOLD", "LUCKY", "STONE",
+)
+
+
+def _deck_signature(dp: "DeckProfile | None") -> tuple:
+    """Hashable fingerprint of a DeckProfile. Changes iff deck composition
+    changes; held constant across shop ticks on the same deck state."""
+    if dp is None:
+        return ("vanilla",)
+    return (
+        dp.total_cards,
+        tuple(sorted(dp.rank_counts.items())),
+        tuple(sorted(dp.suit_counts.items())),
+        tuple(sorted(dp.enhancement_counts.items())),
+    )
+
+
+def _weighted_choice(rng: random.Random, items: list, weights: list[float]):
+    """Pick one item from *items* proportional to *weights*. Returns None if
+    all weights are zero."""
+    total = sum(weights)
+    if total <= 0:
+        return None
+    r = rng.random() * total
+    acc = 0.0
+    for it, w in zip(items, weights):
+        acc += w
+        if r < acc:
+            return it
+    return items[-1]
+
+
+def _sample_enhancement(dp: "DeckProfile", rng: random.Random) -> str | None:
+    """Pick an enhancement for a random deck slot. None = unenhanced (the
+    majority in most decks)."""
+    total = dp.total_cards
+    if total <= 0:
+        return None
+    enh_count = sum(dp.enhancement_counts.get(e, 0) for e in _SAMPLING_ENHANCEMENTS)
+    if rng.random() >= enh_count / total:
+        return None
+    items = [e for e in _SAMPLING_ENHANCEMENTS if dp.enhancement_counts.get(e, 0) > 0]
+    weights = [float(dp.enhancement_counts.get(e, 0)) for e in items]
+    return _weighted_choice(rng, items, weights)
+
+
+def _rank_with_min(
+    dp: "DeckProfile", min_copies: int, rng: random.Random,
+    *, exclude: set[str] | None = None,
+) -> str | None:
+    items = [r for r, c in dp.rank_counts.items()
+             if c >= min_copies and (exclude is None or r not in exclude)]
+    if not items:
+        return None
+    weights = [float(dp.rank_counts[r]) for r in items]
+    return _weighted_choice(rng, items, weights)
+
+
+def _stratified_ranks(
+    dp: "DeckProfile", min_copies: int, n: int,
+    *, exclude: set[str] | None = None,
+) -> list[str]:
+    """Deterministically apportion N rank slots proportionally to rank_counts.
+
+    Eliminates the Bernoulli sampling variance on the scoring rank for
+    Pair/3oK/4oK/Full House/etc. With 32 samples and an ace fraction of 8/56,
+    a naive per-sample weighted draw has ~1% chance of producing zero ace
+    hits — enough to flip rank-affinity valuations (e.g. Scholar, Wee).
+    Stratified apportionment gives ace exactly round(32 * 8/56) = 5 slots.
+
+    Uses the Hare / largest-remainder method: each rank gets floor(n*w/W)
+    slots, leftover slots go to ranks with largest fractional parts.
+    Returns [] if no rank satisfies min_copies. Output length is exactly n
+    (or 0).
+    """
+    items = [(r, c) for r, c in dp.rank_counts.items()
+             if c >= min_copies and (exclude is None or r not in exclude)]
+    if not items:
+        return []
+    total = sum(c for _, c in items)
+    if total <= 0:
+        return []
+    floors: list[tuple[str, int, float]] = []  # (rank, floor_slots, frac)
+    allocated = 0
+    for r, c in items:
+        quota = n * c / total
+        fl = int(quota)
+        floors.append((r, fl, quota - fl))
+        allocated += fl
+    leftover = n - allocated
+    # Distribute leftovers by largest fractional part, ties broken by rank order
+    ordering = sorted(range(len(floors)), key=lambda i: (-floors[i][2], floors[i][0]))
+    extra = {i: 0 for i in range(len(floors))}
+    for k in range(leftover):
+        extra[ordering[k % len(ordering)]] += 1
+    out: list[str] = []
+    for i, (r, fl, _f) in enumerate(floors):
+        out.extend([r] * (fl + extra[i]))
+    return out[:n]
+
+
+def _suit_with_min(dp: "DeckProfile", min_copies: int, rng: random.Random) -> str | None:
+    items = [s for s, c in dp.suit_counts.items() if c >= min_copies]
+    if not items:
+        return None
+    weights = [float(dp.suit_counts[s]) for s in items]
+    return _weighted_choice(rng, items, weights)
+
+
+def _sample_suit(dp: "DeckProfile", rng: random.Random) -> str | None:
+    items = [s for s in _ALL_SUITS if dp.suit_counts.get(s, 0) > 0]
+    if not items:
+        return None
+    weights = [float(dp.suit_counts[s]) for s in items]
+    return _weighted_choice(rng, items, weights)
+
+
+def _sample_rank(dp: "DeckProfile", rng: random.Random,
+                 *, exclude: set[str] | None = None) -> str | None:
+    items = [r for r in _ALL_RANKS
+             if dp.rank_counts.get(r, 0) > 0
+             and (exclude is None or r not in exclude)]
+    if not items:
+        return None
+    weights = [float(dp.rank_counts[r]) for r in items]
+    return _weighted_choice(rng, items, weights)
+
+
+def _sample_card(dp: "DeckProfile", rng: random.Random,
+                 *, rank: str | None = None, suit: str | None = None,
+                 exclude_ranks: set[str] | None = None) -> Card:
+    r = rank if rank is not None else _sample_rank(dp, rng, exclude=exclude_ranks)
+    s = suit if suit is not None else _sample_suit(dp, rng)
+    enh = _sample_enhancement(dp, rng)
+    return _make_card(r, s, enhancement=enh)
+
+
+_STRAIGHT_WINDOWS: list[list[str]] = [
+    list(_ALL_RANKS[i:i + 5]) for i in range(0, len(_ALL_RANKS) - 4)
+] + [["A", "2", "3", "4", "5"]]
+
+
+def _pick_straight_window(
+    dp: "DeckProfile", rng: random.Random, shortcut: bool = False,
+) -> list[str] | None:
+    windows = list(_STRAIGHT_WINDOWS)
+    if shortcut:
+        # Shortcut lets the straight skip one rank. Approximate by allowing any
+        # 5-rank window from a 6-rank span.
+        windows += [
+            [r for r in _ALL_RANKS[i:i + 6] if r not in (_ALL_RANKS[i + 2],)][:5]
+            for i in range(0, len(_ALL_RANKS) - 5)
+        ]
+    viable = [w for w in windows if all(dp.rank_counts.get(r, 0) >= 1 for r in w)]
+    if not viable:
+        return None
+    return rng.choice(viable)
+
+
+def _sample_hand_from_deck(
+    dp: "DeckProfile",
+    hand_name: str,
+    rng: random.Random,
+    *,
+    shortcut: bool = False,
+    force_rank1: str | None = None,
+    force_rank2: str | None = None,
+) -> tuple[list[Card], list[Card]] | None:
+    """Draw a (scoring_cards, played_cards) pair for *hand_name* from *dp*.
+
+    Ranks are sampled weighted by rank_counts; suits by suit_counts;
+    enhancements by enhancement_counts (each slot independent). Returns None
+    when the hand type can't be formed against this deck (e.g. Flush in a
+    deck with no suit >=5 copies).
+    """
+    if hand_name == "High Card":
+        r = _sample_rank(dp, rng)
+        scoring = [_sample_card(dp, rng, rank=r)]
+        filler_ranks = set([r])
+        filler = []
+        for _ in range(4):
+            fr = _sample_rank(dp, rng, exclude=filler_ranks)
+            filler_ranks.add(fr)
+            filler.append(_sample_card(dp, rng, rank=fr))
+        return scoring, scoring + filler
+
+    if hand_name == "Pair":
+        r = force_rank1 if force_rank1 is not None else _rank_with_min(dp, 2, rng)
+        if r is None:
+            return None
+        scoring = [_sample_card(dp, rng, rank=r) for _ in range(2)]
+        filler = [_sample_card(dp, rng, exclude_ranks={r}) for _ in range(3)]
+        return scoring, scoring + filler
+
+    if hand_name == "Two Pair":
+        r1 = force_rank1 if force_rank1 is not None else _rank_with_min(dp, 2, rng)
+        if r1 is None:
+            return None
+        r2 = force_rank2 if force_rank2 is not None else _rank_with_min(dp, 2, rng, exclude={r1})
+        if r2 is None or r2 == r1:
+            return None
+        scoring = ([_sample_card(dp, rng, rank=r1) for _ in range(2)]
+                   + [_sample_card(dp, rng, rank=r2) for _ in range(2)])
+        filler = [_sample_card(dp, rng, exclude_ranks={r1, r2})]
+        return scoring, scoring + filler
+
+    if hand_name == "Three of a Kind":
+        r = force_rank1 if force_rank1 is not None else _rank_with_min(dp, 3, rng)
+        if r is None:
+            return None
+        scoring = [_sample_card(dp, rng, rank=r) for _ in range(3)]
+        filler = [_sample_card(dp, rng, exclude_ranks={r}) for _ in range(2)]
+        return scoring, scoring + filler
+
+    if hand_name == "Straight":
+        window = _pick_straight_window(dp, rng, shortcut=shortcut)
+        if window is None:
+            return None
+        scoring = [_sample_card(dp, rng, rank=r) for r in window]
+        return scoring, list(scoring)
+
+    if hand_name == "Flush":
+        s = _suit_with_min(dp, 5, rng)
+        if s is None:
+            return None
+        # 5 distinct ranks preferred; relax if deck can't supply.
+        chosen_ranks: list[str] = []
+        tried: set[str] = set()
+        for _ in range(5):
+            r = _sample_rank(dp, rng, exclude=set(chosen_ranks) | tried)
+            if r:
+                chosen_ranks.append(r)
+                tried.add(r)
+        while len(chosen_ranks) < 5:
+            chosen_ranks.append(_sample_rank(dp, rng))
+        scoring = [_sample_card(dp, rng, rank=r, suit=s) for r in chosen_ranks]
+        return scoring, list(scoring)
+
+    if hand_name == "Full House":
+        r3 = force_rank1 if force_rank1 is not None else _rank_with_min(dp, 3, rng)
+        if r3 is None:
+            return None
+        r2 = force_rank2 if force_rank2 is not None else _rank_with_min(dp, 2, rng, exclude={r3})
+        if r2 is None or r2 == r3:
+            return None
+        scoring = ([_sample_card(dp, rng, rank=r3) for _ in range(3)]
+                   + [_sample_card(dp, rng, rank=r2) for _ in range(2)])
+        return scoring, list(scoring)
+
+    if hand_name == "Four of a Kind":
+        r = force_rank1 if force_rank1 is not None else _rank_with_min(dp, 4, rng)
+        if r is None:
+            return None
+        scoring = [_sample_card(dp, rng, rank=r) for _ in range(4)]
+        filler = [_sample_card(dp, rng, exclude_ranks={r})]
+        return scoring, scoring + filler
+
+    if hand_name == "Straight Flush":
+        s = _suit_with_min(dp, 5, rng)
+        if s is None:
+            return None
+        window = _pick_straight_window(dp, rng, shortcut=shortcut)
+        if window is None:
+            return None
+        scoring = [_sample_card(dp, rng, rank=r, suit=s) for r in window]
+        return scoring, list(scoring)
+
+    if hand_name == "Flush Five":
+        r = force_rank1 if force_rank1 is not None else _rank_with_min(dp, 5, rng)
+        s = _suit_with_min(dp, 5, rng)
+        if r is None or s is None:
+            return None
+        scoring = [_sample_card(dp, rng, rank=r, suit=s) for _ in range(5)]
+        return scoring, list(scoring)
+
+    if hand_name == "Five of a Kind":
+        r = force_rank1 if force_rank1 is not None else _rank_with_min(dp, 5, rng)
+        if r is None:
+            return None
+        scoring = [_sample_card(dp, rng, rank=r) for _ in range(5)]
+        return scoring, list(scoring)
+
+    if hand_name == "Flush House":
+        r3 = force_rank1 if force_rank1 is not None else _rank_with_min(dp, 3, rng)
+        if r3 is None:
+            return None
+        r2 = force_rank2 if force_rank2 is not None else _rank_with_min(dp, 2, rng, exclude={r3})
+        if r2 is None or r2 == r3:
+            return None
+        s = _suit_with_min(dp, 5, rng)
+        if s is None:
+            return None
+        scoring = ([_sample_card(dp, rng, rank=r3, suit=s) for _ in range(3)]
+                   + [_sample_card(dp, rng, rank=r2, suit=s) for _ in range(2)])
+        return scoring, list(scoring)
+
+    # Unknown hand type — fall back to High Card.
+    return _sample_hand_from_deck(dp, "High Card", rng, shortcut=shortcut)
+
+
+def _sample_held_from_deck(
+    dp: "DeckProfile", rng: random.Random, n: int = 3,
+) -> list[Card]:
+    """Draw held-phase cards independently from the deck. Baron/SttM/RF/Mime
+    fire iff their relevant rank shows up — same as gameplay."""
+    return [_sample_card(dp, rng) for _ in range(n)]
+
+
+# Module-level sample cache. Key = (deck_sig, hand_type); value = list of
+# (scoring, played) tuples for sample indices 0..N-1. Invalidates automatically
+# when the deck mutates (new deck_sig). Bounded to keep value_map.py's many
+# synthetic decks from blowing memory.
+_HAND_SAMPLE_CACHE: dict[tuple, list[tuple[list[Card], list[Card]]]] = {}
+_HELD_SAMPLE_CACHE: dict[tuple, list[list[Card]]] = {}
+_SAMPLE_CACHE_MAX = 2048
+
+
+def _trim_cache(cache: dict) -> None:
+    if len(cache) > _SAMPLE_CACHE_MAX:
+        drop = len(cache) - _SAMPLE_CACHE_MAX // 2
+        for k in list(cache.keys())[:drop]:
+            cache.pop(k, None)
+
+
+_VANILLA_DECK_FOR_SIM: "DeckProfile | None" = None
+
+
+def _get_vanilla_deck() -> "DeckProfile":
+    """Lazy-built 52-card standard deck profile, used when no deck_profile is
+    supplied (tests, bare-roster valuations)."""
+    global _VANILLA_DECK_FOR_SIM
+    if _VANILLA_DECK_FOR_SIM is None:
+        from balatro_bot.domain.models.deck_profile import DeckProfile
+        _VANILLA_DECK_FOR_SIM = DeckProfile(
+            total_cards=52,
+            rank_counts={r: 4 for r in _ALL_RANKS},
+            suit_counts={s: 13 for s in _ALL_SUITS},
+            enhancement_counts={},
+            enhanced_card_count=0,
+        )
+    return _VANILLA_DECK_FOR_SIM
+
+
+def _get_hand_samples(
+    dp: "DeckProfile | None", hand_name: str, n: int,
+) -> list[tuple[list[Card], list[Card]]]:
+    """Cached list of up to *n* sampled hands for (deck_sig, hand_name).
+
+    Same deck + same hand_type yields the same samples across all candidates
+    and all ticks — this is what makes CRN work and keeps shop decisions
+    stable as the evaluator re-runs within a single shop visit.
+    """
+    deck = dp if dp is not None else _get_vanilla_deck()
+    sig = _deck_signature(deck)
+    key = (sig, hand_name)
+    cached = _HAND_SAMPLE_CACHE.get(key)
+    if cached is not None and len(cached) >= n:
+        return cached[:n]
+    # Stratify the scoring rank for n-of-a-kind hands to eliminate Bernoulli
+    # variance on which rank forms the pair/trips/quads. Without this, 32
+    # samples against an 8/56 ace fraction has a ~1% chance of producing zero
+    # ace-pairs — enough to flip rank-affinity valuations.
+    forced_ranks1: list[str | None] = [None] * n
+    forced_ranks2: list[str | None] = [None] * n
+    if hand_name in ("Pair", "Two Pair"):
+        strat = _stratified_ranks(deck, 2, n)
+        for i, r in enumerate(strat):
+            forced_ranks1[i] = r
+    elif hand_name in ("Three of a Kind", "Full House", "Flush House"):
+        strat = _stratified_ranks(deck, 3, n)
+        for i, r in enumerate(strat):
+            forced_ranks1[i] = r
+    elif hand_name == "Four of a Kind":
+        strat = _stratified_ranks(deck, 4, n)
+        for i, r in enumerate(strat):
+            forced_ranks1[i] = r
+    elif hand_name in ("Five of a Kind", "Flush Five"):
+        strat = _stratified_ranks(deck, 5, n)
+        for i, r in enumerate(strat):
+            forced_ranks1[i] = r
+
+    # For two-rank hands, stratify the secondary rank conditioned on the primary.
+    if hand_name in ("Two Pair", "Full House", "Flush House"):
+        # Group sample indices by primary rank, then stratify secondary
+        # (min=2, excluding the primary) within each group.
+        groups: dict[str, list[int]] = {}
+        for i, r in enumerate(forced_ranks1):
+            if r is None:
+                continue
+            groups.setdefault(r, []).append(i)
+        for r1, idxs in groups.items():
+            strat2 = _stratified_ranks(deck, 2, len(idxs), exclude={r1})
+            for j, i in enumerate(idxs):
+                if j < len(strat2):
+                    forced_ranks2[i] = strat2[j]
+
+    # Build up to n samples from scratch (re-seed each for determinism).
+    samples: list[tuple[list[Card], list[Card]]] = []
+    for i in range(n):
+        seed = zlib.crc32(f"{sig}|{hand_name}|{i}".encode())
+        sampled = _sample_hand_from_deck(
+            deck, hand_name, random.Random(seed),
+            force_rank1=forced_ranks1[i], force_rank2=forced_ranks2[i],
+        )
+        if sampled is None:
+            continue
+        samples.append(sampled)
+    _HAND_SAMPLE_CACHE[key] = samples
+    _trim_cache(_HAND_SAMPLE_CACHE)
+    return samples
+
+
+def _get_held_samples(
+    dp: "DeckProfile | None", n: int, held_count: int = 3,
+) -> list[list[Card]]:
+    deck = dp if dp is not None else _get_vanilla_deck()
+    sig = _deck_signature(deck)
+    key = (sig, held_count)
+    cached = _HELD_SAMPLE_CACHE.get(key)
+    if cached is not None and len(cached) >= n:
+        return cached[:n]
+    samples: list[list[Card]] = []
+    for i in range(n):
+        seed = zlib.crc32(f"{sig}|_held|{i}".encode())
+        samples.append(_sample_held_from_deck(deck, random.Random(seed), n=held_count))
+    _HELD_SAMPLE_CACHE[key] = samples
+    _trim_cache(_HELD_SAMPLE_CACHE)
+    return samples
+
+
+def clear_sample_cache() -> None:
+    """Test helper / explicit invalidation when deck has changed in-place."""
+    _HAND_SAMPLE_CACHE.clear()
+    _HELD_SAMPLE_CACHE.clear()
+
+
+def _idol_context_rank(ctx: SimContext) -> str:
+    """Approximate rank for Ancient/Idol procs: deck-dominant rank biased by
+    strategy preference. In-game these are round-variable; the bot plays to
+    match, so the sim pins to the most plausible target."""
+    if ctx.strategy and ctx.strategy.preferred_ranks:
+        return ctx.strategy.preferred_ranks[0][0]
+    if ctx.deck_profile is not None and ctx.deck_profile.rank_counts:
+        return max(ctx.deck_profile.rank_counts.items(), key=lambda kv: kv[1])[0]
+    return "A"
+
+
+def _idol_context_suit(ctx: SimContext) -> str:
+    if ctx.strategy and ctx.strategy.preferred_suits:
+        return ctx.strategy.preferred_suits[0][0]
+    if ctx.deck_profile is not None and ctx.deck_profile.suit_counts:
+        return max(ctx.deck_profile.suit_counts.items(), key=lambda kv: kv[1])[0]
+    return "H"
+
+
+# ---------------------------------------------------------------------------
+# Legacy synthetic-hand builder (fallback when _MC_SAMPLING_ENABLED=0)
+# ---------------------------------------------------------------------------
 
 def _preferred_suit(ctx: SimContext) -> str:
     candidate_key = ctx.candidate_key
@@ -590,6 +1096,132 @@ def _scoring_delta(
     Filters the candidate out of owned_jokers so sell evaluations measure the
     true marginal value (not the value of a duplicate).
     """
+    if _MC_SAMPLING_ENABLED:
+        return _scoring_delta_sampled(ctx, hand_types)
+    return _scoring_delta_legacy(ctx, hand_types)
+
+
+def _scoring_delta_sampled(
+    ctx: SimContext,
+    hand_types: list[tuple[str, float]],
+) -> float:
+    """Deck-sampled Monte Carlo path. Each hand type draws N hands from the
+    current DeckProfile. Hands the deck can't form (e.g. Flush in a stripped
+    deck) are dropped and the remaining weight is re-normalized — a joker
+    whose sim relies on that hand type correctly reads ~0 contribution."""
+    total_weight = sum(w for _, w in hand_types)
+    if total_weight <= 0:
+        return 0.0
+
+    candidate = _project_deck_density_candidate(ctx)
+    owned_jokers = ctx.owned_jokers
+    hand_levels = ctx.hand_levels
+    joker_limit = ctx.joker_limit
+    candidate_key = ctx.candidate_key
+    owned_keys = set(ctx.owned_keys)
+    candidate_keys = owned_keys | {candidate_key}
+
+    if "j_card_sharp" in candidate_keys:
+        hand_levels = {
+            h: {**v, "played_this_round": max(1, v.get("played_this_round", 0))}
+            for h, v in hand_levels.items()
+        }
+
+    sim_discards_left = ctx.discards_left
+    if "j_mystic_summit" in candidate_keys:
+        sim_discards_left = 0
+
+    baseline_jokers = [j for j in owned_jokers if j is not ctx.candidate]
+
+    def _place_candidate(base: list[dict]) -> list[dict]:
+        if not base:
+            return [candidate]
+        copyable = [
+            (i, j) for i, j in enumerate(base)
+            if joker_key(j) not in BLUEPRINT_INCOMPATIBLE
+            and joker_key(j) not in ("j_blueprint", "j_brainstorm")
+        ]
+        if not copyable:
+            return base + [candidate]
+        if candidate_key == "j_blueprint":
+            target_i, _ = copyable[-1]
+            return base[:target_i] + [candidate] + base[target_i:]
+        if candidate_key == "j_brainstorm":
+            target_i, target_j = copyable[0]
+            rest = [j for k, j in enumerate(base) if k != target_i]
+            return [target_j, candidate] + rest
+        return base + [candidate]
+
+    # Ancient/Idol need a rank+suit pinned for their effect to fire at all —
+    # model the bot playing to match the round's target.
+    ancient_suit = _idol_context_suit(ctx) if "j_ancient" in candidate_keys else None
+    idol_rank = _idol_context_rank(ctx) if "j_idol" in candidate_keys else None
+    idol_suit = _idol_context_suit(ctx) if "j_idol" in candidate_keys else None
+
+    baseline_jokers = reorder_for_scoring(baseline_jokers)
+    with_jokers = reorder_for_scoring(_place_candidate(list(baseline_jokers)))
+
+    # N=1 for candidates whose contribution doesn't vary with card composition
+    # (pure runway projections or global-state multipliers).
+    n_samples = _MC_AGNOSTIC_SAMPLES if candidate_key in _CARD_AGNOSTIC else _MC_FULL_SAMPLES
+
+    weighted_delta = 0.0
+    total_used_weight = 0.0
+
+    for hand_name, weight in hand_types:
+        samples = _get_hand_samples(ctx.deck_profile, hand_name, n_samples)
+        if not samples:
+            # Deck can't form this hand — skip; other hand types carry the
+            # weight. Correctly zeros Flush value in stripped decks, etc.
+            continue
+        held_samples = _get_held_samples(
+            ctx.deck_profile, len(samples), held_count=3,
+        )
+
+        base_sum = 0.0
+        cand_sum = 0.0
+        for s_idx, (scoring_cards, played_cards) in enumerate(samples):
+            held = held_samples[s_idx] if s_idx < len(held_samples) else []
+
+            # Half Joker caps played at the scoring subset.
+            local_played = played_cards
+            if "j_half" in candidate_keys and len(scoring_cards) <= 3:
+                local_played = list(scoring_cards)
+
+            seed = zlib.crc32(f"{candidate_key}|{hand_name}|{s_idx}|mc".encode())
+            base_sum += score_hand(
+                hand_name, scoring_cards, hand_levels,
+                jokers=baseline_jokers, played_cards=local_played,
+                held_cards=held, joker_limit=joker_limit,
+                ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
+                money=ctx.money, discards_left=sim_discards_left,
+                rng=random.Random(seed),
+            )[2]
+            cand_sum += score_hand(
+                hand_name, scoring_cards, hand_levels,
+                jokers=with_jokers, played_cards=local_played,
+                held_cards=held, joker_limit=joker_limit,
+                ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
+                money=ctx.money, discards_left=sim_discards_left,
+                rng=random.Random(seed),
+            )[2]
+
+        baseline_total = base_sum / len(samples)
+        candidate_total = cand_sum / len(samples)
+        base_total = max(baseline_total, 1)
+        delta = (candidate_total - baseline_total) / base_total
+        weighted_delta += delta * weight
+        total_used_weight += weight
+
+    if total_used_weight <= 0:
+        return 0.0
+    return weighted_delta / total_used_weight
+
+
+def _scoring_delta_legacy(
+    ctx: SimContext,
+    hand_types: list[tuple[str, float]],
+) -> float:
     total_weight = sum(w for _, w in hand_types)
     if total_weight <= 0:
         return 0.0
@@ -723,7 +1355,7 @@ def _scoring_delta(
             base_sum = 0.0
             cand_sum = 0.0
             for s in range(samples):
-                seed = hash((candidate_key, hand_name, s)) & 0xFFFFFFFF
+                seed = zlib.crc32(f"{candidate_key}|{hand_name}|{s}".encode())
                 base_sum += _score(baseline_jokers, random.Random(seed))[2]
                 cand_sum += _score(with_jokers, random.Random(seed))[2]
             baseline_total = base_sum / samples
@@ -785,13 +1417,92 @@ _PROBABILITY_JOKERS = frozenset({
 _HAND_CONDITIONAL_XMULT = frozenset({
     "j_duo", "j_trio", "j_tribe", "j_family", "j_order",
 })
-_XMULT_COPY_TARGETS = frozenset({
-    "j_cavendish", "j_stencil", "j_duo", "j_trio", "j_family",
-    "j_order", "j_tribe", "j_acrobat", "j_blackboard", "j_flower_pot",
-    "j_madness", "j_vampire", "j_hologram", "j_constellation",
-    "j_campfire", "j_lucky_cat", "j_caino", "j_obelisk",
-    "j_card_sharp", "j_seeing_double",
-})
+
+# Discount for xmult jokers whose trigger is conditional on hand type —
+# copying Tribe at X2 is worth ~half the value of copying Cavendish at X2,
+# since the copier only fires when the trigger hand is played.
+_CONDITIONAL_XMULT_DISCOUNT = 0.5
+
+
+def _copy_target_score(j: dict) -> float:
+    """Score a joker as a Blueprint/Brainstorm copy target.
+
+    Higher = better target. PHASE_XMULT beats PHASE_MULT beats everything else.
+    Within PHASE_XMULT we rank by live parsed xmult (captures scaling like
+    Constellation X5.5 beating Cavendish X3.0), discounted for conditional
+    triggers that may not fire at scoring time.
+
+    Reads ``self.ability`` via the effect-text parser, so scaling jokers
+    contribute their *live* accumulated value, not a base estimate.
+    """
+    key = joker_key(j)
+    if key in BLUEPRINT_INCOMPATIBLE:
+        return -1.0
+    phase = get_joker_phase(key)
+    if phase == PHASE_XMULT:
+        xm = _get_parsed_value(j, "xmult", 1.5)
+        if key in CONDITIONAL_XMULT:
+            xm *= _CONDITIONAL_XMULT_DISCOUNT
+        # Scale into a tier above PHASE_MULT scoring; +100 keeps any xmult
+        # target ranked above even huge flat-mult jokers.
+        return 100.0 + xm
+    if phase == PHASE_MULT:
+        return _get_parsed_value(j, "mult", 0.0)
+    return 0.0
+
+
+def _best_copy_target_value(owned_jokers: list[dict]) -> float:
+    """Return the raw xmult-equivalent of the current best copy target.
+
+    Strips the +100 tier offset so callers can map directly to a multiplier.
+    Returns 0.0 if the roster has nothing copyable (empty, all utility, or
+    all copiers).
+    """
+    best = 0.0
+    for j in owned_jokers:
+        k = joker_key(j)
+        if k in _COPY_JOKERS:
+            continue
+        s = _copy_target_score(j)
+        if s >= 100.0:
+            # PHASE_XMULT tier: strip the +100 tier offset
+            xm = s - 100.0
+            if xm > best:
+                best = xm
+        elif s > 0:
+            # PHASE_MULT: convert flat mult to xmult-equivalent (+30 mult ~ X3
+            # as a copy target, so divide by 10 for parity with xmult values).
+            xm_eq = s / 10.0
+            if xm_eq > best:
+                best = xm_eq
+    return best
+
+
+def _copier_base_value(ante: int) -> float:
+    """Prospective multiplier for a copier with no current target.
+
+    Past ante 3 you're not going to win without pairing a copier with a
+    scorer — buy Blueprint and assume something decent will show up. Early,
+    an untargeted copier is a slot waste.
+    """
+    if ante <= 2:
+        return 0.9
+    if ante == 3:
+        return 1.0
+    if ante <= 5:
+        return 1.15
+    return 1.25
+
+
+def _copier_amplification(copy_value: float) -> float:
+    """Map a live copy-target value (xmult-equivalent) to a multiplier bonus.
+
+    Cavendish X3 live → +0.30 (total ~1.30×, matches old flat anchor)
+    Constellation live X5+ → +0.50 (capped)
+    Duo post-discount X1 → +0.10 (conditional, smaller bonus — correct)
+    Empty roster → +0.0
+    """
+    return min(0.5, copy_value / 10.0)
 
 
 def _utility_synergy_bonus(key: str, owned_keys: set[str], strat: Strategy) -> float:
@@ -836,6 +1547,7 @@ def _synergy_multiplier(
     strategy: Strategy,
     owned_jokers: list[dict],
     candidate: dict | None = None,
+    ante: int = 1,
 ) -> float:
     """Unified synergy multiplier replacing _cross_synergy + coherence bonus."""
     mult = 1.0
@@ -849,12 +1561,33 @@ def _synergy_multiplier(
         if candidate_key == enabler and owned_keys & boosted:
             mult *= factor
 
-    # Blueprint/Brainstorm copy synergy
-    if owned_keys & _COPY_JOKERS and candidate_key in _XMULT_COPY_TARGETS:
-        mult *= 1.3
+    # Blueprint/Brainstorm copy synergy — data-driven from live roster state
+    # rather than a hardcoded target list. Two cases:
+    #   1. Candidate IS a copier: value scales with live best target + an
+    #      ante-scaled prospective floor (buying Blueprint at ante 5 with an
+    #      empty roster is betting the next shop has a scorer).
+    #   2. Candidate is a potential target, copier already owned: apply the
+    #      amplification ONLY if the candidate would beat the current best
+    #      target — otherwise the copier is already pairing with something
+    #      stronger and this buy doesn't add to the copy value.
     if candidate_key in _COPY_JOKERS:
-        if owned_keys & _XMULT_COPY_TARGETS:
-            mult *= 1.3
+        base = _copier_base_value(ante)
+        live_target = _best_copy_target_value(owned_jokers)
+        mult *= base + _copier_amplification(live_target)
+    elif owned_keys & _COPY_JOKERS and candidate is not None:
+        cand_score = _copy_target_score(candidate)
+        # Strip tier offset for xmult, convert flat mult to xmult-equivalent
+        if cand_score >= 100.0:
+            cand_value = cand_score - 100.0
+        elif cand_score > 0:
+            cand_value = cand_score / 10.0
+        else:
+            cand_value = 0.0
+        current_best = _best_copy_target_value(owned_jokers)
+        if cand_value > current_best:
+            # Candidate becomes the new best target — amplify by the delta
+            # (not the absolute value — we already had the old target).
+            mult *= 1.0 + _copier_amplification(cand_value - current_best)
 
     # --- Baseball Card synergy (rarity-based) ---
     uncommon_count = sum(
@@ -1110,7 +1843,10 @@ def evaluate_joker_value(
         # across the ante scales with deck density. Factor=1.0 at vanilla
         # (4 copies baseline), linear out to 2.0 at 8+ copies, down to 0.25 at
         # 1 copy — matches Wee/Scholar density intuition from issue #35.
-        raw_delta *= _rank_density_factor(ctx, key)
+        # Rank density is captured directly by deck sampling under MC; the
+        # post-hoc factor is only needed for the legacy synthetic-hand path.
+        if not _MC_SAMPLING_ENABLED:
+            raw_delta *= _rank_density_factor(ctx, key)
         coeff = _sim_coefficient(key)
         base_value = math.log2(1.0 + max(raw_delta, 0.0)) * coeff
     else:
@@ -1183,7 +1919,7 @@ def evaluate_joker_value(
         base_value = _deck_composition_adjustment(key, base_value, deck_profile, strategy, ante)
 
     # Layer 2: synergy
-    synergy = _synergy_multiplier(key, owned_keys, strategy, owned_jokers, candidate)
+    synergy = _synergy_multiplier(key, owned_keys, strategy, owned_jokers, candidate, ante)
 
     # Layer 3: context. Pass live xmult anchor for scaling xmult candidates so
     # the ante-urgency boost applies only when the joker is already firing.
