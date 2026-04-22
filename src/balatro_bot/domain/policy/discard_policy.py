@@ -18,9 +18,11 @@ _stream_log = logging.getLogger("balatro_stream")
 from typing import TYPE_CHECKING
 
 import copy
+from dataclasses import replace as dc_replace
 
 from balatro_bot.actions import DiscardCards, Action
 from balatro_bot.cards import joker_key
+from balatro_bot.domain.models.joker import Joker
 from balatro_bot.domain.scoring.search import (
     best_hand, cards_not_in, discard_candidates, ChaseCandidate,
 )
@@ -48,28 +50,42 @@ N_SAMPLES = 30          # Monte Carlo samples per unique keep set
 _DISCARD_DECAY_JOKERS = frozenset({"j_green_joker", "j_ramen"})
 
 
-def _adjust_jokers_for_discard(jokers: list[dict], discard_count: int) -> list[dict]:
+def _adjust_jokers_for_discard(jokers: list, discard_count: int) -> list:
     """Return a joker list with decay-on-discard jokers decremented.
 
-    Shallow-copies the list, deep-copies only the jokers whose ability we're
-    mutating. Green Joker loses 1 flat mult (floor 0). Ramen loses 0.01 xmult
-    per discarded card (floor 1.0 — below X1 Ramen stops firing).
+    Handles both typed Joker dataclasses (the actual runtime case) and raw
+    dicts (legacy/tests). Green Joker loses 1 flat mult (floor 0); Ramen
+    loses 0.01 xmult per discarded card (floor 1.0 — below X1 Ramen stops
+    firing).
     """
-    out: list[dict] = []
+    out = []
     for j in jokers:
-        key = j.get("key") if isinstance(j, dict) else getattr(j, "key", None)
+        key = getattr(j, "key", None) if not isinstance(j, dict) else j.get("key")
         if key not in _DISCARD_DECAY_JOKERS:
             out.append(j)
             continue
-        new_j = copy.deepcopy(j)
-        ability = new_j.setdefault("value", {}).setdefault("ability", {})
-        if key == "j_green_joker":
-            cur = _ab_mult(new_j, fallback=0)
-            ability["mult"] = max(0.0, cur - 1.0)
-        elif key == "j_ramen":
-            cur = _ab_xmult(new_j, fallback=1.85)
-            ability["x_mult"] = max(1.0, cur - 0.01 * discard_count)
-        out.append(new_j)
+
+        if isinstance(j, Joker):
+            if key == "j_green_joker":
+                cur = _ab_mult(j, fallback=0)
+                new_ability = dc_replace(j.value.ability, mult=max(0.0, cur - 1.0))
+            else:  # j_ramen
+                cur = _ab_xmult(j, fallback=1.85)
+                new_ability = dc_replace(
+                    j.value.ability, x_mult=max(1.0, cur - 0.01 * discard_count)
+                )
+            new_value = dc_replace(j.value, ability=new_ability)
+            out.append(dc_replace(j, value=new_value))
+        else:
+            new_j = copy.deepcopy(j)
+            ability = new_j.setdefault("value", {}).setdefault("ability", {})
+            if key == "j_green_joker":
+                cur = _ab_mult(new_j, fallback=0)
+                ability["mult"] = max(0.0, cur - 1.0)
+            else:
+                cur = _ab_xmult(new_j, fallback=1.85)
+                ability["x_mult"] = max(1.0, cur - 0.01 * discard_count)
+            out.append(new_j)
     return out
 
 
