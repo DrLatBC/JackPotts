@@ -162,6 +162,20 @@ _STOCHASTIC_KEYS: frozenset[str] = frozenset({
 _MC_DEFAULT_SAMPLES = 16
 
 # ---------------------------------------------------------------------------
+# Hard-blacklisted jokers — never buy, always lowest priority.
+# ---------------------------------------------------------------------------
+#
+# Superposition: "If poker hand contains an Ace AND is a Straight, create a
+# Tarot card." Multi-conditional trigger (need an Ace AND need the hand to
+# be a Straight) for a single Tarot — the payoff is a consumable, not any
+# scoring contribution. Even in a dedicated Straight build the Ace gate
+# makes it fire unreliably. Never worth a slot.
+_BLACKLISTED_JOKERS: frozenset[str] = frozenset({
+    "j_superposition",
+})
+
+
+# ---------------------------------------------------------------------------
 # Utility joker base values (moved from shop.py)
 # ---------------------------------------------------------------------------
 
@@ -173,7 +187,7 @@ UTILITY_VALUE: dict[str, float] = {
     "j_shortcut":      2.0,
     "j_splash":        2.0,
     "j_pareidolia":    2.0,
-    "j_superposition": 1.0,
+    "j_superposition": 0.0,  # blacklisted — see _BLACKLISTED_JOKERS
     "j_riff_raff":     1.0,
     "j_oops":          1.5,
     "j_hack":          1.5,
@@ -1822,10 +1836,17 @@ def evaluate_joker_value(
     Higher = more valuable to the current build.
     Used by both BuyJokersInShop and SellWeakJoker.
     """
+    cand_key = candidate.get("key", "") or joker_key(candidate)
+
+    # Hard blacklist — jokers whose effect is too conditional / too weak /
+    # too trap-like for the bot to ever consider buying. Return near-zero
+    # so any non-trivial alternative outranks them, but not exactly zero
+    # so Negative-edition specimens still get their slot-value floor.
+    if cand_key in _BLACKLISTED_JOKERS:
+        return 0.1
+
     if strategy is None:
         strategy = compute_strategy(owned_jokers, hand_levels, deck_profile=deck_profile)
-
-    cand_key = candidate.get("key", "") or joker_key(candidate)
     owned_key_set = {joker_key(j) for j in owned_jokers}
     # Phase 8: turn on Monte Carlo sampling only when a stochastic joker is
     # involved. The expected-value path stays the default for speed.

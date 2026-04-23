@@ -101,7 +101,9 @@ ARCHETYPE_REGISTRY: dict[str, ArchetypeProfile] = {
             "j_8_ball": 2,         # 8s
             "j_sixth_sense": 2,    # 6s
             "j_wee": 2,            # 2s
-            "j_superposition": 1,  # Aces
+            # j_superposition intentionally omitted — hard-blacklisted.
+            # Multi-conditional trigger (Ace + Straight) for a single
+            # tarot reward. Never worth a slot.
         },
         amplifiers=frozenset(),
         hand_contributions=_RANK_SCORING_HANDS,
@@ -234,10 +236,13 @@ JOKER_RANK_AFFINITY: dict[str, tuple[list[str], int]] = {
     "j_triboulet":     (["K", "Q"], 5),    # xMult per K or Q scored
     "j_baron":         (["K"], 4),         # xMult per held King
     "j_shoot_the_moon": (["Q"], 3),        # +mult per held Queen
-    "j_superposition": (["A"], 1),         # Ace + Straight → tarot
-
     # Anti-affinity for face cards (negative weight)
     "j_ride_the_bus": (["J", "Q", "K"], -3),  # resets mult on face cards
+
+    # j_superposition intentionally omitted — hard-blacklisted in
+    # shop_valuation. Despite targeting Aces, its effect (spawn a tarot
+    # when the hand is a Straight *and* contains an Ace) is too
+    # conditional to justify roster influence.
 }
 
 # Joker key -> (suit, weight)
