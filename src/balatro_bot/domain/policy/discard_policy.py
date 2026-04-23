@@ -237,12 +237,17 @@ _HAND_ABBREV = {
 }
 
 
-def _chase_margin(ctx: RoundContext) -> float:
+def _chase_margin(ctx: RoundContext, chase_hand: str | None = None) -> float:
     """Required EV multiplier for a chase to be accepted.
 
-    Base margin of 1.4× increases as discards get scarcer.
+    Base margin of 1.25× increases as discards get scarcer.
     With 3+ discards left the bar is low; with 1 left it's steep.
     Hopeless outlook lowers the bar — we're desperate.
+
+    If *chase_hand* matches the roster's preferred hand types (via
+    ``ctx.strategy``), the margin is relaxed proportionally — a Tribe/Order
+    roster should chase Flush/Straight more aggressively than a chip-heavy
+    one. Reduction caps at 20% of the margin so we never chase blindly.
     """
     if ctx.discards_left >= 3:
         margin = _BASE_CHASE_MARGIN
@@ -254,6 +259,15 @@ def _chase_margin(ctx: RoundContext) -> float:
     if ctx.round_outlook == "hopeless":
         margin = max(1.05, margin * 0.7)
 
+    if chase_hand and ctx.strategy is not None:
+        affinity = ctx.strategy.hand_affinity(chase_hand)
+        if affinity > 0:
+            # affinity is the raw sum of JOKER_HAND_AFFINITY weights for this
+            # hand from the roster. Typical ranges: 1-3 = moderate interest,
+            # 4-8 = strong preference. Cap discount at 0.8× margin.
+            discount = min(0.2, affinity * 0.04)
+            margin = max(1.05, margin * (1.0 - discount))
+
     return margin
 
 
@@ -264,9 +278,7 @@ def _best_chase(suggestions: list[ChaseCandidate], ctx: RoundContext, play_ev: f
     chase_hand for the same kept cards) share the same realized EV, so they
     dedupe. The chase_hand label is kept only for logging.
     """
-    margin_req = _chase_margin(ctx)
-    ev_threshold = play_ev * margin_req
-
+    base_margin_req = _chase_margin(ctx)  # for logging only
     ev_cache: dict[tuple[int, ...], float] = {}
 
     def ev_for(candidate: ChaseCandidate) -> float:
@@ -276,29 +288,35 @@ def _best_chase(suggestions: list[ChaseCandidate], ctx: RoundContext, play_ev: f
         return ev_cache[key]
 
     best = None
-    best_ev = ev_threshold
+    best_ev = 0.0
 
     chase_parts: list[str] = []
     for candidate in suggestions:
         if "chase" not in candidate.reason:
             continue
+        # Per-chase margin: preferred-hand chases get a relaxed threshold
+        margin_req = _chase_margin(ctx, candidate.chase_hand)
+        ev_threshold = play_ev * margin_req
         ev = ev_for(candidate)
-        accepted = ev > best_ev
+        # A chase is accepted if it beats its own threshold AND is the best
+        # among accepted chases so far.
+        accepted = ev > ev_threshold and ev > best_ev
         abbrev = _HAND_ABBREV.get(candidate.chase_hand, candidate.chase_hand)
         chase_parts.append(
-            f"{abbrev} {candidate.hit_prob * 100:.0f}% EV {ev:.0f} {'YES' if accepted else 'no'}"
+            f"{abbrev} {candidate.hit_prob * 100:.0f}% EV {ev:.0f} (need {ev_threshold:.0f}) {'YES' if accepted else 'no'}"
         )
         log.info(
-            "chase EV: %s %.0f%% -> EV %.0f (threshold=%.0f) %s",
+            "chase EV: %s %.0f%% -> EV %.0f (threshold=%.0f, margin=%.2fx) %s",
             candidate.chase_hand, candidate.hit_prob * 100, ev,
-            ev_threshold, "ACCEPT" if accepted else "reject",
+            ev_threshold, margin_req, "ACCEPT" if accepted else "reject",
         )
         if accepted:
             best_ev = ev
             best = candidate
 
+    margin_req = base_margin_req  # for final logs below
     if chase_parts:
-        _stream_log.info("Considering chase: %s (play EV %.0f, need %.1fx)", " | ".join(chase_parts), play_ev, margin_req)
+        _stream_log.info("Considering chase: %s (play EV %.0f, base need %.1fx)", " | ".join(chase_parts), play_ev, base_margin_req)
 
     if best is not None:
         margin = best_ev / play_ev if play_ev > 0 else float("inf")

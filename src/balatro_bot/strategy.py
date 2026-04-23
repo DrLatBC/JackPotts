@@ -16,6 +16,7 @@ from balatro_bot.cards import joker_key
 
 if TYPE_CHECKING:
     from typing import Any
+    from balatro_bot.domain.models.deck_profile import DeckProfile
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +190,26 @@ JOKER_HAND_AFFINITY: dict[str, tuple[list[str], int]] = {
     # Special
     "j_seeing_double": (["Flush"], 2),
     "j_flower_pot": (["Flush"], 3),
+
+    # Hand-type enablers — structural probability multipliers. These don't
+    # score directly but dramatically raise the hit rate of the hands they
+    # enable, so the bot should steer toward them whenever owned.
+    "j_shortcut":        (["Straight", "Straight Flush"], 4),  # gap straights (skip-1)
+    "j_four_fingers":    (["Flush", "Straight", "Straight Flush",
+                           "Flush House", "Flush Five"], 4),   # 4-card flushes/straights
+    "j_smeared":         (["Flush", "Straight Flush",
+                           "Flush House", "Flush Five"], 3),   # wild suit merging
+    "j_splash":          (["Flush", "Straight Flush",
+                           "Flush House", "Flush Five"], 2),   # all cards count in flush
+
+    # Hand-type-diversity jokers. Driver's License needs 16+ enhanced cards
+    # (hand-type-agnostic trigger) but synergizes with any high-scoring hand
+    # that gets replayed. Obelisk scales xmult on non-favorite hands, so it
+    # biases toward playing the rarer/higher hands.
+    "j_drivers_license": (["Full House", "Straight Flush",
+                           "Flush House", "Flush Five"], 1),
+    "j_obelisk":         (["Straight", "Flush", "Full House",
+                           "Straight Flush", "Flush House", "Flush Five"], 2),
 }
 
 # Joker key -> (ranks, weight)
@@ -239,6 +260,13 @@ JOKER_ENHANCEMENT_AFFINITY: dict[str, tuple[list[str], int]] = {
     "j_lucky_cat":    (["LUCKY"], 4),
     "j_glass":        (["GLASS"], 3),
     "j_golden":       (["GOLD"], 2),
+    # Vampire eats enhancements from scoring cards for permanent xmult gain.
+    # Anti-affinity for the enhancements it can consume — we want to build
+    # toward enhancements, not protect them, when Vampire is the primary
+    # scaler. Weight chosen to offset (not fully cancel) a single positive
+    # affinity source, since Vampire pairs fine with Steel/Glass holders.
+    "j_vampire":      (["STEEL", "GLASS", "GOLD", "LUCKY", "STONE",
+                        "BONUS", "MULT", "WILD"], -3),
 }
 
 
@@ -337,6 +365,7 @@ class Strategy:
     preferred_hands: list[tuple[str, float]]
     preferred_suits: list[tuple[str, float]]
     preferred_ranks: list[tuple[str, float]] = field(default_factory=list)
+    preferred_enhancements: list[tuple[str, float]] = field(default_factory=list)
     active_archetypes: list[tuple[str, float]] = field(default_factory=list)
 
     def top_hand(self) -> str | None:
@@ -366,6 +395,21 @@ class Strategy:
     def rank_affinity_dict(self) -> dict[str, float]:
         """Return rank affinity as a dict for fast lookup in hot paths."""
         return dict(self.preferred_ranks) if self.preferred_ranks else {}
+
+    def enhancement_affinity(self, enhancement: str | None) -> float:
+        """Weighted preference for a specific enhancement (e.g. STEEL, GLASS).
+
+        Positive when the roster has jokers that reward that enhancement
+        (Steel Joker, Lucky Cat, etc.); negative when anti-affinity jokers
+        (Vampire) want to consume it. Returns 0.0 for unrecognized keys.
+        """
+        if not enhancement or not self.preferred_enhancements:
+            return 0.0
+        e_upper = enhancement.upper()
+        for e, score in self.preferred_enhancements:
+            if e == e_upper:
+                return score
+        return 0.0
 
     def card_protection(
         self,
@@ -438,16 +482,122 @@ class Strategy:
 # Compute strategy from game state
 # ---------------------------------------------------------------------------
 
+# Deck signal tuning. The baseline vanilla deck has 25% of each suit (13/52)
+# and 4 copies of each rank. Anything above baseline is "signal" — the deck
+# has been shaped toward a build. Weights are calibrated so a clearly-built
+# deck (e.g. 50% flush-suit or 8 copies of a rank) produces affinity scores
+# comparable to an owned +mult joker (weight ~2-3).
+_DECK_SUIT_BASELINE = 0.25
+_DECK_SUIT_WEIGHT = 12.0     # excess_frac * this → suit affinity score
+_DECK_FLUSH_BASELINE = 0.30  # top-suit share beyond this adds Flush affinity
+_DECK_FLUSH_WEIGHT = 10.0
+_DECK_RANK_BASELINE = 4      # copies per rank in a vanilla deck
+_DECK_RANK_PER_EXCESS = 0.5  # per copy above baseline, capped
+_DECK_RANK_CAP = 4.0
+_DECK_ENH_PER_CARD = 0.5
+_DECK_ENH_CAP = 4.0
+
+# Hand-level base contribution. Each planet used is a sunk commitment —
+# leveling a hand from 1→5 should generate meaningful affinity even if no
+# joker names that hand. 1.5 per level matches an Uncommon joker's weight.
+_LEVEL_BASE_WEIGHT = 1.5
+
+
+def _deck_signal(
+    dp: "DeckProfile | None",
+) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
+    """Return (hand_scores, suit_scores, rank_scores, enhancement_scores) contributed by
+    the deck's composition. Empty when no deck profile is available.
+
+    This is the "what is my deck physically good at" signal — more reliable than
+    joker-implied affinity late game, because the deck grows monotonically while
+    shop offers anti-correlate with what you own.
+    """
+    hand: dict[str, float] = {}
+    suit: dict[str, float] = {}
+    rank: dict[str, float] = {}
+    enh: dict[str, float] = {}
+    if dp is None or not getattr(dp, "total_cards", 0):
+        return hand, suit, rank, enh
+    total = dp.total_cards
+
+    # Suit concentration — each suit above baseline gets proportional affinity
+    if dp.suit_counts:
+        for s, c in dp.suit_counts.items():
+            frac = c / total
+            if frac > _DECK_SUIT_BASELINE:
+                suit[s] = (frac - _DECK_SUIT_BASELINE) * _DECK_SUIT_WEIGHT
+        top_frac = max(dp.suit_counts.values()) / total
+        if top_frac > _DECK_FLUSH_BASELINE:
+            w = (top_frac - _DECK_FLUSH_BASELINE) * _DECK_FLUSH_WEIGHT
+            hand["Flush"] = hand.get("Flush", 0.0) + w
+            hand["Straight Flush"] = hand.get("Straight Flush", 0.0) + w * 0.5
+            hand["Flush House"] = hand.get("Flush House", 0.0) + w * 0.5
+            hand["Flush Five"] = hand.get("Flush Five", 0.0) + w * 0.4
+
+    # Rank density — high-count ranks bias toward that rank AND toward the
+    # hand types that exploit them. A deck with 8 copies of a rank genuinely
+    # should lean toward Pair / 3oK / 4oK / 5oK of that rank — that's the
+    # build the deck affords.
+    if dp.rank_counts:
+        for r, c in dp.rank_counts.items():
+            if c > _DECK_RANK_BASELINE:
+                excess = c - _DECK_RANK_BASELINE
+                rank[r] = min(_DECK_RANK_CAP, excess * _DECK_RANK_PER_EXCESS)
+                hand["Pair"] = hand.get("Pair", 0.0) + excess * 0.1
+                hand["Three of a Kind"] = hand.get("Three of a Kind", 0.0) + excess * 0.08
+                if c >= 6:
+                    hand["Four of a Kind"] = hand.get("Four of a Kind", 0.0) + (c - 5) * 0.08
+                if c >= 8:
+                    hand["Five of a Kind"] = hand.get("Five of a Kind", 0.0) + (c - 7) * 0.12
+
+    # Enhancement density — cards already enhanced hint at which enhancement
+    # jokers (Steel Joker, Lucky Cat, Glass Joker, Stone Joker) would fire often.
+    if getattr(dp, "enhancement_counts", None):
+        for e, c in dp.enhancement_counts.items():
+            if c >= 2 and e:
+                enh[e.upper()] = min(_DECK_ENH_CAP, c * _DECK_ENH_PER_CARD)
+
+    return hand, suit, rank, enh
+
+
+def _level_signal(
+    hand_levels: dict[str, dict] | None,
+) -> dict[str, float]:
+    """Sunk-commitment signal: each planet used generates hand affinity.
+
+    Previously the hand-level map only scaled existing scores by 1.2^(level-1),
+    which meant leveling Flush to 5 without owning any Flush joker added zero
+    affinity. Now each level above 1 contributes a base weight regardless of
+    joker ownership, so planet usage reflects commitment.
+    """
+    out: dict[str, float] = {}
+    if not hand_levels:
+        return out
+    for ht, info in hand_levels.items():
+        lvl = info.get("level", 1) if isinstance(info, dict) else 1
+        if lvl > 1:
+            out[ht] = (lvl - 1) * _LEVEL_BASE_WEIGHT
+    return out
+
+
 def compute_strategy(
     jokers: list[dict],
     hand_levels: dict[str, dict] | None = None,
+    deck_profile: "DeckProfile | None" = None,
 ) -> Strategy:
     hand_scores: dict[str, float] = {}
     suit_scores: dict[str, float] = {}
     rank_scores: dict[str, float] = {}
+    enhancement_scores: dict[str, float] = {}
 
     for joker in jokers:
         key = joker_key(joker)
+
+        if key in JOKER_ENHANCEMENT_AFFINITY:
+            enhs, weight = JOKER_ENHANCEMENT_AFFINITY[key]
+            for e in enhs:
+                enhancement_scores[e] = enhancement_scores.get(e, 0.0) + weight
 
         if key in JOKER_HAND_AFFINITY:
             hand_types, weight = JOKER_HAND_AFFINITY[key]
@@ -497,6 +647,9 @@ def compute_strategy(
     # Straight Flush = Straight + Flush
     # Flush House = Full House + Flush
     # Flush Five = Five of a Kind + Flush
+    #
+    # Composites are derived from joker/archetype intent only — deck signal is
+    # applied AFTER so deck-driven Pair density doesn't inflate Flush House.
     composites = {
         "Full House":      [("Three of a Kind", 0.5), ("Pair", 0.5)],
         "Straight Flush":  [("Straight", 0.7), ("Flush", 0.7)],
@@ -507,6 +660,25 @@ def compute_strategy(
         bonus = sum(hand_scores.get(sub, 0) * weight for sub, weight in components)
         if bonus > 0:
             hand_scores[composite] = hand_scores.get(composite, 0) + bonus
+
+    # Deck signal — what the deck is physically good at. Applied AFTER
+    # composites so a 2-heavy deck doesn't inflate Flush House / Full House
+    # without the joker intent to match. More reliable than joker-implied
+    # affinity late game because the deck grows monotonically while shop
+    # offers anti-correlate with owned jokers.
+    deck_h, deck_s, deck_r, deck_e = _deck_signal(deck_profile)
+    for ht, w in deck_h.items():
+        hand_scores[ht] = hand_scores.get(ht, 0) + w
+    for s, w in deck_s.items():
+        suit_scores[s] = suit_scores.get(s, 0) + w
+    for r, w in deck_r.items():
+        rank_scores[r] = rank_scores.get(r, 0) + w
+    for e, w in deck_e.items():
+        enhancement_scores[e] = enhancement_scores.get(e, 0.0) + w
+
+    # Hand-level sunk-commitment signal — planet usage locks in a build.
+    for ht, w in _level_signal(hand_levels).items():
+        hand_scores[ht] = hand_scores.get(ht, 0) + w
 
     if hand_levels:
         for ht, score in hand_scores.items():
@@ -527,10 +699,15 @@ def compute_strategy(
         [(r, score) for r, score in rank_scores.items() if score != 0],
         key=lambda x: -x[1],
     )
+    preferred_enhancements = sorted(
+        [(e, score) for e, score in enhancement_scores.items() if score != 0],
+        key=lambda x: -x[1],
+    )
 
     return Strategy(
         preferred_hands=preferred_hands,
         preferred_suits=preferred_suits,
         preferred_ranks=preferred_ranks,
+        preferred_enhancements=preferred_enhancements,
         active_archetypes=active_archs,
     )

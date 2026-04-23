@@ -186,8 +186,8 @@ class RoundContext:
         idol_rank = snapshot.round.idol_rank
         idol_suit = snapshot.round.idol_suit
         ox_most_played = snapshot.round.most_played_poker_hand if blind_name == "The Ox" and not boss_disabled else None
-        strat = compute_strategy(jokers, hand_levels)
         deck_profile = DeckProfile.from_cards(list(deck_cards) + list(hand_cards))
+        strat = compute_strategy(jokers, hand_levels, deck_profile=deck_profile)
         # When boss is disabled (Luchador sold), clear blind_name for scoring
         # so boss-specific scoring effects (The Tooth, The Ox, etc.) don't fire.
         effective_blind = "" if boss_disabled else blind_name
@@ -213,6 +213,8 @@ class RoundContext:
 
         effective_commit = mouth_locked_hand or committed_hand_type
 
+        hand_affinity_dict = dict(strat.preferred_hands) if strat.preferred_hands else None
+
         best = best_hand(
             hand_cards, hand_levels,
             min_select=min_cards, jokers=jokers,
@@ -228,6 +230,7 @@ class RoundContext:
             ox_most_played=ox_most_played,
             idol_rank=idol_rank,
             idol_suit=idol_suit,
+            hand_affinity=hand_affinity_dict,
         )
 
         # Score best hand as if it were the final hand (hands_left=1) so the
@@ -248,6 +251,7 @@ class RoundContext:
                 deck_cards=deck_cards,
                 blind_name=effective_blind,
                 ox_most_played=ox_most_played,
+                hand_affinity=hand_affinity_dict,
             )
             if has_final_hand else None
         )

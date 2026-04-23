@@ -785,8 +785,8 @@ class ShopEvaluator:
                 if isinstance(v, dict) and v.get("set") == "Planet"
             )
 
-        strat = compute_strategy(owned, hand_levels)
         deck_profile = self._get_deck_profile(state)
+        strat = compute_strategy(owned, hand_levels, deck_profile=deck_profile)
         budget = compute_budget(money, ante, joker_count, owned_jokers=owned,
                                 owned_vouchers=owned_vouchers)
 
@@ -922,7 +922,7 @@ class ShopEvaluator:
                         # roster so synergies/amplification from the joker
                         # we're about to sell don't inflate the buyer.
                         post_sell_owned = owned[:sc.index] + owned[sc.index + 1:]
-                        post_sell_strategy = compute_strategy(post_sell_owned, hand_levels)
+                        post_sell_strategy = compute_strategy(post_sell_owned, hand_levels, deck_profile=deck_profile)
                         shop_value_post = _score_shop_joker(
                             card, post_sell_owned, hand_levels,
                             post_sell_strategy, ante, joker_limit, deck_profile,

@@ -752,7 +752,14 @@ def eval_enhancement(
     hand_cards, hand_levels, jokers, current_best, current_score,
     enhancement, max_count, strat: Strategy | None = None,
 ) -> tuple[int, list[int]] | None:
-    """Would applying this enhancement boost cards about to score?"""
+    """Would applying this enhancement boost cards about to score?
+
+    When the roster rewards a specific enhancement (Steel Joker, Glass
+    Joker, Lucky Cat, etc.), scale the estimated value up so affinity-
+    matched tarots outrank generic picks. When anti-affinity jokers
+    (Vampire) want to eat enhancements, suppress the estimate so the bot
+    prefers not to build enhancements it'll immediately consume.
+    """
     from balatro_bot.rules._helpers import _find_enhancement_targets
 
     if not current_best:
@@ -760,13 +767,27 @@ def eval_enhancement(
 
     rank_aff = strat.rank_affinity_dict() if strat else None
 
+    # Enhancement affinity multiplier: 1.0 is neutral; affinity scales the
+    # estimated score. Map internal "Wild"/"Steel" labels to the uppercase
+    # keys used in JOKER_ENHANCEMENT_AFFINITY.
+    def _affinity_multiplier(enh: str) -> float:
+        if strat is None:
+            return 1.0
+        score = strat.enhancement_affinity(enh)
+        if score == 0:
+            return 1.0
+        # Typical weights: 5 (Steel Joker), 4 (Lucky Cat), -3 (Vampire).
+        # Convert to a 1.0 ± gentle multiplier, capped at [0.4, 1.6].
+        return max(0.4, min(1.6, 1.0 + score * 0.08))
+
     # Wild (Lovers): check if it enables a Flush
     if enhancement == "Wild":
         fd = flush_draw(hand_cards)
         if fd and len(fd) >= 4:
             for i, c in enumerate(hand_cards):
                 if i not in fd and not _modifier(c).get("enhancement"):
-                    estimated = int(current_score * _WILD_STEEL_MULTIPLIER)
+                    estimated = int(current_score * _WILD_STEEL_MULTIPLIER
+                                    * _affinity_multiplier("WILD"))
                     return (estimated, [i])
 
     # Steel: apply to highest-rank held (not played) card
@@ -778,7 +799,8 @@ def eval_enhancement(
             RANK_ORDER = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"]
             held.sort(key=lambda i: RANK_ORDER.index(card_rank(hand_cards[i]))
                       if card_rank(hand_cards[i]) in RANK_ORDER else -1, reverse=True)
-            estimated = int(current_score * _WILD_STEEL_MULTIPLIER)
+            estimated = int(current_score * _WILD_STEEL_MULTIPLIER
+                            * _affinity_multiplier("STEEL"))
             return (estimated, held[:max_count])
         return None
 
@@ -788,7 +810,9 @@ def eval_enhancement(
         scoring_set = set(current_best.card_indices)
         relevant = [t for t in targets if t in scoring_set]
         if relevant:
-            estimated = int(current_score * _GENERIC_ENHANCE_MULTIPLIER)
+            # enhancement string comes in as "Glass", "Gold", "Lucky", etc.
+            estimated = int(current_score * _GENERIC_ENHANCE_MULTIPLIER
+                            * _affinity_multiplier(enhancement.upper() if enhancement else ""))
             return (estimated, relevant[:max_count])
 
     return None

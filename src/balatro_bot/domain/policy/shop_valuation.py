@@ -1604,7 +1604,7 @@ def _synergy_multiplier(
         if cand_rarity in (2, "Uncommon"):
             mult *= 1.4
 
-    # --- Trigger coherence (hand type overlap) ---
+    # --- Trigger coherence (hand type overlap, pairwise) ---
     candidate_hands = set(JOKER_HAND_AFFINITY.get(candidate_key, ([], 0))[0])
     if candidate_hands:
         allies = 0
@@ -1616,6 +1616,63 @@ def _synergy_multiplier(
             if candidate_hands & other_hands:
                 allies += 1
         mult *= 1.0 + allies * 0.15
+
+    # --- Trigger coherence (rank overlap, pairwise) ---
+    # Candidates that share target ranks with owned jokers compound on the
+    # same deck work. E.g. Hack (2,3,4,5 retrigger) + Wee (+chips on 2) both
+    # amplify when the deck is ace-and-low.
+    cand_rank_entry = JOKER_RANK_AFFINITY.get(candidate_key)
+    if cand_rank_entry and cand_rank_entry[1] > 0:
+        candidate_ranks = set(cand_rank_entry[0])
+        rank_allies = 0
+        for j in owned_jokers:
+            okey = joker_key(j)
+            if okey == candidate_key:
+                continue
+            entry = JOKER_RANK_AFFINITY.get(okey)
+            if not entry or entry[1] <= 0:
+                continue
+            if candidate_ranks & set(entry[0]):
+                rank_allies += 1
+        mult *= 1.0 + rank_allies * 0.12
+
+    # --- Trigger coherence (suit overlap, pairwise) ---
+    cand_suit_entry = JOKER_SUIT_AFFINITY.get(candidate_key)
+    if cand_suit_entry:
+        candidate_suit = cand_suit_entry[0]
+        suit_allies = 0
+        for j in owned_jokers:
+            okey = joker_key(j)
+            if okey == candidate_key:
+                continue
+            entry = JOKER_SUIT_AFFINITY.get(okey)
+            if entry and entry[0] == candidate_suit:
+                suit_allies += 1
+        mult *= 1.0 + suit_allies * 0.15
+
+    # --- Strategy alignment (candidate fits the broader plan) ---
+    # This catches affinities the pairwise checks miss — archetype-driven
+    # preferences, composite hands (e.g. strong Pair strategy implies Full
+    # House is also valuable), and the deck profile's preferred ranks.
+    # Normalized to avoid double-counting the pairwise bonuses above.
+    if candidate_hands and strategy.preferred_hands:
+        # Use strategy.hand_affinity to score each of the candidate's hands
+        # against the roster's plan. Max weight in the affinity table is ~5,
+        # so divide by 10 for a gentle nudge capped at ~1.5x.
+        hand_align = max(
+            strategy.hand_affinity(h) for h in candidate_hands
+        ) if candidate_hands else 0.0
+        mult *= 1.0 + min(0.5, hand_align / 10.0)
+
+    if cand_rank_entry and cand_rank_entry[1] > 0 and strategy.preferred_ranks:
+        rank_align = max(
+            strategy.rank_affinity(r) for r in cand_rank_entry[0]
+        ) if cand_rank_entry[0] else 0.0
+        mult *= 1.0 + min(0.4, rank_align / 10.0)
+
+    if cand_suit_entry and strategy.preferred_suits:
+        suit_align = strategy.suit_affinity(cand_suit_entry[0])
+        mult *= 1.0 + min(0.4, suit_align / 10.0)
 
     # --- Archetype coherence ---
     for arch_name, arch_strength in strategy.active_archetypes:
@@ -1766,7 +1823,7 @@ def evaluate_joker_value(
     Used by both BuyJokersInShop and SellWeakJoker.
     """
     if strategy is None:
-        strategy = compute_strategy(owned_jokers, hand_levels)
+        strategy = compute_strategy(owned_jokers, hand_levels, deck_profile=deck_profile)
 
     cand_key = candidate.get("key", "") or joker_key(candidate)
     owned_key_set = {joker_key(j) for j in owned_jokers}
@@ -1794,11 +1851,28 @@ def evaluate_joker_value(
     key = ctx.candidate_key
     owned_keys = set(ctx.owned_keys)
 
-    # Determine hand types to simulate
+    # Determine hand types to simulate.
+    #
+    # The sim must represent what the bot will REALISTICALLY play — that's
+    # always dominated by Pair and High Card, even when the roster's plan
+    # points elsewhere. Strategy preferences layer ON TOP of that baseline
+    # as bonus weight, rather than replacing it. Without this, a
+    # deck-driven or archetype-driven preferred_hands (e.g. Pair 0.4, 3oK
+    # 0.32, 4oK 0.24) dilutes Pair's sampling weight below the default 1.0
+    # — the sim evaluates jokers primarily against rare high-baseline
+    # hands where per-card marginal ratios are small, and under-values
+    # jokers that fire on common hands.
+    hand_weights: dict[str, float] = {"Pair": 1.0, "High Card": 0.5}
     if strategy.preferred_hands:
-        hand_types = strategy.preferred_hands[:3]
-    else:
-        hand_types = [("Pair", 1.0), ("High Card", 0.5)]
+        # Normalize by top affinity so scale stays comparable. Top preferred
+        # hand gets +1.0 bonus, others proportional. Preferences above HC/Pair
+        # default become dominant; preferences below don't dominate
+        # realistic play.
+        top_score = max(score for _, score in strategy.preferred_hands)
+        if top_score > 0:
+            for h, score in strategy.preferred_hands[:5]:
+                hand_weights[h] = hand_weights.get(h, 0.0) + score / top_score
+    hand_types = [(h, w) for h, w in hand_weights.items() if w > 0]
 
     # Jokers that need 4+ scoring cards to trigger — bias the hand-type mix
     # so the condition can actually fire during valuation.

@@ -80,8 +80,14 @@ def enumerate_hands(
     ox_most_played: str | None = None,
     idol_rank: str | None = None,
     idol_suit: str | None = None,
+    hand_affinity: dict[str, float] | None = None,
 ) -> list[HandCandidate]:
-    """Enumerate all valid poker hands from the cards in hand."""
+    """Enumerate all valid poker hands from the cards in hand.
+
+    ``hand_affinity`` (optional) is a ``{hand_name: weight}`` dict used as a
+    tertiary sort tiebreaker — when two candidates score identically, prefer
+    the one that matches the roster's strategic plan. Never overrides score.
+    """
     candidates: list[HandCandidate] = []
     n = len(hand_cards)
     indices_set = set(range(n))
@@ -146,10 +152,13 @@ def enumerate_hands(
     if excluded_hands:
         candidates = [c for c in candidates if c.hand_name not in excluded_hands]
 
+    def _aff(h: HandCandidate) -> float:
+        return -(hand_affinity.get(h.hand_name, 0.0)) if hand_affinity else 0.0
+
     if jokers:
-        candidates.sort(key=lambda h: (-h.total, h.priority, len(h.cards)))
+        candidates.sort(key=lambda h: (-h.total, h.priority, _aff(h), len(h.cards)))
     else:
-        candidates.sort(key=lambda h: (h.priority, -h.total, len(h.cards)))
+        candidates.sort(key=lambda h: (h.priority, -h.total, _aff(h), len(h.cards)))
     return candidates
 
 
@@ -173,6 +182,7 @@ def best_hand(
     ox_most_played: str | None = None,
     idol_rank: str | None = None,
     idol_suit: str | None = None,
+    hand_affinity: dict[str, float] | None = None,
 ) -> HandCandidate | None:
     """Return the single best hand playable from the given cards."""
     candidates = enumerate_hands(
@@ -190,6 +200,7 @@ def best_hand(
         ox_most_played=ox_most_played,
         idol_rank=idol_rank,
         idol_suit=idol_suit,
+        hand_affinity=hand_affinity,
     )
     return candidates[0] if candidates else None
 
