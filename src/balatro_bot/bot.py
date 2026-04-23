@@ -861,8 +861,7 @@ def run_bot(
     _final_deck = state.get("cards", {}).get("cards", []) or []
     _deck_comp = {
         "total": len(_final_deck),
-        "ranks": {}, "suits": {}, "enhancements": {},
-        "seals": {}, "editions": {},
+        "ranks": {}, "suits": {}, "enhancements": {}, "seals": {},
     }
     for c in _final_deck:
         v = c.get("value") or {}
@@ -871,12 +870,10 @@ def run_bot(
         suit = v.get("suit") or "NONE"
         enh = (m or {}).get("enhancement") or "NONE"
         seal = (m or {}).get("seal") or "NONE"
-        ed = c.get("edition") or "NONE"
         _deck_comp["ranks"][rank] = _deck_comp["ranks"].get(rank, 0) + 1
         _deck_comp["suits"][suit] = _deck_comp["suits"].get(suit, 0) + 1
         _deck_comp["enhancements"][enh] = _deck_comp["enhancements"].get(enh, 0) + 1
         _deck_comp["seals"][seal] = _deck_comp["seals"].get(seal, 0) + 1
-        _deck_comp["editions"][ed] = _deck_comp["editions"].get(ed, 0) + 1
 
     # Capture log text AFTER log_game_over (includes game summary lines).
     # flush_win() no longer clears the buffer, so it's intact for both wins and losses.
