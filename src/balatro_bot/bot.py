@@ -439,7 +439,10 @@ def run_bot(
         )
         if _is_pack_state and not gs.in_pack_state:
             gs.packs_opened += 1
+            gs.current_pack_label = game_state
             _capture_pack_offer(gs, state)
+        elif not _is_pack_state and gs.in_pack_state:
+            gs.current_pack_label = None
         gs.in_pack_state = _is_pack_state
 
         _capture_tags_diff(gs, state)
@@ -716,6 +719,7 @@ def run_bot(
                     gs.shop_events.append({
                         "ante": _ante, "event_type": "skip",
                         "item_name": None, "item_type": "pack",
+                        "pack_type": gs.current_pack_label,
                         "cost": None, "money_after": _post_money,
                     })
                 elif "card" in params:
@@ -723,6 +727,7 @@ def run_bot(
                         "ante": _ante, "event_type": "pick",
                         "item_name": _picking_pack_card_label,
                         "item_type": "pack",
+                        "pack_type": gs.current_pack_label,
                         "cost": None, "money_after": _post_money,
                     })
 
@@ -852,18 +857,26 @@ def run_bot(
                 "discards_left_at_death": last_lost.get("discards_used"),
             }
 
-    # Final deck composition (rank/suit/enhancement counts of remaining draw pile)
+    # Final deck composition counts of remaining draw pile
     _final_deck = state.get("cards", {}).get("cards", []) or []
-    _deck_comp = {"total": len(_final_deck), "ranks": {}, "suits": {}, "enhancements": {}}
+    _deck_comp = {
+        "total": len(_final_deck),
+        "ranks": {}, "suits": {}, "enhancements": {},
+        "seals": {}, "editions": {},
+    }
     for c in _final_deck:
         v = c.get("value") or {}
         m = c.get("modifier") if isinstance(c.get("modifier"), dict) else {}
         rank = v.get("rank") or "STONE"
         suit = v.get("suit") or "NONE"
         enh = (m or {}).get("enhancement") or "NONE"
+        seal = (m or {}).get("seal") or "NONE"
+        ed = c.get("edition") or "NONE"
         _deck_comp["ranks"][rank] = _deck_comp["ranks"].get(rank, 0) + 1
         _deck_comp["suits"][suit] = _deck_comp["suits"].get(suit, 0) + 1
         _deck_comp["enhancements"][enh] = _deck_comp["enhancements"].get(enh, 0) + 1
+        _deck_comp["seals"][seal] = _deck_comp["seals"].get(seal, 0) + 1
+        _deck_comp["editions"][ed] = _deck_comp["editions"].get(ed, 0) + 1
 
     # Capture log text AFTER log_game_over (includes game summary lines).
     # flush_win() no longer clears the buffer, so it's intact for both wins and losses.
