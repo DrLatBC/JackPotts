@@ -9,7 +9,7 @@ from balatro_bot.domain.models.joker import Joker
 from balatro_bot.constants import FACE_RANKS
 from balatro_bot.domain.models.card import Card
 from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult, _get_parsed_value, _parse_bracket_counter
-from balatro_bot.joker_effects.context import ScoreContext, _hand_contains
+from balatro_bot.joker_effects.context import ScoreContext, _hand_contains, retrigger_count
 
 if TYPE_CHECKING:
     from typing import Any
@@ -275,7 +275,6 @@ def _lucky_cat(ctx: ScoreContext, j: dict) -> None:
     Lucky mult trigger chance is 1/5 (2/5 with Oops).  EV pre-increment:
     count Lucky cards scored × triggers × probability × extra.
     """
-    from balatro_bot.joker_effects import retrigger_count
     base_xmult = _ab_xmult(j, fallback=1.5)
     extra = _ability(j).get("extra", 0.25)
     prob = 2 / 5 if ctx.oops else 1 / 5

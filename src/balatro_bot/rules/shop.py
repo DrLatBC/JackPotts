@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from balatro_bot.actions import RearrangeJokers, Action
 from balatro_bot.cards import joker_key
 from balatro_bot.context import RoundContext
+from balatro_bot.domain.policy.shop_evaluator import ShopEvaluator
 from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE
 
 if TYPE_CHECKING:
@@ -189,10 +190,7 @@ class UnifiedShopRule:
     name = "unified_shop"
 
     def __init__(self) -> None:
-        self._evaluator = None  # lazy init to avoid circular imports
+        self._evaluator = ShopEvaluator()
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
-        if self._evaluator is None:
-            from balatro_bot.domain.policy.shop_evaluator import ShopEvaluator
-            self._evaluator = ShopEvaluator()
         return self._evaluator.evaluate(state)
