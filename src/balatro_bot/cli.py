@@ -10,6 +10,7 @@ from pathlib import Path
 from balatrobot import BalatroClient
 
 from balatro_bot.bot import run_bot, setup_logging, wait_for_server
+from balatro_bot.domain.policy import exploration
 from balatro_bot.engine import RuleEngine
 
 import logging
@@ -34,7 +35,10 @@ def main() -> None:
                         help="Route logs to bot_log/stream/ instead of bot_log/{port}/")
     parser.add_argument("--dashboard-batch-id", type=int, default=None,
                         help="Dashboard batch ID for reporting game results")
+    parser.add_argument("--explore", type=float, default=0.0,
+                        help="Fraction of shop and pack decisions that take a top-5 runner-up (default: 0)")
     args = parser.parse_args()
+    exploration.configure(args.explore)
 
     bot_log_root = Path(__file__).resolve().parent.parent.parent / "bot_log"
     if args.stream_log:

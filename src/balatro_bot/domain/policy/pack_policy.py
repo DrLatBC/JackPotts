@@ -445,3 +445,15 @@ def choose_from_tarot_pack(
             None)
 
     return (None, 0.0, "skip tarot pack (nothing usable)", None)
+
+
+def pack_pick_targets(
+    key: str, hand_cards: list[dict], jokers: list[dict], strat: Strategy,
+) -> tuple[bool, list[int] | None]:
+    """(needs_targets, targets) for picking *key* from a pack; targets is None when none fit."""
+    spec = TARGETING_TAROTS.get(key) or SPECTRAL_TARGETING.get(key)
+    if spec is None:
+        return False, None
+    max_count, effect_type, extra = spec
+    targets, _ = find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, strat)
+    return True, (targets or None)

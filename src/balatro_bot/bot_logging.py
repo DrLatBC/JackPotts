@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from balatro_bot.bot_format import fmt_card, format_deck_snapshot
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.card import Card
+from balatro_bot.domain.policy.exploration import explorer
 
 if TYPE_CHECKING:
     from balatro_bot.bot import GameLoopState
@@ -944,12 +945,17 @@ def record_decision(
     error: str | None = None,
 ) -> None:
     """Append one shop/pack decision to the game's decision log."""
-    detail = {k: v for k, v in decision.items() if k not in ("kind", "continuation", "chosen_idx")}
+    detail = {
+        k: v for k, v in decision.items()
+        if k not in ("kind", "continuation", "chosen_idx", "policy")
+    }
+    if explorer().rate > 0:
+        detail["explore_rate"] = explorer().rate
     gs.decisions.append({
         "seq": gs.actions_taken,
         "kind": decision.get("kind"),
         "game_state": game_state,
-        "policy": "greedy",
+        "policy": decision.get("policy", "greedy"),
         "continuation": bool(decision.get("continuation")),
         "chosen_idx": decision.get("chosen_idx"),
         "action": [method, params],

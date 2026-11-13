@@ -427,7 +427,8 @@ def compute_session_number() -> int:
 class Supervisor:
     def __init__(self, n: int, games: int, decks: list[str], stake: str,
                  seed: str | None, verbose: bool = False,
-                 stream: bool = False):
+                 stream: bool = False, explore_instances: int = 0,
+                 explore_rate: float = 0.0):
         taken: set[str] = set()
         slots = []
         for i in range(n):
@@ -441,6 +442,9 @@ class Supervisor:
         self.seed = seed
         self.verbose = verbose
         self.stream = stream
+        # The first explore_instances slots explore; the rest play greedy as the baseline.
+        self.explore_instances = explore_instances
+        self.explore_rate = explore_rate
         self.running = True
         self.session_num = 0
         self.session_start: float = 0.0
@@ -569,6 +573,11 @@ class Supervisor:
         idx = self.slots.index(slot)
         return self.decks[idx % len(self.decks)]
 
+    def _explore_rate_for_slot(self, slot: Slot) -> float:
+        if self.slots.index(slot) < self.explore_instances:
+            return self.explore_rate
+        return 0.0
+
     def launch_bot(self, slot: Slot) -> None:
         games = self._remaining_games(slot)
         completed = self.games - games
@@ -589,6 +598,9 @@ class Supervisor:
             cmd.extend(["--stream-delay", "2.0", "--stream-log"])
         if self.dashboard_batch_id:
             cmd.extend(["--dashboard-batch-id", str(self.dashboard_batch_id)])
+        explore = self._explore_rate_for_slot(slot)
+        if explore > 0:
+            cmd.extend(["--explore", str(explore)])
         slot.bot_proc = subprocess.Popen(
             cmd,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
@@ -727,6 +739,8 @@ class Supervisor:
                 "dead": "X",
             }.get(slot.state, "?")
             deck = self._deck_for_slot(slot)
+            if self._explore_rate_for_slot(slot) > 0:
+                deck = f"{deck}*"
             name_pad = f"{slot.name:<12}"
             wins_col = f"W:{slot.wins}"
             state_str = slot.state
@@ -954,6 +968,10 @@ def main() -> None:
                         help="Pass --verbose to bot instances (DEBUG logging)")
     parser.add_argument("--stream", action="store_true",
                         help="Stream mode: single headed instance, no fast-forward, 2s action delay")
+    parser.add_argument("--explore-instances", type=int, default=0,
+                        help="How many instances explore; the rest are the greedy baseline (default: 0)")
+    parser.add_argument("--explore-rate", type=float, default=0.15,
+                        help="Fraction of shop and pack decisions an exploring instance explores (default: 0.15)")
     args = parser.parse_args()
 
     if args.stream:
@@ -967,6 +985,10 @@ def main() -> None:
         return
 
     decks = [d.strip() for d in args.deck.split(",")]
+    if args.explore_instances > 0 and len(decks) > 1:
+        # Explore and baseline instances must differ only in exploration;
+        # rotate decks between batches instead.
+        parser.error("--explore-instances needs a single --deck")
     sup = Supervisor(
         n=args.instances,
         games=args.games,
@@ -975,6 +997,8 @@ def main() -> None:
         seed=args.seed,
         verbose=args.verbose,
         stream=args.stream,
+        explore_instances=args.explore_instances,
+        explore_rate=args.explore_rate,
     )
 
     def on_sigint(sig, frame):

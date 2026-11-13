@@ -16,6 +16,7 @@ from balatro_bot.bot_format import fmt_card, format_card_detail
 from balatro_bot.bot_logging import (
     build_decision_state, deck_composition, pack_offer_items, record_decision, shop_offer_items,
 )
+from balatro_bot.domain.policy.exploration import explorer
 from balatro_bot.engine import RuleEngine
 
 log = logging.getLogger("balatro_bot")
@@ -361,6 +362,7 @@ def run_bot(
         state = client.call("gamestate")
         log.info("Joined existing game: state=%s", state.get("state"))
 
+    explorer().reseed(state.get("seed"))
     gs = GameLoopState()
 
     while state.get("state") != "GAME_OVER":

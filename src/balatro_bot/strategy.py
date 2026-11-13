@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import joker_key
+from balatro_bot.constants import PLANET_HAND_MAP, TARGETING_TAROTS
+from balatro_bot.domain.policy.exploration import Lean, explorer
 
 if TYPE_CHECKING:
     from typing import Any
@@ -585,6 +587,71 @@ def _level_signal(
     return out
 
 
+LEAN_FLOOR = 3.0
+
+
+def card_lean(card: dict) -> Lean | None:
+    """The hands, suits and ranks a joker, planet or suit tarot points a run toward."""
+    key = card.get("key", "")
+    hands: dict[str, float] = {}
+    suits: dict[str, float] = {}
+    ranks: dict[str, float] = {}
+    if key in JOKER_HAND_AFFINITY:
+        hts, w = JOKER_HAND_AFFINITY[key]
+        for ht in hts:
+            hands[ht] = hands.get(ht, 0.0) + w
+    if key in JOKER_SUIT_AFFINITY:
+        suit, w = JOKER_SUIT_AFFINITY[key]
+        suits[suit] = suits.get(suit, 0.0) + w
+    if key in JOKER_RANK_AFFINITY:
+        rks, w = JOKER_RANK_AFFINITY[key]
+        for r in rks:
+            ranks[r] = ranks.get(r, 0.0) + w
+    for arch in ARCHETYPE_REGISTRY.values():
+        w = arch.joker_weights.get(key)
+        if not w:
+            continue
+        for ht, c in arch.hand_contributions.items():
+            hands[ht] = hands.get(ht, 0.0) + c * w
+        for r, c in arch.rank_contributions.items():
+            ranks[r] = ranks.get(r, 0.0) + c * w
+        for st, c in arch.suit_contributions.items():
+            suits[st] = suits.get(st, 0.0) + c * w
+    planet_hand = PLANET_HAND_MAP.get(card.get("label", ""))
+    if planet_hand:
+        hands[planet_hand] = hands.get(planet_hand, 0.0) + 1.0
+    tarot = TARGETING_TAROTS.get(key)
+    if tarot and tarot[1] == "suit_convert":
+        suits[tarot[2]] = suits.get(tarot[2], 0.0) + 1.0
+    lean = {
+        ch: {k: v for k, v in entries.items() if v > 0}
+        for ch, entries in (("hands", hands), ("suits", suits), ("ranks", ranks))
+    }
+    lean = {ch: entries for ch, entries in lean.items() if entries}
+    return lean or None
+
+
+def _apply_lean(
+    lean: Lean,
+    hand_scores: dict[str, float],
+    suit_scores: dict[str, float],
+    rank_scores: dict[str, float],
+) -> None:
+    """Lift the lean's entries to tie the channel's current top score (at least LEAN_FLOOR).
+
+    Entries scale by their weight relative to the lean's strongest entry, so a
+    joker that points several ways leans hardest where it cares most.
+    """
+    top_w = max(w for entries in lean.values() for w in entries.values())
+    for ch, scores in (("hands", hand_scores), ("suits", suit_scores), ("ranks", rank_scores)):
+        entries = lean.get(ch)
+        if not entries:
+            continue
+        bonus = max(max(scores.values(), default=0.0), LEAN_FLOOR)
+        for name, w in entries.items():
+            scores[name] = scores.get(name, 0.0) + bonus * w / top_w
+
+
 def compute_strategy(
     jokers: list[dict],
     hand_levels: dict[str, dict] | None = None,
@@ -644,6 +711,11 @@ def compute_strategy(
         for s, w in arch.suit_contributions.items():
             suit_scores[s] = suit_scores.get(s, 0) + w * strength
         active_archs.append((arch.name, strength))
+
+    # Before composites, so leaning Three of a Kind also lifts Full House.
+    lean = explorer().lean
+    if lean:
+        _apply_lean(lean, hand_scores, suit_scores, rank_scores)
 
     # Synthesize composite hand affinities: jokers that boost sub-hands
     # should also contribute to hands that CONTAIN those sub-hands.

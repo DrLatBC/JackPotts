@@ -22,6 +22,7 @@ from balatro_bot.constants import (
 )
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.consumable_policy import score_consumable, evaluate_hex
+from balatro_bot.domain.policy.exploration import Choice, explorer
 from balatro_bot.domain.policy.shop_valuation import (
     _KEY_TO_CATEGORY, _copy_target_score, evaluate_joker_value,
 )
@@ -31,7 +32,7 @@ from balatro_bot.joker_effects.scoring_phase import (
     PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
 )
 from balatro_bot.scaling import SELL_PROTECTED, check_anti_synergy
-from balatro_bot.strategy import compute_strategy
+from balatro_bot.strategy import card_lean, compute_strategy
 
 if TYPE_CHECKING:
     from typing import Any
@@ -248,6 +249,7 @@ class ActionPlan:
     steps: list[Action]
     net_value: float    # EV improvement minus cost opportunity
     description: str
+    item: dict | None = None  # the shop card the plan acquires, if any
 
 
 # ---------------------------------------------------------------------------
@@ -886,7 +888,7 @@ class ShopEvaluator:
                     steps = [BuyCard(i, reason=f"buy {label} (${cost}, value={shop_value:.1f})")]
                     candidates.append(ActionPlan(
                         steps=steps, net_value=net,
-                        description=f"buy {label}",
+                        description=f"buy {label}", item=card,
                     ))
 
             elif weakest is not None:
@@ -944,7 +946,7 @@ class ShopEvaluator:
                         # and re-evaluate next tick for the buy
                         candidates.append(ActionPlan(
                             steps=steps, net_value=net,
-                            description=f"sell {sc.label} → buy {label}",
+                            description=f"sell {sc.label} → buy {label}", item=card,
                         ))
                     break  # only consider the single weakest
 
@@ -1025,7 +1027,7 @@ class ShopEvaluator:
                     candidates.append(ActionPlan(
                         steps=[BuyCard(i, reason=f"buy consumable: {label} (${cost}, value={value:.1f})")],
                         net_value=net,
-                        description=f"buy {label}",
+                        description=f"buy {label}", item=card,
                     ))
 
         # 6. Buy packs
@@ -1172,8 +1174,16 @@ class ShopEvaluator:
         if not candidates:
             return NextRound(reason="done shopping")
 
-        best = max(candidates, key=lambda c: c.net_value)
+        greedy = max(candidates, key=lambda c: c.net_value)
+        best, choice = _explore_plan(greedy, candidates)
         self.last_decision = _shop_decision_record(best, candidates, budget, roster)
+        lean_set = best is not greedy and best.item is not None and explorer().set_lean(card_lean(best.item))
+        explorer().tag(self.last_decision, choice)
+        if choice.policy == "explore" and best is not greedy:
+            log.info("[SHOP] exploring: %s instead of %s", best.description, greedy.description)
+        if lean_set:
+            self.last_decision["lean_set"] = True
+            log.info("[SHOP] run lean set: %s", explorer().lean)
 
         log.info(
             "[SHOP] %s (value=%.1f, budget=%s/$%d, aggression scoring=%.1f/spec=%.1f) | "
@@ -1258,6 +1268,26 @@ class ShopEvaluator:
 _DECISION_TOP_N = 8
 
 
+def _explore_plan(greedy: ActionPlan, candidates: list[ActionPlan]) -> tuple[ActionPlan, Choice]:
+    """The plan to act on: the greedy pick, or on an exploration roll a top-ranked runner-up.
+
+    Joker reorders are scoring upkeep, not strategy, so they never enter the
+    pool, and a tick whose greedy pick is a reorder doesn't explore. Once the
+    run has a lean, runner-ups that point elsewhere are left out.
+    """
+    if isinstance(greedy.steps[0], RearrangeJokers):
+        return greedy, Choice(0, "greedy", 1.0)
+    ex = explorer()
+    pool = [greedy] + sorted(
+        (c for c in candidates
+         if c is not greedy and not isinstance(c.steps[0], RearrangeJokers)
+         and not (c.item is not None and ex.conflicts(card_lean(c.item)))),
+        key=lambda c: -c.net_value,
+    )
+    choice = explorer().choose(len(pool))
+    return pool[choice.idx], choice
+
+
 def _shop_decision_record(
     best: ActionPlan,
     candidates: list[ActionPlan],
@@ -1267,7 +1297,8 @@ def _shop_decision_record(
     """The ranked plans, budget and roster scores behind one shop choice.
 
     The chosen plan is always candidates[0]; the rest are the runners-up by
-    net_value, so a learner can see what the bot turned down.
+    net_value, so a learner can see what the bot turned down. On an explored
+    pick candidates[0] is the explored plan, not the highest-valued one.
     """
     ranked = [best] + sorted(
         (c for c in candidates if c is not best), key=lambda c: -c.net_value,

@@ -9,7 +9,8 @@ from balatro_bot.constants import (
     NO_TARGET_TAROTS, TARGETING_TAROTS, PLANET_HAND_MAP, PLANET_KEYS,
     SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
 )
-from balatro_bot.strategy import compute_strategy, JOKER_HAND_AFFINITY
+from balatro_bot.domain.policy.exploration import Choice, explorer
+from balatro_bot.strategy import card_lean, compute_strategy, JOKER_HAND_AFFINITY
 
 if TYPE_CHECKING:
     from typing import Any
@@ -38,6 +39,65 @@ def _pack_decision(
         "reason": reason,
         **extra,
     }
+
+
+def _explore_pick(
+    decision: dict,
+    state: dict[str, Any],
+    best_idx: int | None,
+    best_targets: list[int] | None = None,
+) -> tuple[int | None, list[int] | None]:
+    """The pack card to take: the greedy pick, or on an exploration roll a top-scored alternative.
+
+    A skip is never explored. Alternatives that need targets join the pool
+    only when the hand has targets for them, so every option in the pool can
+    actually be sent, and once the run has a lean, alternatives that point
+    elsewhere are left out.
+    """
+    ex = explorer()
+    if best_idx is None or ex.rate <= 0:
+        ex.tag(decision, Choice(0, "greedy", 1.0))
+        return best_idx, best_targets
+
+    from balatro_bot.domain.policy.pack_policy import pack_pick_targets
+
+    cards = state.get("pack", {}).get("cards", [])
+    hand_cards = state.get("hand", {}).get("cards", [])
+    jokers = state.get("jokers", {}).get("cards", [])
+    strat = compute_strategy(jokers, state.get("hands", {}))
+    others = sorted(
+        (o for o in decision.get("options", [])
+         if o.get("idx") != best_idx and "score" in o and "excluded" not in o),
+        key=lambda o: -o["score"],
+    )
+    pool: list[tuple[int, list[int] | None]] = [(best_idx, best_targets)]
+    for o in others:
+        if len(pool) >= ex.top_k:
+            break
+        if ex.conflicts(card_lean(cards[o["idx"]])):
+            continue
+        needs, targets = pack_pick_targets(cards[o["idx"]].get("key", ""), hand_cards, jokers, strat)
+        if needs and not targets:
+            continue
+        pool.append((o["idx"], targets))
+
+    choice = ex.choose(len(pool))
+    ex.tag(decision, choice)
+    idx, targets = pool[choice.idx]
+    if idx != best_idx and ex.set_lean(card_lean(cards[idx])):
+        decision["lean_set"] = True
+        decision["lean"] = ex.lean
+        log.info("[PACK] run lean set: %s", ex.lean)
+    if idx != best_idx:
+        decision["chosen_idx"] = idx
+        decision["greedy_idx"] = best_idx
+        decision["reason"] = (
+            f"explore pick: {cards[idx].get('label', '?')}"
+            f"{f' -> targets {targets}' if targets else ''}"
+            f" (greedy: {cards[best_idx].get('label', '?')})"
+        )
+        log.info("[PACK] %s", decision["reason"])
+    return idx, targets
 
 
 class WaitForPackHand:
@@ -196,6 +256,8 @@ class PickFromTarotPack:
             cards, state, hand_cards, jokers, strat, options_out=options,
         )
         self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)
+        best_idx, targets = _explore_pick(self.last_decision, state, best_idx, targets)
+        reason = self.last_decision["reason"]
 
         if best_idx is not None:
             if targets:
@@ -239,6 +301,8 @@ class PickFromPlanetPack:
             cards, strat, hand_levels, joker_keys, options_out=options,
         )
         self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)
+        best_idx, _ = _explore_pick(self.last_decision, state, best_idx)
+        reason = self.last_decision["reason"]
 
         # Log planets not chosen
         passed = []
@@ -305,6 +369,8 @@ class PickFromBuffoonPack:
             options_out=options,
         )
         self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)
+        best_idx, _ = _explore_pick(self.last_decision, state, best_idx)
+        reason = self.last_decision["reason"]
 
         return PackAction(card_index=best_idx, reason=reason)
 
@@ -340,6 +406,8 @@ class PickFromSpectralPack:
             options_out=options,
         )
         self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)
+        best_idx, targets = _explore_pick(self.last_decision, state, best_idx, targets)
+        reason = self.last_decision["reason"]
 
         if best_idx is None:
             return PackAction(card_index=None, reason=reason)
@@ -427,7 +495,8 @@ class PickFromStandardPack:
             self.last_decision = _pack_decision(
                 self.name, state, options, best_idx, reason, threshold=self._PICK_THRESHOLD,
             )
-            return PackAction(card_index=best_idx, reason=reason)
+            best_idx, _ = _explore_pick(self.last_decision, state, best_idx)
+            return PackAction(card_index=best_idx, reason=self.last_decision["reason"])
 
         reason = "skip standard pack (no strategic value)"
         self.last_decision = _pack_decision(
