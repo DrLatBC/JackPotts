@@ -127,7 +127,7 @@ def start_server(port: int = TEST_PORT, *,
         )
 
     cmd = [
-        _cfg.uvx_path, "balatrobot", "serve",
+        _cfg.balatrobot_path, "serve",
         "--port", str(port),
         "--love-path", _cfg.love_path,
         "--lovely-path", _cfg.lovely_path,

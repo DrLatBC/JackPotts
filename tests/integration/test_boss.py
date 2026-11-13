@@ -8,7 +8,7 @@ Usage:
 Fast-forwards to the target ante by setting chips to instantly beat blinds,
 then forces the desired boss via the set API. Then runs the bot against it.
 
-Requires a running balatrobot server (e.g. `uvx balatrobot serve --port 12346`).
+Requires a running balatrobot server (e.g. `balatrobot serve --port 12346`).
 """
 
 import argparse
