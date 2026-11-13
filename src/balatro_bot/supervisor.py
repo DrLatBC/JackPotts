@@ -784,6 +784,7 @@ class Supervisor:
                     "wins": s.wins,
                     "restarts": s.restarts,
                     "last_reason": s.last_reason,
+                    "explore_rate": self._explore_rate_for_slot(s),
                 }
                 for s in self.slots
             ])
