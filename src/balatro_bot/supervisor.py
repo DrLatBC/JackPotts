@@ -242,6 +242,12 @@ _MAX_PERIOD = 4  # check cycles of period 1, 2, 3, 4
 _STALL_TIMEOUT = 600  # seconds without a new action seq before declaring stuck
 
 _ACTION_SEQ_RE = re.compile(r"\[#(\d+)\]")
+_NEW_GAME_RE = re.compile(r"Started new game: ")
+_ANTE_RE = re.compile(r"\[ANTE (\d+)\]")
+_BLIND_RE = re.compile(r"Blind: (.+?) \(need ")
+_GAME_OVER_RE = re.compile(r"Game over: (VICTORY|DEFEAT).*?seed=(\S+) ante=(\d+)")
+_EXPLORE_RATE_RE = re.compile(r"Explore rate: ([\d.]+)")
+RECENT_GAMES = 15
 
 
 def _has_repeating_cycle(lines: list[str]) -> bool:
@@ -289,6 +295,17 @@ class Slot:
     recent_lines: deque = field(default_factory=lambda: deque(maxlen=40))
     loop_start: float = 0.0
     bot_launch_time: float = 0.0
+    # Rate the slot is set to; the bot picks it up from explore_file at its next game.
+    explore_rate: float = 0.0
+    # Rate the game in progress started with.
+    explore_active: float = 0.0
+    ante: int = 0
+    blind: str = ""
+    finished_games: deque = field(default_factory=lambda: deque(maxlen=RECENT_GAMES))
+
+    @property
+    def explore_file(self) -> Path:
+        return LOG_DIR / str(self.port) / "explore_rate.txt"
 
     def is_alive(self, proc: subprocess.Popen | None) -> bool:
         return proc is not None and proc.poll() is None
@@ -333,6 +350,36 @@ class Slot:
             pass
         return self.progress
 
+    def read_explore_rate(self) -> None:
+        """Pick up a rate the control panel wrote for this slot."""
+        try:
+            self.explore_rate = round(float(self.explore_file.read_text().strip()), 2)
+        except (OSError, ValueError):
+            pass
+
+    def write_explore_rate(self) -> None:
+        try:
+            self.explore_file.write_text(f"{self.explore_rate}")
+        except OSError as e:
+            log.warning("%s (port %d): could not write explore rate: %s", self.name, self.port, e)
+
+    def _track_game(self, line: str) -> None:
+        """Follow the current game's ante and blind, and record each finished game."""
+        if _NEW_GAME_RE.search(line):
+            self.ante, self.blind = 1, ""
+        elif m := _ANTE_RE.search(line):
+            self.ante = int(m.group(1))
+        elif m := _BLIND_RE.search(line):
+            self.blind = m.group(1)
+        elif m := _EXPLORE_RATE_RE.search(line):
+            self.explore_active = float(m.group(1))
+        elif m := _GAME_OVER_RE.search(line):
+            self.finished_games.append({
+                "name": self.name, "port": self.port, "won": m.group(1) == "VICTORY",
+                "seed": m.group(2), "ante": int(m.group(3)), "time": time.time(),
+            })
+            self.ante, self.blind = 0, ""
+
     def read_wins(self, session_num: int) -> None:
         try:
             p = WINS_DIR / f"wins_{self.port}_{session_num:03d}.log"
@@ -359,6 +406,7 @@ class Slot:
         for line in raw.decode("utf-8", errors="replace").splitlines():
             line = line.strip()
             if line:
+                self._track_game(line)
                 m = _ACTION_SEQ_RE.search(line)
                 if m:
                     seq = int(m.group(1))
@@ -439,7 +487,9 @@ class Supervisor:
         for i in range(n):
             name = _pick_princess_name(taken)
             taken.add(name)
-            slots.append(Slot(port=BASE_PORT + i, name=name))
+            # The first explore_instances slots explore; the rest play greedy as the baseline.
+            rate = explore_rate if i < explore_instances else 0.0
+            slots.append(Slot(port=BASE_PORT + i, name=name, explore_rate=rate))
         self.slots = slots
         self.games = games
         self.decks = decks  # rotated across slots
@@ -447,8 +497,6 @@ class Supervisor:
         self.seed = seed
         self.verbose = verbose
         self.stream = stream
-        # The first explore_instances slots explore; the rest play greedy as the baseline.
-        self.explore_instances = explore_instances
         self.explore_rate = explore_rate
         self.running = True
         self.session_num = 0
@@ -532,6 +580,7 @@ class Supervisor:
             p = LOG_DIR / str(slot.port) / "progress.txt"
             if p.exists():
                 p.unlink()
+            slot.write_explore_rate()
 
         prune_balatrobot_logs()
 
@@ -590,11 +639,6 @@ class Supervisor:
         idx = self.slots.index(slot)
         return self.decks[idx % len(self.decks)]
 
-    def _explore_rate_for_slot(self, slot: Slot) -> float:
-        if self.slots.index(slot) < self.explore_instances:
-            return self.explore_rate
-        return 0.0
-
     def launch_bot(self, slot: Slot) -> None:
         games = self._remaining_games(slot)
         completed = self.games - games
@@ -615,16 +659,24 @@ class Supervisor:
             cmd.extend(["--stream-delay", "2.0", "--stream-log"])
         if self.dashboard_batch_id:
             cmd.extend(["--dashboard-batch-id", str(self.dashboard_batch_id)])
-        explore = self._explore_rate_for_slot(slot)
-        if explore > 0:
-            cmd.extend(["--explore", str(explore)])
+        slot.read_explore_rate()
+        slot.write_explore_rate()
+        cmd.extend(["--explore-file", str(slot.explore_file)])
+        if slot.explore_rate > 0:
+            cmd.extend(["--explore", str(slot.explore_rate)])
+        slot.explore_active = slot.explore_rate
+        slot.ante, slot.blind = 0, ""
         slot.bot_proc = subprocess.Popen(
             cmd,
             creationflags=self._child_console_flags(),
         )
         slot.state = "running"
         slot.log_file = LOG_DIR / str(slot.port) / f"game_{self.session_num:03d}.log"
-        slot.log_offset = 0
+        # The bot appends to the session's log, so a relaunch reads on from the end.
+        try:
+            slot.log_offset = slot.log_file.stat().st_size
+        except OSError:
+            slot.log_offset = 0
         slot.recent_lines.clear()
         slot.loop_start = 0.0
         slot.last_action_seq = -1
@@ -739,14 +791,22 @@ class Supervisor:
     def _status(self, phase: str) -> dict:
         """Snapshot of every slot and the batch totals, for the console, the GUI and the dashboard."""
         slots = []
+        now = time.time()
         for slot in self.slots:
             slot.read_progress()
             slot.read_wins(self.session_num)
+            slot.read_explore_rate()
+            last_action = slot.last_action_seq_time or slot.bot_launch_time
             slots.append({
                 "port": slot.port,
                 "name": slot.name,
                 "deck": self._deck_for_slot(slot),
-                "explore_rate": self._explore_rate_for_slot(slot),
+                "explore_rate": slot.explore_rate,
+                "explore_active": slot.explore_active,
+                "ante": slot.ante,
+                "blind": slot.blind,
+                "idle_secs": int(now - last_action) if slot.state == "running" and last_action else None,
+                "log": str(slot.log_file) if slot.log_file else "",
                 "state": slot.state,
                 "progress": slot.progress,
                 "games_completed": int(slot.progress.split("/")[0]) if "/" in slot.progress else 0,
@@ -771,6 +831,10 @@ class Supervisor:
             "wins": sum(s["wins"] for s in slots),
             "rate_per_hour": round(rate, 1),
             "eta_secs": eta_secs,
+            "explore_rate": self.explore_rate,
+            "stall_secs": _STALL_TIMEOUT,
+            "recent_games": sorted((g for s in self.slots for g in s.finished_games),
+                                   key=lambda g: g["time"], reverse=True)[:RECENT_GAMES],
         }
 
     def _write_status(self, status: dict) -> None:

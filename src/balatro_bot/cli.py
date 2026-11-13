@@ -17,6 +17,20 @@ import logging
 log = logging.getLogger("balatro_bot")
 
 
+def apply_explore_file(path: Path | None) -> None:
+    """Switch to the rate in *path* before a game, logging the change for the supervisor."""
+    if path is None:
+        return
+    try:
+        rate = round(float(path.read_text().strip()), 2)
+    except (OSError, ValueError):
+        return
+    if not 0 <= rate <= 1 or rate == exploration.explorer().rate:
+        return
+    exploration.configure(rate)
+    log.info("Explore rate: %.2f", rate)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Balatro decision engine bot")
     parser.add_argument("--host", default="127.0.0.1")
@@ -37,6 +51,8 @@ def main() -> None:
                         help="Dashboard batch ID for reporting game results")
     parser.add_argument("--explore", type=float, default=0.0,
                         help="Fraction of shop and pack decisions that take a top-5 runner-up (default: 0)")
+    parser.add_argument("--explore-file", type=Path, default=None,
+                        help="File holding an explore rate, re-read before each game (written by the supervisor)")
     args = parser.parse_args()
     exploration.configure(args.explore)
 
@@ -92,6 +108,7 @@ def main() -> None:
             (log_dir / "wins.txt").write_text(f"W: 0  L: 0")
         i = 0
         while i < args.games:
+            apply_explore_file(args.explore_file)
             if args.games > 1:
                 log.info("=== Game %d/%d ===", offset + i + 1, total_games)
             won = run_bot(

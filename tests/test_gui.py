@@ -82,3 +82,101 @@ def test_ports_in_use_never_connects(monkeypatch):
     monkeypatch.setattr(gui.subprocess, "run",
                         lambda *a, **k: type("R", (), {"stdout": NETSTAT})())
     assert gui.ports_in_use() is True
+
+
+GAME_LOG = """\
+16:15:09 [INFO] Started new game: deck=BLUE stake=WHITE seed=UDABG75D
+16:15:09 [INFO] [ANTE 1] Roster (0 jokers): [none]
+16:15:09 [INFO] Blind: Small Blind (need 300 chips)
+16:19:40 [INFO] [ANTE 6] Money: $12
+16:19:41 [INFO] Blind: The Serpent (need 40,000 chips)
+"""
+GAME_OVER = "16:20:06 [INFO] Game over: DEFEAT | seed=UDABG75D ante=6 round=18 | 195 actions taken\n"
+
+
+@pytest.fixture
+def sup(status_file, tmp_path, monkeypatch):
+    monkeypatch.setattr(supervisor, "LOG_DIR", tmp_path)
+    (tmp_path / str(supervisor.BASE_PORT)).mkdir()
+    return supervisor.Supervisor(n=1, games=10, decks=["BLUE"], stake="WHITE", seed=None,
+                                 explore_instances=1, explore_rate=0.15)
+
+
+def _feed_log(slot, path, text):
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(text)
+    slot.log_file = path
+    slot.poll_log_for_softlock()
+
+
+def test_status_follows_the_current_game_and_records_finished_ones(sup, tmp_path):
+    slot = sup.slots[0]
+    log_path = tmp_path / "game.log"
+    _feed_log(slot, log_path, GAME_LOG)
+    live = sup._status("running")["slots"][0]
+    assert (live["ante"], live["blind"]) == (6, "The Serpent")
+
+    _feed_log(slot, log_path, GAME_OVER)
+    status = sup._status("running")
+    assert (status["slots"][0]["ante"], status["slots"][0]["blind"]) == (0, "")
+    [game] = status["recent_games"]
+    assert (game["name"], game["won"], game["ante"], game["seed"]) == (slot.name, False, 6, "UDABG75D")
+
+
+def test_panel_explore_switch_reaches_the_status_and_the_bot(sup, tmp_path, monkeypatch):
+    monkeypatch.setattr(gui, "LOG_DIR", tmp_path)
+    slot = sup.slots[0]
+    slot.explore_active = 0.15
+    gui.set_explore_rate(slot.port, 0.0)
+    live = sup._status("running")["slots"][0]
+    assert (live["explore_rate"], live["explore_active"]) == (0.0, 0.15)
+
+    _feed_log(slot, tmp_path / "game.log", "16:30:00 [INFO] Explore rate: 0.00\n")
+    assert sup._status("running")["slots"][0]["explore_active"] == 0.0
+
+
+def test_relaunched_bot_gets_the_rate_file_and_reads_its_log_from_the_end(sup, tmp_path, monkeypatch):
+    launched = []
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda cmd, **kw: launched.append(cmd))
+    slot = sup.slots[0]
+    log_path = tmp_path / str(slot.port) / f"game_{sup.session_num:03d}.log"
+    log_path.write_text(GAME_LOG + GAME_OVER, encoding="utf-8")
+    sup.launch_bot(slot)
+    cmd = launched[0]
+    assert cmd[cmd.index("--explore-file") + 1] == str(slot.explore_file)
+    assert cmd[cmd.index("--explore") + 1] == "0.15"
+    assert slot.log_offset == log_path.stat().st_size
+    slot.poll_log_for_softlock()
+    assert not slot.finished_games
+
+
+def test_bot_switches_rate_from_the_file_before_a_game(tmp_path, monkeypatch):
+    from balatro_bot import cli
+    from balatro_bot.domain.policy import exploration
+    monkeypatch.setattr(exploration, "_explorer", exploration.Explorer(0.15))
+    path = tmp_path / "explore_rate.txt"
+    cli.apply_explore_file(path)
+    assert exploration.explorer().rate == 0.15
+    for bad in ("garbage", "1.5"):
+        path.write_text(bad)
+        cli.apply_explore_file(path)
+        assert exploration.explorer().rate == 0.15
+    path.write_text("0.0")
+    cli.apply_explore_file(path)
+    assert exploration.explorer().rate == 0.0
+
+
+def test_panel_notifies_once_when_its_batch_ends(monkeypatch):
+    sent = []
+    monkeypatch.setattr(gui, "notify", lambda root, title, msg: sent.append((title, msg)))
+    final = {"phase": "stopped", "session": 178, "completed": 120, "total_expected": 120, "wins": 6}
+    monkeypatch.setattr(gui, "read_status_file", lambda: final)
+    panel = type("P", (), {"watched_session": None, "root": None})()
+    watch = gui.ControlPanel._watch_for_finish
+
+    watch(panel, None)
+    assert not sent
+    watch(panel, {"session": 178})
+    watch(panel, None)
+    watch(panel, None)
+    assert sent == [("Batch #178 ended", "120 / 120 games  ·  6 wins  5.0%")]
