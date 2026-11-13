@@ -720,6 +720,7 @@ class ShopEvaluator:
     def __init__(self) -> None:
         self.pending_plan: list[Action] | None = None
         self._pending_sell_keys: dict[int, str] = {}  # idx → expected joker key
+        self._pending_buy_key: str | None = None  # shop card a pending BuyCard expects
         self._last_order: list[int] | None = None
         self._rerolls_this_shop: int = 0
         self._last_round: int = -1
@@ -935,15 +936,18 @@ class ShopEvaluator:
                     opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
                                                        budget.scoring_aggression,
                                                        joker_count)
-                    # Discount 30%: only the sell emits this tick, buy is uncertain
+                    # 30% haircut keeps swaps conservative next to direct buys.
                     net = upgrade_delta * budget.scoring_aggression * 0.7 - opp_cost
                     if net > 0:
+                        # Committed two-step plan: the buy runs as the next action
+                        # instead of being re-decided against rerolls and leaving,
+                        # so a swap never ends with the joker sold and nothing bought.
+                        # Selling a joker leaves the shop row untouched, so i still
+                        # points at this card.
                         steps = [
                             SellJoker(sc.index, reason=f"sell {sc.label} (ev={sc.ev_delta:.1f}) for {'Negative buy' if is_negative else f'{label} (post-sell value={shop_value_post:.1f})'}"),
+                            BuyCard(i, reason=f"buy {label} (${cost}, swap for {sc.label})"),
                         ]
-                        # After sell, the shop card index is still i but joker indices shift
-                        # The engine re-evaluates each tick, so we just emit the sell
-                        # and re-evaluate next tick for the buy
                         candidates.append(ActionPlan(
                             steps=steps, net_value=net,
                             description=f"sell {sc.label} → buy {label}", item=card,
@@ -1200,6 +1204,7 @@ class ShopEvaluator:
             self.pending_plan = best.steps[1:]
             # Record expected joker keys for sell actions so we can verify identity
             self._pending_sell_keys = {}
+            self._pending_buy_key = best.item.get("key") if best.item else None
             for step in self.pending_plan:
                 if isinstance(step, SellJoker) and step.index < len(owned):
                     self._pending_sell_keys[step.index] = joker_key(owned[step.index])
@@ -1241,7 +1246,10 @@ class ShopEvaluator:
             shop_cards = state.get("shop", {}).get("cards", [])
             if next_action.index >= len(shop_cards):
                 return False
-            cost = shop_cards[next_action.index].get("cost", {}).get("buy", 999)
+            card = shop_cards[next_action.index]
+            if self._pending_buy_key and card.get("key") != self._pending_buy_key:
+                return False
+            cost = card.get("cost", {}).get("buy", 999)
             if cost > money:
                 return False
 

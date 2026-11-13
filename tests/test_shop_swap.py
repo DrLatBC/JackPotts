@@ -90,3 +90,59 @@ def test_non_enabler_sell_preserves_order_value() -> None:
         f"Removing a non-enabler should not meaningfully shift The Order's "
         f"value (pre={pre:.2f}, post={post:.2f})"
     )
+
+
+# ── Swaps are carried out as one committed plan ──
+
+from balatro_bot.actions import BuyCard, SellJoker  # noqa: E402
+from balatro_bot.domain.policy.shop_evaluator import ShopEvaluator  # noqa: E402
+from tests.test_decision_logging import _shop_state  # noqa: E402
+
+
+def _swap_state(money: int = 40, owned_count: int = 5) -> dict:
+    """Full roster of weak jokers, a Negative Duo in the shop: the evaluator swaps."""
+    state = _shop_state(money=money)
+    state["ante_num"] = 4
+    owned = [dict(joker("j_credit_card", "Credit Card"), cost={"sell": 1}) for _ in range(owned_count)]
+    state["jokers"] = {"cards": owned, "count": owned_count, "limit": 5}
+    duo = joker("j_duo", "The Duo")
+    duo.update({"cost": {"buy": 8}, "modifier": {"edition": "NEGATIVE"},
+                "value": {"effect": "X2 Mult if played hand contains a Pair"}})
+    state["shop"] = {"cards": [duo]}
+    return state
+
+
+def test_swap_sells_then_queues_the_buy() -> None:
+    ev = ShopEvaluator()
+    action = ev.evaluate(_swap_state())
+    assert isinstance(action, SellJoker)
+    assert ev.last_decision["candidates"][0]["steps"] == [["sell", {"joker": action.index}], ["buy", {"card": 0}]]
+    assert len(ev.pending_plan) == 1 and isinstance(ev.pending_plan[0], BuyCard)
+
+
+def test_swap_buy_runs_next_instead_of_being_redecided() -> None:
+    ev = ShopEvaluator()
+    ev.evaluate(_swap_state())
+    action = ev.evaluate(_swap_state(money=41, owned_count=4))
+    assert action == BuyCard(0, reason=action.reason)
+    assert ev.last_decision == {"kind": "shop", "continuation": True}
+    assert ev.pending_plan is None
+
+
+def test_swap_buy_dropped_when_the_shop_card_changed() -> None:
+    ev = ShopEvaluator()
+    ev.evaluate(_swap_state())
+    after = _swap_state(money=41, owned_count=4)
+    junk = joker("j_credit_card", "Credit Card")
+    junk.update({"cost": {"buy": 999}})
+    after["shop"] = {"cards": [junk]}
+    action = ev.evaluate(after)
+    assert not isinstance(action, BuyCard)
+    assert ev.last_decision.get("continuation") is False
+
+
+def test_swap_buy_dropped_when_no_longer_affordable() -> None:
+    ev = ShopEvaluator()
+    ev.evaluate(_swap_state())
+    action = ev.evaluate(_swap_state(money=5, owned_count=4))
+    assert not isinstance(action, BuyCard)
