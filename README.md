@@ -43,7 +43,7 @@ LOVELY_DLL=G:\SteamLibrary\steamapps\common\Balatro\version.dll
 Run a single game:
 
 ```bash
-uvx balatrobot serve --port 12346          # terminal 1
+balatrobot serve --port 12346              # terminal 1
 balatro-bot --port 12346 --start           # terminal 2
 ```
 

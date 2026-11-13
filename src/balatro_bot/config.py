@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,21 +62,32 @@ def _default_lovely_path() -> str:
     )
 
 
-def _default_uvx_path() -> str:
-    env = os.environ.get("UVX_PATH", "")
+def _default_balatrobot_path() -> str:
+    """The balatrobot server CLI installed in this Python environment.
+
+    The server must come from the local DrLatBC/balatrobot fork (installed
+    editable), not PyPI: the Lua mod in Balatro/Mods is the fork's, and an
+    unpinned PyPI server drifts ahead of it.
+    """
+    env = os.environ.get("BALATROBOT_EXE", "")
     if env:
         if os.path.exists(env):
             return env
         raise FileNotFoundError(
-            f"uvx: $UVX_PATH is set to '{env}' but the file doesn't exist."
+            f"balatrobot: $BALATROBOT_EXE is set to '{env}' but the file doesn't exist."
         )
-    found = shutil.which("uvx")
+    exe = "balatrobot.exe" if os.name == "nt" else "balatrobot"
+    local = Path(sys.executable).parent / exe
+    if local.exists():
+        return str(local)
+    found = shutil.which("balatrobot")
     if found:
         return found
     raise FileNotFoundError(
-        "uvx: not found on PATH. Install it (pip install uv) or set the UVX_PATH "
-        "environment variable.\n"
-        "  Example (PowerShell): $env:UVX_PATH = \"C:\\path\\to\\uvx.exe\""
+        "balatrobot: server CLI not found. Install the local fork into this "
+        "environment:\n"
+        "  pip install -e \"C:\\github vs\\balatrobot\"\n"
+        "or set BALATROBOT_EXE to its balatrobot executable."
     )
 
 
@@ -84,7 +96,7 @@ class SupervisorConfig:
     base_port: int = 12346
     love_path: str = field(default_factory=_default_love_path)
     lovely_path: str = field(default_factory=_default_lovely_path)
-    uvx_path: str = field(default_factory=_default_uvx_path)
+    balatrobot_path: str = field(default_factory=_default_balatrobot_path)
     python_path: str = ""
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent)
     log_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent / "bot_log")

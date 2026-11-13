@@ -16,9 +16,10 @@
 git clone https://github.com/DrLatBC/JackPotts.git
 cd JackPotts
 pip install -e ".[dev,runtime]"
+pip install -e ../balatrobot     # our fork, cloned next to this repo
 ```
 
-The `runtime` extra pulls in the `balatrobot` client library. The `dev` extra adds `pytest` and related tooling.
+The `dev` extra adds `pytest` and related tooling. Installing the fork editable provides both the `balatrobot` client library and the `balatrobot serve` CLI the supervisor launches, so fork changes apply without reinstalling. Don't run the server through `uvx balatrobot`: that pulls the latest PyPI release, which can drift ahead of the fork's Lua mod installed in Balatro.
 
 ## Environment config
 
@@ -27,10 +28,9 @@ Create `.env.local` in the repo root (gitignored, loaded automatically):
 ```ini
 BALATRO_EXE=G:\SteamLibrary\steamapps\common\Balatro\Balatro.exe
 LOVELY_DLL=G:\SteamLibrary\steamapps\common\Balatro\version.dll
-UVX_PATH=C:\path\to\.venv\Scripts\uvx.exe
 ```
 
-Adjust paths to match your Steam library. `UVX_PATH` is only required if `uvx` isn't on your system PATH (e.g. when installed inside a virtualenv).
+Adjust paths to match your Steam library. The supervisor finds `balatrobot` next to the Python running it; set `BALATROBOT_EXE` only to point at a different install.
 
 ### Optional: JackPotts dashboard
 

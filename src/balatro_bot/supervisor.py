@@ -40,7 +40,7 @@ WINS_DIR = cfg.wins_dir
 
 LOVE_PATH = cfg.love_path
 LOVELY_PATH = cfg.lovely_path
-UVX = cfg.uvx_path
+BALATROBOT = cfg.balatrobot_path
 PYTHON = cfg.python_path or str(BASE_DIR / ".venv" / "Scripts" / "python.exe")
 
 HEALTH_TIMEOUT = cfg.health_timeout
@@ -527,7 +527,7 @@ class Supervisor:
 
     def launch_server(self, slot: Slot) -> None:
         cmd = [
-            UVX, "balatrobot", "serve",
+            BALATROBOT, "serve",
             "--port", str(slot.port),
             "--love-path", LOVE_PATH,
             "--lovely-path", LOVELY_PATH,

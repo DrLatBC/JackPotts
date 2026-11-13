@@ -5,7 +5,7 @@
 ```
 Balatro (game) + Lovely mod loader + balatrobot mod
         |  JSON-RPC HTTP
-balatrobot serve (uvx)
+balatrobot serve (local fork, installed editable)
         |
 bot.py --> engine.py --> rules/ --> domain/policy/
                                 --> domain/scoring/

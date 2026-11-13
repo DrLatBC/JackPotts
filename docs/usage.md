@@ -5,7 +5,7 @@
 Launch a headless Balatro instance with the mod's RPC server:
 
 ```bash
-uvx balatrobot serve --port 12346
+balatrobot serve --port 12346
 ```
 
 Useful flags when invoking directly (the supervisor sets these automatically):
