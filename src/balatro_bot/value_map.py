@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from balatro_bot.domain.models.card import Card  # noqa: F401 — warm import cycle
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
 from balatro_bot.joker_registry import JOKERS, RARITY_LABEL
