@@ -22,6 +22,8 @@ Live stats dashboard: **[jackpotts.drlat.dev](https://jackpotts.drlat.dev)**
 | [Dashboard](docs/dashboard.md) | JackPotts ingest pipeline, payload shape, batch lifecycle |
 | [Testing](docs/testing.md) | Unit tests, integration harness, writing new tests |
 | [Release notes](docs/release-notes.md) | Changelog |
+| [Glossary](GLOSSARY.md) | The project's terms: milk, chase, finisher, affinity, economy phase, … |
+| [Decisions](docs/adr/) | Architecture decision records: why the bot is built the way it is |
 
 ## Quickstart
 

@@ -1,0 +1,3 @@
+# Price every joker through one simulation-based valuation
+
+Every joker decision (shop buy, sell, pack pick, Hex target) uses one valuation. It scores a synthetic hand drawn from the real deck with and without the joker, and passes everything the run knows (held cards, scaling anchors, observed play rates, likely bosses) into the simulation. We considered per-joker floors and adjustment layers, and rejected them: each new joker needed its own patch, and the patches disagreed with one another. A joker the simulation can't capture gets a new simulation input or an ROI model for its money, not a special-case override.
