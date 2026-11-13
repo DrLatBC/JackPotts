@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = 10.0
 FLUSH_INTERVAL = 120.0  # 2 minutes
+# Bound on games held while the dashboard is unreachable (~100 KB each).
+MAX_BUFFERED_GAMES = 2000
 
 # ---------------------------------------------------------------------------
 # Game buffer — collects post_game payloads, flushes periodically
@@ -64,9 +66,18 @@ def _post(path: str, json_data: dict) -> Optional[dict]:
 
 def _post_gzip(path: str, data: dict) -> Optional[dict]:
     """POST gzip-compressed JSON to the dashboard API."""
+    return _post_gzip_status(path, data)[0]
+
+
+def _post_gzip_status(path: str, data: dict) -> tuple[Optional[dict], bool]:
+    """POST gzip-compressed JSON. Returns (response JSON or None, retryable).
+
+    retryable is True when the failure is transient (network error, timeout,
+    5xx, 408/429), False on success or when the server rejected the payload.
+    """
     url = _url()
     if not url:
-        return None
+        return None, False
     try:
         raw = json.dumps(data).encode("utf-8")
         compressed = gzip.compress(raw)
@@ -86,19 +97,28 @@ def _post_gzip(path: str, data: dict) -> Optional[dict]:
             timeout=30.0,  # bulk payloads may be larger
         )
         resp.raise_for_status()
-        return resp.json()
+        return resp.json(), False
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        retryable = code >= 500 or code in (408, 429)
+        logger.warning("Dashboard bulk API call failed (%d): %s", code, path, exc_info=True)
+        return None, retryable
     except Exception:
         logger.warning("Dashboard bulk API call failed: %s", path, exc_info=True)
-        return None
+        return None, True
 
 
-def _flush_buffer() -> None:
-    """Send all buffered games as a single compressed bulk request."""
+def _flush_buffer() -> bool:
+    """Send all buffered games as compressed bulk requests.
+
+    Games from a transiently failed request go back to the front of the
+    buffer for the next flush. Returns True when nothing is left to retry.
+    """
     global _flush_timer
     with _buffer_lock:
         if not _game_buffer:
             _schedule_flush()
-            return
+            return True
         pending = list(_game_buffer)
         _game_buffer.clear()
 
@@ -107,11 +127,26 @@ def _flush_buffer() -> None:
     for batch_id, game_data in pending:
         by_batch.setdefault(batch_id, []).append(game_data)
 
+    retry: list[tuple[int, dict]] = []
     for batch_id, games in by_batch.items():
         logger.info("Flushing %d buffered games for batch %d", len(games), batch_id)
-        _post_gzip(f"/api/ingest/batch/{batch_id}/games/bulk", {"games": games})
+        result, retryable = _post_gzip_status(f"/api/ingest/batch/{batch_id}/games/bulk", {"games": games})
+        if retryable:
+            retry.extend((batch_id, g) for g in games)
+        elif result is None:
+            logger.error("Dashboard rejected %d games for batch %d; dropping them", len(games), batch_id)
+
+    if retry:
+        with _buffer_lock:
+            _game_buffer[:0] = retry
+            overflow = len(_game_buffer) - MAX_BUFFERED_GAMES
+            if overflow > 0:
+                del _game_buffer[:overflow]
+                logger.error("Dashboard unreachable; dropped %d oldest buffered games", overflow)
+        logger.warning("Kept %d games for the next flush", len(retry))
 
     _schedule_flush()
+    return not retry
 
 
 def _schedule_flush() -> None:
@@ -197,12 +232,25 @@ def post_game(batch_id: int, game_data: dict) -> None:
 
 
 def flush_games() -> None:
-    """Force-flush any buffered games. Call before process exit."""
-    _stop_flush_timer()
-    _flush_buffer()
-    # _flush_buffer always re-arms the periodic timer; cancel it again so
-    # the daemon thread doesn't keep firing after shutdown.
-    _stop_flush_timer()
+    """Force-flush any buffered games. Call before process exit.
+
+    Retries a few times with backoff, since anything still buffered when the
+    process exits is lost.
+    """
+    for attempt in range(3):
+        _stop_flush_timer()
+        done = _flush_buffer()
+        # _flush_buffer always re-arms the periodic timer; cancel it again so
+        # the daemon thread doesn't keep firing after shutdown.
+        _stop_flush_timer()
+        if done:
+            return
+        if attempt < 2:
+            time.sleep(2 ** (attempt + 1))
+    with _buffer_lock:
+        lost = len(_game_buffer)
+    if lost:
+        logger.error("Dashboard unreachable at exit; %d games not uploaded", lost)
 
 
 def post_batch_finish(batch_id: int, status: str = "finished") -> None:
