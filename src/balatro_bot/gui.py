@@ -14,7 +14,6 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import socket
 import subprocess
 import time
 import tkinter as tk
@@ -82,18 +81,30 @@ def read_status() -> dict | None:
     return status
 
 
+def listening_ports(netstat_output: str) -> set[int]:
+    """Local ports in LISTENING state from `netstat -ano -p TCP` output."""
+    ports = set()
+    for line in netstat_output.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == "TCP" and parts[3] == "LISTENING":
+            port = parts[1].rsplit(":", 1)[-1]
+            if port.isdigit():
+                ports.add(int(port))
+    return ports
+
+
 def ports_in_use(count: int = 8) -> bool:
     """True when any instance port is taken, e.g. by a batch started from a terminal.
 
     Starting a batch kills whatever holds those ports, so Start stays off.
+    Reads the listening table rather than connecting: the mod serves one
+    client per port and drops the bot's connection for any newcomer.
     """
-    for port in range(BASE_PORT, BASE_PORT + count):
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                return True
-        except OSError:
-            continue
-    return False
+    out = subprocess.run(
+        ["netstat", "-ano", "-p", "TCP"],
+        capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW,
+    ).stdout
+    return bool(listening_ports(out) & set(range(BASE_PORT, BASE_PORT + count)))
 
 
 def load_settings() -> dict:

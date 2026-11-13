@@ -57,3 +57,28 @@ def test_supervisor_status_snapshot_marks_exploring_slots(status_file, tmp_path,
     assert written["pid"] == os.getpid()
     assert [s["explore_rate"] for s in written["slots"]] == [0.15, 0.0, 0.0]
     assert written["total_expected"] == 30
+
+
+NETSTAT = """
+Active Connections
+
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    127.0.0.1:12346        0.0.0.0:0              LISTENING       4120
+  TCP    127.0.0.1:12346        127.0.0.1:50211        ESTABLISHED     4120
+  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1032
+  TCP    127.0.0.1:50300        127.0.0.1:12347        TIME_WAIT       0
+  TCP    [::]:445               [::]:0                 LISTENING       4
+"""
+
+
+def test_listening_ports_reads_only_listeners():
+    assert gui.listening_ports(NETSTAT) == {12346, 135, 445}
+
+
+def test_ports_in_use_never_connects(monkeypatch):
+    import socket
+    monkeypatch.setattr(socket, "create_connection",
+                        lambda *a, **k: pytest.fail("ports_in_use must not connect to game ports"))
+    monkeypatch.setattr(gui.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"stdout": NETSTAT})())
+    assert gui.ports_in_use() is True
