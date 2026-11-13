@@ -1,9 +1,10 @@
 """Integration test: Flint + Luchador sell → _boss_disabled lifecycle.
 
-Reproduces the batch 075 mismatches where selling Luchador during The Flint
-boss blind should disable the halving effect, but the bot continues to apply
-(or not apply) Flint halving incorrectly due to _boss_disabled being lost
-when state = client.call(method, params) replaces the state dict.
+Selling Luchador during The Flint boss blind disables the halving effect.
+The API never reports blind.disabled, so the bot tracks it with a
+_boss_disabled side-channel flag that must survive each
+state = client.call(method, params) replacement of the state dict. This
+checks that Flint halving is applied before the sell and skipped after it.
 
 Test flow:
   1. Set up game at The Flint boss blind with Green Joker + Luchador
@@ -47,7 +48,7 @@ from scoring_diagnostics import (
 
 
 # ---------------------------------------------------------------------------
-# Blind data dump — the core diagnostic we need
+# Blind data dump
 # ---------------------------------------------------------------------------
 
 def dump_blind_data(state: dict, label: str) -> dict:
@@ -90,7 +91,7 @@ def score_with_boss_disabled(state: dict, play_indices: list[int],
                               boss_disabled: bool) -> dict:
     """Score a hand from state, explicitly controlling whether Flint halving applies.
 
-    This lets us compare what the bot WOULD estimate with vs without the fix.
+    This lets us compare the estimate with vs without Flint halving.
     """
     hand_cards = state.get("hand", {}).get("cards", [])
     jokers = state.get("jokers", {}).get("cards", [])
@@ -117,7 +118,7 @@ def score_with_boss_disabled(state: dict, play_indices: list[int],
     scoring = played if "j_splash" in joker_key_set else _scoring_cards_for(
         hand_name, played, four_fingers=four_fingers, smeared=smeared)
 
-    # Pass blind_name="" when boss disabled (matches _log_played_hand behavior)
+    # Pass blind_name="" when boss disabled (matches bot_logging.compute_played_hand_detail)
     scoring_blind = "" if boss_disabled else blind_name
 
     detail = score_hand_detailed(
@@ -201,7 +202,7 @@ def run_flint_luchador_test(client, seed="FLINTLUCH1"):
         except APIError:
             pass
 
-    # Inject: Green Joker + Luchador (matches batch 075 scenario)
+    # Inject: Green Joker + Luchador
     joker_keys = ["j_green_joker", "j_luchador"]
     inject_jokers(client, joker_keys)
 
@@ -245,7 +246,7 @@ def run_flint_luchador_test(client, seed="FLINTLUCH1"):
     print(f"  Base (halved): {detail_active['base_chips']}/{detail_active['base_mult']}")
     print(f"  Estimate (with Flint halving): {detail_active['total']}")
 
-    # Also compute what estimate would be WITHOUT halving (bug case)
+    # Also compute what estimate would be WITHOUT halving
     result_no_halve = score_with_boss_disabled(state, play_indices, boss_disabled=True)
     print(f"  Estimate (WITHOUT halving): {result_no_halve['detail']['total']}")
 
@@ -416,14 +417,14 @@ def run_flint_luchador_test(client, seed="FLINTLUCH1"):
 
 
 # ---------------------------------------------------------------------------
-# Engine mode — replicate the production bot loop to trigger the bug
+# Engine mode — replicate the production bot loop
 # ---------------------------------------------------------------------------
 
 def run_engine_mode_test(client, seed="FLINTLUCH2"):
     """Run the real RuleEngine against The Flint with Luchador.
 
-    This replicates the production flow where state flows from action responses
-    and _boss_disabled gets lost on the next client.call().
+    This replicates the production flow where state flows from action responses,
+    so _boss_disabled must be carried across each client.call().
     """
     from balatro_bot.engine import RuleEngine
 
@@ -496,7 +497,7 @@ def run_engine_mode_test(client, seed="FLINTLUCH2"):
         if method == "play":
             pre_chips = state.get("round", {}).get("chips", 0)
             snap_hand_levels = state.get("hands", {})
-            # BUG CHECK: Does the bot check _boss_disabled before halving?
+            # Flint halving applies only while the boss is not disabled
             for b in state.get("blinds", {}).values():
                 if isinstance(b, dict) and b.get("status") == "CURRENT" and b.get("name") == "The Flint":
                     if not boss_disabled:
@@ -528,13 +529,14 @@ def run_engine_mode_test(client, seed="FLINTLUCH2"):
                 "step": step,
             })
 
-        # Detect Luchador sell (mirrors bot.py:800-804)
+        # Detect Luchador sell (mirrors bot_logging.detect_joker_changes)
         cur_joker_keys = {j.get("key") for j in state.get("jokers", {}).get("cards", [])}
         if "j_luchador" in prev_joker_keys and "j_luchador" not in cur_joker_keys:
             boss_disabled = True
             print(f"    *** Luchador sold — boss_disabled=True ***")
-            # In the real bot, this sets state["_boss_disabled"] = True
-            # But the NEXT client.call() will replace state and lose it!
+            # The real bot sets state["_boss_disabled"] = True here and re-applies
+            # it after each client.call(); this loop does not, so the flag is lost
+            # on the next call and `boss_disabled` tracks it instead.
             state["_boss_disabled"] = True
 
         # Check if _boss_disabled survived from last iteration

@@ -16,7 +16,7 @@ class HandLevel:
     played_this_round: int = 0
 
     def get(self, key: str, default=None):
-        """Dict-compatible .get() for backward compat with callers chaining .get()."""
+        """Dict-compatible .get() for callers chaining .get()."""
         return getattr(self, key, default)
 
     def __contains__(self, key: str) -> bool:

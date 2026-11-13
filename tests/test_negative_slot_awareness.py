@@ -1,8 +1,8 @@
-"""Tests for edition awareness in buy/sell decisions (issues #11, #12).
+"""Tests for edition awareness in buy/sell decisions.
 
 Covers:
-- Negative edition: slot bypass, force-buy, pack picking (#12)
-- Edition valuation: Polychrome > Holo > Foil bonus in evaluate_joker_value (#11)
+- Negative edition: slot bypass, force-buy, pack picking
+- Edition valuation: Polychrome > Holo > Foil bonus in evaluate_joker_value
 """
 
 from __future__ import annotations
@@ -154,7 +154,7 @@ def test_negative_in_pack_gets_high_floor():
     assert best_score >= 10.0
 
 
-# ── Edition valuation (issue #11) ────────────────────────────────────
+# ── Edition valuation ────────────────────────────────────
 
 
 def _eval(key: str, edition: str | None = None) -> float:

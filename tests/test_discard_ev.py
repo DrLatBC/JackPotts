@@ -1,6 +1,6 @@
 """Tests for MC-based discard EV ranking.
 
-The discard system now uses a single primitive — `_expected_play_value` — which
+The discard system uses a single primitive — `_expected_play_value` — which
 samples from the deck and scores best_hand() with full joker effects. Ranking,
 acceptance, and miss simulation all fall out of this one function.
 """

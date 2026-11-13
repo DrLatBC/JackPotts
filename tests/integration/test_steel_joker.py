@@ -5,9 +5,8 @@ steel_card_count is the number of Steel-enhanced cards in the FULL deck
 (draw pile + hand + played). The game computes this dynamically at scoring
 time by iterating G.playing_cards.
 
-Theory: the bot reads a stale/incorrect xmult from the API (either from
-ability.x_mult or parsed effect text) instead of counting Steel cards itself.
-This test verifies by:
+Checks that the bot's Steel Joker xmult matches the Steel card count rather
+than a stale value from ability.x_mult or parsed effect text, by:
   1. Adding Steel Joker + a known number of Steel cards
   2. Playing a hand and comparing est vs actual
   3. Varying the Steel card count to confirm the formula

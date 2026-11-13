@@ -1,6 +1,6 @@
-"""Integration tests for batch 053 scoring mismatches:
+"""Integration tests for scoring accuracy:
 Flower Pot + WILD, Ride the Bus + Pareidolia, Steel Joker,
-Bull Joker (money-dependent), and The Hook held-card recalc.
+Bull Joker (money-dependent), and Glass cards.
 
 Usage:
     python test_scoring_053.py [--port PORT]

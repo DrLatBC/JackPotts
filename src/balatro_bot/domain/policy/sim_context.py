@@ -1,11 +1,7 @@
 """Valuation SimContext — bundles every input the scoring sim needs.
 
-Phase 1 of the valuation refactor (see issue #32 / #33). Replaces the ad-hoc
-parameter cascade through ``evaluate_joker_value`` → ``_scoring_delta`` →
-``_synthetic_hand`` with one frozen dataclass.
-
-Later phases will populate the currently-empty fields (held_cards, lifetime,
-round_state, economy, boss) — this scaffold is plumbing-only.
+One frozen dataclass threaded through ``evaluate_joker_value`` →
+``_scoring_delta`` → ``_synthetic_hand``.
 """
 
 from __future__ import annotations
@@ -48,7 +44,7 @@ _YORICK_REMAINING_PATTERN = re.compile(r"requires\s+(\d+)\s+more", re.IGNORECASE
 
 @dataclass(frozen=True)
 class LiveRunStats:
-    """Bot-observed per-run averages, threaded into ``LifetimeState`` (issue #41).
+    """Bot-observed per-run averages, threaded into ``LifetimeState``.
 
     Populated by ``bot.py`` from ``GameLoopState`` each tick and attached to
     ``state['_live_stats']``. When absent, ``LifetimeState`` falls back to its
@@ -62,7 +58,7 @@ class LiveRunStats:
 
 @dataclass(frozen=True)
 class LifetimeState:
-    """Live run-wide counters for scaling xmult jokers (Phase 4).
+    """Live run-wide counters for scaling xmult jokers.
 
     Populated from owned joker effect text via ``from_owned``. For unowned
     candidates the defaults (X1.0 anchors, full /23 proc distance) describe a
@@ -70,7 +66,7 @@ class LifetimeState:
 
     Run-rate fields (``avg_discards_per_round``, ``avg_sells_per_ante``) are
     conservative defaults; ``from_owned`` overrides them from ``LiveRunStats``
-    when the bot passes its observed averages (issue #41).
+    when the bot passes its observed averages.
     """
 
     # Live xmult anchors — "Currently X…" parsed from owned jokers.
@@ -90,11 +86,10 @@ class LifetimeState:
     # Yorick-specific: cards remaining until the next proc. 23 = fresh joker.
     yorick_cards_to_proc: int = 23
 
-    # Run rates (defaults — see issue #41 for live-stats plumbing).
+    # Run rates; overridden from ``LiveRunStats`` in ``from_owned``.
     avg_discards_per_round: float = 1.5
     avg_sells_per_ante: float = 1.5
 
-    # Already threaded through the cascade; lives here to consolidate state.
     unique_planets_used: int = 0
 
     @classmethod
@@ -109,7 +104,7 @@ class LifetimeState:
 
         When ``live_stats`` is provided, override the conservative defaults for
         ``avg_discards_per_round`` / ``avg_sells_per_ante`` with the bot's
-        observed per-run averages (issue #41).
+        observed per-run averages.
         """
         kwargs: dict[str, float | int] = {"unique_planets_used": unique_planets_used}
         if live_stats is not None:
@@ -135,7 +130,7 @@ class LifetimeState:
 
 @dataclass(frozen=True)
 class BossBlindState:
-    """Phase 7: boss-blind effects threaded into the shop sim.
+    """Boss-blind effects threaded into the shop sim.
 
     Construct via ``from_name`` (templates for the ~8 impactful bosses) or
     directly for tests. ``name`` is the display name (e.g. "The Plant"),
@@ -216,14 +211,14 @@ class SimContext:
     deck_profile: "DeckProfile | None" = None
     unique_planets_used: int = 0
 
-    # Populated incrementally by later phases:
+    # ``build`` fills ``lifetime`` and ``boss``; the others default empty.
     held_cards: tuple[dict, ...] = ()
     lifetime: "LifetimeState | None" = None
     round_state: object | None = None
     economy: object | None = None
     boss: BossBlindState | None = None
 
-    # Phase 8: Monte Carlo sample count. When > 0, the scoring sim runs N
+    # Monte Carlo sample count. When > 0, the scoring sim runs N
     # trials with RNG-driven branch selections (Misprint roll, Lucky card
     # trigger, Bloodstone trigger) and returns the mean. Default 0 keeps the
     # fast expected-value path for non-stochastic candidates.
@@ -240,7 +235,7 @@ class SimContext:
     candidate_key: str = field(default="", repr=False)
     owned_keys: frozenset[str] = field(default_factory=frozenset, repr=False)
 
-    # Phase 3: density (fractions summing to ~1.0 per dimension) from deck_profile.
+    # Density (fractions summing to ~1.0 per dimension) from deck_profile.
     # Empty dict when deck_profile is None; callers must treat that as "no signal".
     rank_density: dict[str, float] = field(default_factory=dict, repr=False)
     suit_density: dict[str, float] = field(default_factory=dict, repr=False)

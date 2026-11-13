@@ -1,7 +1,6 @@
 """Joker-aware chase ranking tests.
 
-Demonstrates the payoff of the MC unification: chase EV now reflects joker
-effects that the old static ranker ignored (Bloodstone probabilistic hearts,
+Chase EV reflects joker effects (Bloodstone probabilistic hearts,
 Triboulet K/Q xmult, Steel Joker enhancements, The Idol's round target card).
 """
 

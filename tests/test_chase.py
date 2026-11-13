@@ -390,7 +390,7 @@ class TestFlushDrawQualityDebuff:
 
 
 # ---------------------------------------------------------------------------
-# two_pair_draw_quality — probability no longer overcounts
+# two_pair_draw_quality — inclusion-exclusion probability
 # ---------------------------------------------------------------------------
 
 class TestTwoPairProbability:

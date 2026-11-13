@@ -1,6 +1,4 @@
 """Hand classification and scoring-card extraction.
-
-Moved from hand_evaluator.py during Phase 2 of the logic separation refactor.
 """
 
 from __future__ import annotations
@@ -234,7 +232,6 @@ def _scoring_cards_for(
                 for c in flush_cards:
                     if not any(c is s for s in straight_cards):
                         straight_cards.append(c)
-                # Add Stone cards
                 for c in cards:
                     if is_stone(c) and not any(c is s for s in straight_cards):
                         straight_cards.append(c)

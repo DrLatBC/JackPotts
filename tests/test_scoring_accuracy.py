@@ -1,4 +1,4 @@
-"""Tests for scoring accuracy fixes: The Arm, Flower Pot + WILD, Ride the Bus +
+"""Scoring accuracy: The Arm, Flower Pot + WILD, Ride the Bus +
 Pareidolia, Steel Joker, Bull Joker, and Glass card scoring."""
 
 import math
@@ -109,8 +109,7 @@ class TestFlowerPotWild:
 
         # Full hand with all 4 suits in scoring
         _, mult, _ = score_hand("Flush", cards, jokers=[self._flower_pot_joker()])
-        # Not a flush (mixed suits), but if it were scored as High Card with all 5...
-        # Let's use a hand type where all cards score
+        # Mixed suits aren't a Flush; score as Straight so all 5 cards score
         _, mult, total = score_hand("Straight", cards, jokers=[self._flower_pot_joker()])
         # All 4 suits present among scoring cards — Flower Pot x3
         assert mult > 1.0  # Flower Pot should fire
@@ -133,7 +132,7 @@ class TestFlowerPotWild:
         # Natural suits: H, D, C, C + WILD (all suits) → 4 suits
         _, _, total_with = score_hand("Straight", cards, jokers=[self._flower_pot_joker()])
         _, _, total_without = score_hand("Straight", cards)
-        # Currently: WILD makes card_suits return all 4, so Flower Pot triggers
+        # WILD makes card_suits return all 4, so Flower Pot triggers
         # Ratio should be 3x if Flower Pot fires
         if total_without > 0:
             ratio = total_with / total_without
@@ -200,7 +199,7 @@ class TestSteelJokerScoring:
         """Build Steel Joker with effect text showing the game's current xmult.
 
         The real API sends "Currently X1.6 Mult" etc. in the effect text.
-        The bot now parses this directly instead of counting Steel cards.
+        The bot parses this directly rather than counting Steel cards.
         """
         effect = f"X{xmult} Mult" if xmult > 1.0 else ""
         j = _joker_with_ability("j_steel_joker", {"extra": 0.2})
@@ -391,7 +390,7 @@ class TestFlowerPotDebuffed:
 
 
 # ---------------------------------------------------------------------------
-# Vampire + Flower Pot: enhancement stripping propagation (issue #16)
+# Vampire + Flower Pot: enhancement stripping propagation
 # ---------------------------------------------------------------------------
 
 class TestVampireFlowerPot:
@@ -399,7 +398,7 @@ class TestVampireFlowerPot:
     game's 'before' context (card.lua:3805). Flower Pot evaluates in the
     'joker_main' context (card.lua:4137). Since 'before' completes entirely
     before 'joker_main' starts, Vampire ALWAYS strips before Flower Pot
-    evaluates — regardless of joker slot order. Regression test for issue #16."""
+    evaluates — regardless of joker slot order."""
 
     def _vampire_joker(self, xmult: float = 1.0):
         return _joker_with_ability("j_vampire", {"extra": 0.1, "Xmult": xmult})

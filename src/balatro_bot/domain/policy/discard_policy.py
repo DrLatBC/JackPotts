@@ -1,12 +1,11 @@
-"""Discard-phase policy functions — pure decision logic extracted from rules.
+"""Discard-phase policy functions — pure decision logic behind the rules.
 
 Each function takes a RoundContext, returns an Action or None.
-DiscardToImprove in rules/playing.py becomes a thin wrapper.
+DiscardToImprove in rules/playing.py is a thin wrapper.
 
 Ranking is done via a single Monte Carlo pass per unique keep set. For each
 candidate keep set, we sample draws from the deck, score the resulting hand
-with full joker effects via best_hand(), and average. This subsumes the
-previous three-pass (chase_score + _chase_ev + _sample_miss_ev) design.
+with full joker effects via best_hand(), and average.
 """
 
 from __future__ import annotations
@@ -187,9 +186,8 @@ def _expected_play_value(keep_indices: list[int], ctx: RoundContext) -> float:
     cards, and scores best_hand() with full joker effects. Averages over
     N_SAMPLES samples to produce an expected realized score.
 
-    Single unified primitive — replaces the old (chase_score + _chase_ev +
-    _sample_miss_ev) trio. Because the sample uniformly explores both hit and
-    miss outcomes, the hit/miss split is captured implicitly by the mean.
+    Because the sample uniformly explores both hit and miss outcomes, the
+    hit/miss split is captured implicitly by the mean.
     """
     keep_cards = [ctx.hand_cards[i] for i in keep_indices]
     discard_count = len(ctx.hand_cards) - len(keep_cards)
@@ -226,7 +224,7 @@ def _expected_play_value(keep_indices: list[int], ctx: RoundContext) -> float:
 
 # Minimum EV multiplier a chase must beat play_ev by.
 # Scales with discard scarcity: burning your last discard needs a bigger payoff.
-_BASE_CHASE_MARGIN = 1.25       # chase must be at least 1.4× play_ev
+_BASE_CHASE_MARGIN = 1.25       # chase must be at least 1.25× play_ev
 _SCARCITY_BONUS_PER = 0.15     # +0.15× for each discard already used
 
 _HAND_ABBREV = {

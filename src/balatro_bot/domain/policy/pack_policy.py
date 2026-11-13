@@ -1,7 +1,7 @@
 """Pack-phase policy functions — pure decision logic extracted from rules.
 
 Contains scoring and pick logic for pack decisions (Tarot, Planet, Buffoon, Spectral).
-Rules in rules/packs.py become thin wrappers around these.
+Rules in rules/packs.py are thin wrappers around these.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ _AURA_MIN_UNEDITIONED = 3          # threshold for Aura bonus
 
 
 # ---------------------------------------------------------------------------
-# Planet pack scoring (extracted from PickFromPlanetPack)
+# Planet pack scoring (used by PickFromPlanetPack)
 # ---------------------------------------------------------------------------
 
 # Balance of playability (how often you get this hand) and scaling
@@ -131,7 +131,7 @@ def choose_from_planet_pack(
 
 
 # ---------------------------------------------------------------------------
-# Buffoon pack scoring (extracted from PickFromBuffoonPack)
+# Buffoon pack scoring (used by PickFromBuffoonPack)
 # ---------------------------------------------------------------------------
 
 
@@ -201,7 +201,7 @@ def choose_from_buffoon_pack(
 
 
 # ---------------------------------------------------------------------------
-# Spectral pack scoring (extracted from PickFromSpectralPack)
+# Spectral pack scoring (used by PickFromSpectralPack)
 # ---------------------------------------------------------------------------
 
 # Base scores for each Spectral card; conditions applied at runtime
@@ -346,7 +346,7 @@ def choose_from_spectral_pack(
 
 
 # ---------------------------------------------------------------------------
-# Tarot pack scoring (extracted from PickFromTarotPack)
+# Tarot pack scoring (used by PickFromTarotPack)
 # ---------------------------------------------------------------------------
 
 
@@ -370,9 +370,9 @@ def choose_from_tarot_pack(
 
     for i, card in enumerate(cards):
         key = card.get("key", "")
-        # Skip non-tarots outright — mixed packs used to let a spectral at
-        # score 0 win here and the bot would then fire pack({card: i})
-        # without targets, wedging the mod's pack-selection guard.
+        # Skip non-tarots outright: in a mixed pack a spectral at score 0
+        # could otherwise win here, and firing pack({card: i}) without
+        # targets wedges the mod's pack-selection guard.
         if key not in known_tarots:
             continue
         score = score_consumable(key, state, strat)

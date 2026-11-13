@@ -134,9 +134,9 @@ def choose_mouth_commit(
         scored.append((rt, hand_type, f"formable(score={cand.total}, p_rep={p_rep:.2f})"))
 
     # --- Pass 2: chase candidates ---
-    # Skip chases already covered by a formable of the same type (see PR3
-    # design note: chasing a higher-scoring version of a formable type is a
-    # rabbit hole and skipped for now). When no formable exists at all, drop
+    # Skip chases already covered by a formable of the same type: chasing a
+    # higher-scoring version of a formable type is not modelled. When no
+    # formable exists at all, drop
     # the hit-prob pre-filter so we force some chase rather than returning None.
     if discards_left > 0 and deck_cards:
         has_formable = bool(best_per_type)

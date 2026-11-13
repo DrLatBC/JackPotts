@@ -1,10 +1,10 @@
-"""Integration tests for high-lift mismatch jokers.
+"""Integration tests for scaling and conditional jokers' scoring accuracy.
 
-Targets: Green Joker (100%), Obelisk (100%), Mystic Summit (42%),
-Flower Pot (44%), Swashbuckler (34%), Constellation (51%), Ramen (57%).
+Targets: Green Joker, Obelisk, Mystic Summit, Flower Pot, Swashbuckler,
+Constellation, Ramen.
 
-Each test dumps ability dict + effect text + parsed values so we can
-pinpoint exactly where the model diverges from the game.
+Each test dumps ability dict + effect text + parsed values to show
+where the model diverges from the game on a mismatch.
 
 Usage:
     python test_mismatch_lift.py [--port PORT]
@@ -123,7 +123,7 @@ def run_simple_test(client, label, seed, joker_keys, hand, play_count=None):
 
 
 # =====================================================================
-# GREEN JOKER — suspected pre-increment issue (+1 mult per hand played)
+# GREEN JOKER — pre-increment (+1 mult per hand played)
 # =====================================================================
 
 def test_green_joker_fresh(client):
@@ -178,7 +178,7 @@ def test_green_joker_second_hand(client):
 
 
 # =====================================================================
-# OBELISK — suspected pre-increment + conditional reset
+# OBELISK — pre-increment + conditional reset
 # =====================================================================
 
 def test_obelisk_fresh(client):
@@ -313,7 +313,7 @@ def test_mystic_summit_no_discards(client):
 # =====================================================================
 
 def test_flower_pot_all_suits(client):
-    """Flower Pot with all 4 suits in a Flush Five... no. Use a hand with 4 suits scoring."""
+    """Flower Pot with all 4 suits in the scoring cards."""
     # Two Pair with 4 suits in the scoring cards
     return run_simple_test(client,
         "Flower Pot: 4 suits in scoring (Two Pair, should fire)",

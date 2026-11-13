@@ -1,4 +1,4 @@
-"""Phase 7 — boss-blind-aware valuation adjustments."""
+"""Boss-blind-aware valuation adjustments."""
 
 from __future__ import annotations
 

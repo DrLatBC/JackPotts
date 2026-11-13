@@ -64,7 +64,7 @@ class RoundPlan:
 # ---------------------------------------------------------------------------
 
 # How much projected total must exceed chips_remaining to allow milking.
-# Lower than the old milking margins because Acrobat's x3 gives real payoff.
+# Kept low because Acrobat's x3 gives real payoff.
 _PLAN_MARGIN_COMFORTABLE = 1.15
 _PLAN_MARGIN_TIGHT = 1.0  # at tight, allow if we project to just clear
 _PLAN_MARGIN_WALL = 1.8
@@ -834,7 +834,6 @@ def _sixth_sense_solo(ctx: RoundContext) -> Action | None:
     if not _is_comfortable_without_hand(ctx, margin=0.95):
         return None
 
-    # Find a 6 in hand
     six_idx = None
     for i, c in enumerate(ctx.hand_cards):
         r = card_rank(c)

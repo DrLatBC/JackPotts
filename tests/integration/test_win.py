@@ -4,7 +4,7 @@ Usage:
     python test_win.py [--port PORT]
 
 Requires a running balatrobot server (e.g. `uvx balatrobot serve --port 12346`).
-Starts a game, injects overpowered jokers + money, sets ante to 7,
+Starts a game, injects overpowered jokers + money, sets ante to 8,
 then lets the bot play through the ante 8 boss to verify win detection.
 """
 

@@ -1,18 +1,17 @@
 """Integration tests: The Window boss debuff + joker interactions, and Pareidolia face card effects.
 
-Bug A — The Window + Ride the Bus:
-    When The Window debuffs a scoring card (e.g. Qd), the bot's Ride the Bus
-    still sees Q as a face card and resets to 0. But in the game, debuffed
-    cards don't count as face cards for Ride the Bus's check — so the +mult
-    should still fire.
+Case A — The Window + Ride the Bus:
+    When The Window debuffs a scoring card (e.g. Qd), the game does not count
+    it as a face card for Ride the Bus's check — so the +mult still fires
+    instead of resetting to 0. The estimate must agree.
 
-Bug B — Pareidolia + Smiley Face + Photograph + Baron:
+Case B — Pareidolia + Smiley Face + Photograph + Baron:
     Pareidolia makes ALL cards count as face cards. Smiley Face gives +5 per
     face card scored, Photograph gives x2 for the first face card scored.
     Baron gives x1.5 per held King (rank-specific, not face-generic).
 
-Requires the `set({debuff: true})` API addition to balatrobot's set.lua
-endpoint, which re-applies Blind:debuff_card() to all hand cards after
+Requires balatrobot's set.lua endpoint to support `set({debuff: true})`,
+which re-applies Blind:debuff_card() to all hand cards after
 injection via add().
 
 Usage:
@@ -276,7 +275,7 @@ def run_window_tests(client):
     # Ride the Bus should fire because debuffed face cards shouldn't
     # count as face cards for the reset check.
     # Expected: 5 chips × (1 + 5 + 1) mult = 35  (base HC + RtB stored 5 + extra 1)
-    # Bug pred: 5 chips × 1 mult = 5  (RtB resets because Q is "face")
+    # Wrong if Q counted as face: 5 chips × 1 mult = 5  (RtB resets)
     # -----------------------------------------------------------------
     print(f"\n--- Window + RtB + debuffed Qd (should fire) ---")
     state = setup_round(client, "WP1", boss_blind_key="bl_window", ante=2,
@@ -522,7 +521,7 @@ def run_pareidolia_tests(client):
         if r: results.append(r)
 
     # -----------------------------------------------------------------
-    # Test 8: Full batch 073 repro — Pareidolia + Smiley + Photo + Baron
+    # Test 8: Full combo — Pareidolia + Smiley + Photo + Baron
     # Play 5 number cards as Straight, hold 3.
     # -----------------------------------------------------------------
     print(f"\n--- Pareidolia + Smiley + Photo + Baron (batch073 repro) ---")

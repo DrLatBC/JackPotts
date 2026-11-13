@@ -1,8 +1,7 @@
 """Integration test: bot survives the win screen without crashing.
 
-Reproduces game_102 crash (2026-04-11):
-  Bot beats ante 8 boss → cash_out triggers the win screen →
-  mod becomes unresponsive → double timeout → crash.
+Scenario: the bot beats the ante 8 boss → cash_out triggers the win screen →
+the mod can become unresponsive → double timeout.
 
 Cheats to ante 8 boss select, sells jokers, burns hands down to 1,
 then injects polychrome god-mode jokers so the bot one-shots the boss.

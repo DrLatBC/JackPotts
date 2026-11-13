@@ -25,7 +25,7 @@ from balatro_bot.bot import run_bot
 
 
 STUCK_SEED = "U6IIG428"
-# Black Hole appeared around action #78 in the original logs, at ante 3-ish.
+# With this seed Black Hole appears around action 78, at ante 3-ish.
 # The bot should get past that point within a few minutes.
 TIMEOUT_SECONDS = 180  # 3 minutes — plenty of time if not stuck
 
@@ -52,7 +52,7 @@ def main():
         print(f"No server on port {args.port}: {e}")
         sys.exit(1)
 
-    # Start game with the known stuck seed
+    # Start game with the Black Hole seed
     print(f"Starting game with seed {STUCK_SEED}...")
     try:
         client.call("menu")

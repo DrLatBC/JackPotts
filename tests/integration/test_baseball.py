@@ -1,4 +1,4 @@
-"""Isolate Baseball Card scoring: test with different joker combos to find root cause.
+"""Isolate Baseball Card scoring across different joker combos.
 
 Usage:
     python test_baseball.py [--port PORT]

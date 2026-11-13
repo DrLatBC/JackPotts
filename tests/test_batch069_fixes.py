@@ -1,10 +1,10 @@
-"""Tests for batch 069 scoring fixes.
+"""Scoring edge cases:
 
-Fix 1: Four Fingers straight detection — sliding window in _is_straight()
-Fix 2: Four Fingers Flush House/Flush Five scoring cards
-Fix 3: Flower Pot debuffed WILD cards
-Fix 4: The Ox zeroes money before Bull calculates
-Fix 5: Luchador sell clears boss restrictions (context-level)
+- Four Fingers straight detection — sliding window in _is_straight()
+- Four Fingers Flush House/Flush Five scoring cards
+- Flower Pot ignores debuffed WILD cards
+- The Ox zeroes money before Bull calculates
+- Luchador sell clears boss restrictions (context-level)
 """
 
 import math
@@ -28,14 +28,14 @@ def _joker_with_ability(key: str, ability: dict, **extra) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Fix 1: Four Fingers straight — sliding window
+# Four Fingers straight — sliding window
 # ---------------------------------------------------------------------------
 
 class TestFourFingersStraight:
     """_is_straight with four_fingers should find any 4-card run in 5 cards."""
 
     def test_4567A_is_straight_with_four_fingers(self):
-        """The original bug: [4,5,6,7,A] — Ace breaks full-span check."""
+        """[4,5,6,7,A] — the 4-card run counts even though the Ace breaks the full span."""
         cards = [card("4", "H"), card("5", "D"), card("6", "C"),
                  card("7", "S"), card("A", "H")]
         assert _is_straight(cards, four_fingers=True)
@@ -67,13 +67,13 @@ class TestFourFingersStraight:
         assert _is_straight(cards, four_fingers=True)
 
     def test_normal_5_card_straight_still_works(self):
-        """Regression: standard 5-card straight must still pass."""
+        """Standard 5-card straight passes."""
         cards = [card("5", "H"), card("6", "D"), card("7", "C"),
                  card("8", "S"), card("9", "H")]
         assert _is_straight(cards, four_fingers=False)
 
     def test_ace_low_5_card_still_works(self):
-        """Regression: A-2-3-4-5 must still be a straight."""
+        """A-2-3-4-5 is a straight."""
         cards = [card("A", "H"), card("2", "D"), card("3", "C"),
                  card("4", "S"), card("5", "H")]
         assert _is_straight(cards, four_fingers=False)
@@ -92,7 +92,7 @@ class TestFourFingersStraight:
 
 
 # ---------------------------------------------------------------------------
-# Fix 1b: Four Fingers Straight scoring cards (only 4 cards score)
+# Four Fingers Straight scoring cards (only 4 cards score)
 # ---------------------------------------------------------------------------
 
 class TestFourFingersStraightScoringCards:
@@ -123,7 +123,7 @@ class TestFourFingersStraightScoringCards:
 
 
 # ---------------------------------------------------------------------------
-# Fix 2: Four Fingers Flush House / Flush Five scoring cards
+# Four Fingers Flush House / Flush Five scoring cards
 # ---------------------------------------------------------------------------
 
 class TestFourFingersFlushHouseScoringCards:
@@ -178,12 +178,11 @@ class TestFourFingersFlushHouseScoringCards:
         cards = [card("2", "H"), card("5", "H"), card("8", "H"),
                  card("J", "H"), card("A", "S")]
         scoring = _scoring_cards_for("Flush", cards, four_fingers=True)
-        # Only 4 hearts should score
         assert len(scoring) == 4
 
 
 # ---------------------------------------------------------------------------
-# Fix 3: Flower Pot debuffed WILD cards
+# Flower Pot debuffed WILD cards
 # ---------------------------------------------------------------------------
 
 class TestFlowerPotDebuffedWild:
@@ -242,7 +241,7 @@ class TestFlowerPotDebuffedWild:
 
 
 # ---------------------------------------------------------------------------
-# Fix 4: The Ox zeroes money before Bull
+# The Ox zeroes money before Bull
 # ---------------------------------------------------------------------------
 
 class TestOxBull:
@@ -314,13 +313,12 @@ class TestOxBull:
             jokers=[self._bull_joker()], money=100, blind_name="The Ox",
             ox_most_played="Pair",
         )
-        # Without explicit lock, fallback would pick HC (played=8) as most-played
-        # and Pair would NOT zero money — that's the bug we're preventing
+        # Without explicit lock, fallback picks HC (played=8) as most-played
+        # and Pair would NOT zero money — which is why the lock is needed
         _, _, total_fallback = score_hand(
             "Pair", cards, hand_levels=levels,
             jokers=[self._bull_joker()], money=100, blind_name="The Ox",
         )
-        # Locked version should zero money (lower score)
         _, _, total_no_ox = score_hand(
             "Pair", cards, hand_levels=levels,
             jokers=[self._bull_joker()], money=100, blind_name="",
@@ -331,7 +329,7 @@ class TestOxBull:
 
 
 # ---------------------------------------------------------------------------
-# Fix 5: Luchador sell clears boss restrictions (context-level)
+# Luchador sell clears boss restrictions (context-level)
 # ---------------------------------------------------------------------------
 
 class TestLuchadorBossDisable:

@@ -1,7 +1,7 @@
-"""Consumable-phase policy functions — pure decision logic extracted from rules.
+"""Consumable-phase policy functions — pure decision logic behind the rules.
 
 Contains scoring and evaluation logic for consumable use decisions.
-Rules in rules/consumables.py become thin wrappers around these.
+Rules in rules/consumables.py are thin wrappers around these.
 """
 
 from __future__ import annotations
@@ -346,7 +346,6 @@ def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict, *, blind_name
     if scaling_count >= 2:
         return 0.0
 
-    # Evaluate each joker's value
     strat = compute_strategy(jokers, hand_levels)
     values = []
     for j in jokers:
@@ -380,7 +379,7 @@ def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict, *, blind_name
 
 
 # ---------------------------------------------------------------------------
-# Use-now scoring (extracted from UseConsumables._score_use_now)
+# Use-now scoring (used by UseConsumables)
 # ---------------------------------------------------------------------------
 
 
@@ -484,7 +483,6 @@ def score_use_now(
     if not hand_cards:
         return (0.0, None)
 
-    # Check Tarots
     if key in TARGETING_TAROTS:
         max_count, effect_type, extra = TARGETING_TAROTS[key]
         return _score_targeting_use(
@@ -495,7 +493,6 @@ def score_use_now(
             joker_limit, ante,
         )
 
-    # Check Spectral targeting
     if key in SPECTRAL_TARGETING:
         max_count, effect_type, extra = SPECTRAL_TARGETING[key]
         targets, score = find_tarot_targets(
@@ -609,7 +606,7 @@ def _score_targeting_use(
 
 
 # ---------------------------------------------------------------------------
-# Hold-value scoring (extracted from UseConsumables._score_hold)
+# Hold-value scoring (used by UseConsumables)
 # ---------------------------------------------------------------------------
 
 
@@ -663,7 +660,7 @@ def score_hold(
 
 
 # ---------------------------------------------------------------------------
-# Evaluation helpers (extracted from UseConsumables methods)
+# Evaluation helpers
 # ---------------------------------------------------------------------------
 
 

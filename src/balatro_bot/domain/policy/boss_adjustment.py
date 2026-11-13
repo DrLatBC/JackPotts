@@ -1,7 +1,7 @@
-"""Phase 7: boss-blind-aware multiplier on ``evaluate_joker_value``.
+"""Boss-blind-aware multiplier on ``evaluate_joker_value``.
 
-The scoring sim doesn't simulate boss debuffs. Rather than rewriting
-``_synthetic_hand`` to thread every boss effect, this module applies a
+The scoring sim doesn't simulate boss debuffs, so instead of threading every
+boss effect through ``_synthetic_hand``, this module applies a
 post-sim multiplier based on which boss is active (if mid-round) or a
 weighted average over common bosses (shop phase).
 

@@ -1,12 +1,11 @@
-"""Integration test: verifies the cash_out GAME_OVER fix.
+"""Integration test: verifies cash_out.lua GAME_OVER handling.
 
 Same multi-game scenario as test_win_multigame_bug.py, but patches
 cash_out.lua BEFORE starting the server so that:
   1. BB_GAMESTATE.on_game_over = send_response is set before cash_out
   2. The inner condition event also checks for GAME_OVER (not just SHOP)
 
-This mirrors what play.lua already does — the fix is adding the same
-GAME_OVER handling to cash_out.lua.
+This mirrors the GAME_OVER handling in play.lua.
 
 MUST run headed — the win-screen hang only triggers with the real UI.
 

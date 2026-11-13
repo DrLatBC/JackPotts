@@ -67,7 +67,7 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     ("j_popcorn",     "parsed_mult",  {"fallback": 12}),
     ("j_ice_cream",   "parsed_chips", {"fallback": 60}),
     ("j_cavendish",   "parsed_xmult", {"fallback": 3.0}),
-    # j_blue_joker moved to complex.py — computed from deck_count dynamically
+    # j_blue_joker — in complex.py (computed from deck_count dynamically)
 
     # Hand-type +mult
     ("j_jolly",  "hand_mult",  {"hands": ["Pair"],            "ability_key": "t_mult", "fallback": 8}),
@@ -98,13 +98,13 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
 
     # Simple scaling (parsed value)
     ("j_ceremonial",    "parsed_mult",  {"fallback": 10}),
-    # j_ride_the_bus — moved to complex.py (needs face card check + pre-scoring increment)
+    # j_ride_the_bus — in complex.py (needs face card check + pre-scoring increment)
     ("j_red_card",      "parsed_mult",  {"fallback": 6}),
     ("j_fortune_teller","parsed_mult",  {"fallback": 3}),
     ("j_flash",         "parsed_mult",  {"fallback": 6}),
-    # j_trousers — moved to complex.py (needs pre-scoring increment on Two Pair)
-    # j_runner — moved to complex.py (scores unconditionally + pre-scoring increment on Straight)
-    # j_square — moved to complex.py (needs pre-scoring increment on 4-card plays)
+    # j_trousers — in complex.py (needs pre-scoring increment on Two Pair)
+    # j_runner — in complex.py (scores unconditionally + pre-scoring increment on Straight)
+    # j_square — in complex.py (needs pre-scoring increment on 4-card plays)
     ("j_erosion",       "parsed_mult",  {"fallback": 8}),
     # j_hiker — noop: Hiker permanently stamps +5 chips onto cards AFTER scoring.
     # The accumulated bonus is already in each card's perma_bonus field.
@@ -112,19 +112,19 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     ("j_castle",        "parsed_chips", {"fallback": 15}),
     ("j_constellation", "parsed_xmult", {"fallback": 1.3}),
     ("j_madness",       "parsed_xmult", {"fallback": 2.0}),
-    # j_vampire — moved to complex.py (before-phase enhancement stripping + pre-increment)
+    # j_vampire — in complex.py (before-phase enhancement stripping + pre-increment)
     ("j_hologram",      "parsed_xmult", {"fallback": 1.5}),
-    # j_obelisk — moved to complex.py (needs most-played hand check + pre-scoring increment)
-    # j_ramen — moved to complex.py (Hook boss discard adjusts xmult before scoring)
-    # j_lucky_cat — moved to complex.py (EV pre-increment for Lucky triggers)
+    # j_obelisk — in complex.py (needs most-played hand check + pre-scoring increment)
+    # j_ramen — in complex.py (Hook boss discard adjusts xmult before scoring)
+    # j_lucky_cat — in complex.py (EV pre-increment for Lucky triggers)
     ("j_campfire",      "parsed_xmult", {"fallback": 1.5}),
     ("j_hit_the_road",  "parsed_xmult", {"fallback": 1.5}),
     ("j_glass",         "parsed_xmult", {"fallback": 1.5}),
     ("j_throwback",     "parsed_xmult", {"fallback": 1.5}),
     ("j_caino",         "parsed_xmult", {"fallback": 2.0}),
-    # j_yorick — moved to complex.py (Hook boss discard advances discard counter)
+    # j_yorick — in complex.py (Hook boss discard advances discard counter)
 
-    # j_steel_joker: moved to complex.py (dynamic Steel card counting)
+    # j_steel_joker — in complex.py (dynamic Steel card counting)
 ]
 
 
@@ -133,7 +133,6 @@ def _build_simple_effects() -> dict[str, object]:
     effects = {}
     for key, dispatch_name, params in SIMPLE_EFFECTS_TABLE:
         dispatcher = _DISPATCHERS[dispatch_name]
-        # Create a closure that binds the dispatcher and params
         def make_effect(d=dispatcher, p=params):
             def effect(ctx: ScoreContext, j: dict) -> None:
                 d(ctx, j, **p)

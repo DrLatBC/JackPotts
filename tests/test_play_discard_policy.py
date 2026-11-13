@@ -1,4 +1,4 @@
-"""Tests for play_policy and discard_policy — extracted decision logic."""
+"""Tests for play_policy and discard_policy decision logic."""
 
 from __future__ import annotations
 
@@ -178,8 +178,8 @@ class TestChooseDiscard:
 
     def test_decay_joker_sim_adjustment_green(self):
         """Green Joker's accumulated mult should be decremented by 1 in the
-        post-discard sim (floor 0). Proves the hard-block replacement: the
-        sim reads post-discard state, not the stale pre-discard value.
+        post-discard sim (floor 0): the sim reads post-discard state, not the
+        stale pre-discard value.
         """
         from balatro_bot.domain.policy.discard_policy import _adjust_jokers_for_discard
         original = {
@@ -218,8 +218,8 @@ class TestChooseDiscard:
     def test_decay_jokers_do_not_hard_block(self):
         """Owning Green Joker or Ramen should NOT auto-block discard decisions.
 
-        The old hard-block has been replaced with per-joker sim adjustment.
-        Whether to chase is now purely an EV comparison.
+        Decay jokers are handled by per-joker sim adjustment, so whether to
+        chase is purely an EV comparison.
         """
         random.seed(42)
         hand = [card("2", "H"), card("3", "D"), card("5", "C"), card("7", "S"), card("9", "H")]

@@ -158,16 +158,10 @@ def advance_to_ox(client):
     # Fast-forward to ante 5 SB
     print("  Advancing to ante 5...")
     state = advance_to_boss_select(client, target_ante=5)
-    # We're at ante 5 boss select — beat the boss to get to ante 5 shops/ante 6
-    # But first we need to play Pairs during ante 5. We already beat SB+BB via
-    # advance_to_boss_select. Need to go back — let's just set ante to 5 and
-    # play from SB.
-
-    # Actually: advance_to_boss_select already beat SB+BB for ante 5.
-    # The most_played updates after each blind. So we need to play Pairs
-    # BEFORE advance does its thing. Let's take a different approach:
-    # set ante to 5, play 3 pairs on SB, cheat win, play 3 pairs on BB, cheat win,
-    # then beat boss fast. That locks Pair as most-played entering ante 6.
+    # advance_to_boss_select beats SB+BB without playing any Pairs, and
+    # most_played updates after each blind. So restart at ante 5 instead:
+    # play 3 pairs on SB, cheat win, play 3 pairs on BB, cheat win, then beat
+    # the boss fast. That locks Pair as most-played entering ante 6.
 
     # Reset: go back to menu and start fresh with ante set to 5
     try:
@@ -233,7 +227,7 @@ def advance_to_ox(client):
     print("  Beating ante 5 boss fast...")
     beat_blind_fast(client, state)
 
-    # Now advance through ante 6 SB+BB fast to reach boss select
+    # Advance through ante 6 SB+BB fast to reach boss select
     print("  Fast-forwarding ante 6 to boss select...")
     state = advance_through_post_blind(client)
     # Ante 6 SB

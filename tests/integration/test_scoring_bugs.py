@@ -1,4 +1,4 @@
-"""Test scoring mismatches: Smiley/Scary Face counting, Baseball Card rarity,
+"""Test scoring accuracy: Smiley/Scary Face counting, Baseball Card rarity,
 Gros Michel parsing, Square/Runner pre-increment, and Splash+Pareidolia.
 
 Usage:

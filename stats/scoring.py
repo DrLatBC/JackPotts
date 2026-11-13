@@ -122,7 +122,7 @@ def parse_scoring_log(path: Path) -> dict:
         for s in hand_suits:
             suit_in_all[s] += 1
 
-        # Enhancement, seal, edition from new log fields (set-per-hand)
+        # Enhancement, seal, edition from log fields (set-per-hand)
         enh_m = _RE_SCORE_ENHS.search(line)
         hand_enhs: list[str] = _extract_csv(enh_m.group(1)) if enh_m else []
         seal_m = _RE_SCORE_SEALS.search(line)

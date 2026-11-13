@@ -1,7 +1,7 @@
 """Integration tests for smaller-issue jokers: Card Sharp, Fortune Teller, Ramen, Joker Stencil.
 
-These jokers consistently over-estimate in batch 048. Each test isolates the joker
-against a live Balatro instance to confirm root cause.
+Each test isolates one joker against a live Balatro instance and compares the
+bot's estimate with the actual score.
 
 Usage:
     python test_smaller_issues.py [--port PORT]
@@ -423,7 +423,7 @@ def main():
     results = []
 
     # ===================================================================
-    # CARD SHARP — off-by-one in played_this_round
+    # CARD SHARP — played_this_round counting
     # ===================================================================
     # Single play test: first Pair should NOT trigger x3
     results.append(run_test(client, "Card Sharp: first Pair (should NOT fire x3)", "CS1",
@@ -435,7 +435,7 @@ def main():
     results.extend(cs_results)
 
     # ===================================================================
-    # FORTUNE TELLER — parser issue with +mult value
+    # FORTUNE TELLER — +mult value parsing
     # ===================================================================
     # Base case: 0 tarots used, should give +0 mult
     results.append(run_test(client, "Fortune Teller: base (0 tarots)", "FT1",
@@ -448,7 +448,7 @@ def main():
         hand=[{"key": "S_K"}, {"key": "H_K"}, {"key": "D_3"}, {"key": "C_4"}, {"key": "S_5"}]))
 
     # ===================================================================
-    # RAMEN — parser grabs wrong number from decay text
+    # RAMEN — decay value parsing
     # ===================================================================
     # Fresh Ramen (no discards) — should be X2.0
     results.append(run_test(client, "Ramen: fresh (X2.0)", "RM1",

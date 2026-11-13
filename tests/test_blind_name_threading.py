@@ -1,4 +1,4 @@
-"""Issue #43 — blind_name reaches mid-round evaluate_joker_value call sites."""
+"""blind_name reaches mid-round evaluate_joker_value call sites."""
 
 from __future__ import annotations
 

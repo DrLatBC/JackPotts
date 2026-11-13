@@ -1,7 +1,7 @@
-"""Play-phase policy functions — pure decision logic extracted from rules.
+"""Play-phase policy functions — pure decision logic behind the rules.
 
 Each function takes a RoundContext, returns an Action or None.
-Rules in rules/playing.py become thin wrappers around these.
+Rules in rules/playing.py are thin wrappers around these.
 """
 
 from __future__ import annotations

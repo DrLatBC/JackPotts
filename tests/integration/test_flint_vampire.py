@@ -1,9 +1,9 @@
 """Integration tests for scoring accuracy: rounding and The Flint boss blind.
 
-Rounding: bot uses round() but game uses math.floor() for final score.
+Rounding: the game uses math.floor() for the final score.
   When chips * mult has a .5 fractional part (e.g., from x1.5 Polychrome),
   round() rounds to even (536) but floor() truncates (535). They differ
-  when the integer part is odd.
+  when the integer part is odd, so the estimate must floor too.
 
 The Flint: halves base chips and mult at scoring time via Blind:modify_hand().
   The API sends un-halved hand levels, so the bot must apply the halving itself.
@@ -131,12 +131,12 @@ def play_and_compare(client, state, play_count=5, label=""):
 # =========================================================================
 
 def run_rounding_tests(client):
-    """Test whether round() vs floor() causes ±1 mismatches.
+    """Check that the estimate floors X.5 products instead of rounding them.
 
     Strategy: use Polychrome (x1.5) on odd mult values to create X.5 products.
     Three of a Kind base mult = 3, + Joker +4 = 7 (odd), × 1.5 = 10.5.
-    When chips * 10.5 = N.5 and N is odd, round→N+1 but floor→N → diff of -1.
-    When N is even, banker's rounding agrees with floor → diff of 0.
+    When chips * 10.5 = N.5 and N is odd, round→N+1 but floor→N.
+    When N is even, banker's rounding agrees with floor.
     """
     print("\n" + "=" * 60)
     print("ROUNDING TESTS — round() vs math.floor()")
@@ -148,7 +148,7 @@ def run_rounding_tests(client):
     # ---------------------------------------------------------------
     # Test 1: Three of a Kind (3×7) + Polychrome Joker
     # chips=30+7+7+7=51, mult=(3+4)×1.5=10.5, raw=535.5
-    # floor=535 (odd), round=536 → expect MISMATCH(-1)
+    # floor=535 (odd), round=536 → round would be off by 1
     # ---------------------------------------------------------------
     print(f"\n--- 3oK(7s) + Poly Joker: 51×10.5=535.5 → floor=535, round=536 ---")
     state = setup_game(client, "RND1", joker_keys=[poly_joker],
@@ -163,7 +163,7 @@ def run_rounding_tests(client):
     # ---------------------------------------------------------------
     # Test 2: Three of a Kind (3×3) + Polychrome Joker
     # chips=30+3+3+3=39, mult=10.5, raw=409.5
-    # floor=409 (odd), round=410 → expect MISMATCH(-1)
+    # floor=409 (odd), round=410 → round would be off by 1
     # ---------------------------------------------------------------
     print(f"\n--- 3oK(3s) + Poly Joker: 39×10.5=409.5 → floor=409, round=410 ---")
     state = setup_game(client, "RND2", joker_keys=[poly_joker],
@@ -177,7 +177,7 @@ def run_rounding_tests(client):
     # ---------------------------------------------------------------
     # Test 3: Three of a Kind (3×A) + Polychrome Joker
     # chips=30+11+11+11=63, mult=10.5, raw=661.5
-    # floor=661 (odd), round=662 → expect MISMATCH(-1)
+    # floor=661 (odd), round=662 → round would be off by 1
     # ---------------------------------------------------------------
     print(f"\n--- 3oK(As) + Poly Joker: 63×10.5=661.5 → floor=661, round=662 ---")
     state = setup_game(client, "RND3", joker_keys=[poly_joker],
@@ -191,7 +191,7 @@ def run_rounding_tests(client):
     # ---------------------------------------------------------------
     # Test 4: Three of a Kind (3×5) + Polychrome Joker
     # chips=30+5+5+5=45, mult=10.5, raw=472.5
-    # floor=472 (EVEN), round=472 → expect MATCH (banker's rounding agrees)
+    # floor=472 (EVEN), round=472 → banker's rounding agrees
     # ---------------------------------------------------------------
     print(f"\n--- 3oK(5s) + Poly Joker: 45×10.5=472.5 → floor=round=472 ---")
     state = setup_game(client, "RND4", joker_keys=[poly_joker],
@@ -219,7 +219,7 @@ def run_rounding_tests(client):
     # ---------------------------------------------------------------
     # Test 6: Three of a Kind (3×9) + Polychrome Joker
     # chips=30+9+9+9=57, mult=10.5, raw=598.5
-    # floor=598 (EVEN), round=598 → expect MATCH
+    # floor=598 (EVEN), round=598 → round and floor agree
     # ---------------------------------------------------------------
     print(f"\n--- 3oK(9s) + Poly Joker: 57×10.5=598.5 → floor=round=598 ---")
     state = setup_game(client, "RND6", joker_keys=[poly_joker],
@@ -400,8 +400,9 @@ def run_flint_tests(client):
       chips → max(floor(chips * 0.5 + 0.5), 0)
       mult  → max(floor(mult  * 0.5 + 0.5), 1)
 
-    The bot reads un-halved hand levels from the API, so every Flint hand
-    should show a large negative mismatch (bot overestimates).
+    The API sends un-halved hand levels and this script's estimate does not
+    apply the halving, so every Flint hand shows a large negative diff
+    (estimate overshoots); the per-test comments give the expected numbers.
     """
     print("\n" + "=" * 60)
     print("FLINT TESTS — forcing The Flint boss blind")

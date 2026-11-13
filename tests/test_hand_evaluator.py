@@ -1,4 +1,4 @@
-"""Tests for hand_evaluator — verify hand classification and scoring."""
+"""Hand classification and scoring (domain.scoring classify / estimate / search)."""
 
 from balatro_bot.domain.scoring.classify import classify_hand
 from balatro_bot.domain.scoring.estimate import score_hand

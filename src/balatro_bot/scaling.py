@@ -42,7 +42,7 @@ class ScalingProfile:
 
     gain_type: str  # "mult", "chips", "xmult", "retrigger", "perma_chips"
     gain_per: float  # amount gained per trigger (0 for variable/passive)
-    protect_from_sell: bool  # should SellWeakJoker protect this?
+    protect_from_sell: bool  # include in SELL_PROTECTED (never sold)
     milk_priority: int  # 0=don't actively milk, 1=low, 2=medium, 3=high
     notes: str = ""
 

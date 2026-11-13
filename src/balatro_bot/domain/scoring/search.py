@@ -1,6 +1,4 @@
 """Hand enumeration, best-hand selection, and discard analysis.
-
-Moved from hand_evaluator.py during Phase 2 of the logic separation refactor.
 """
 
 from __future__ import annotations

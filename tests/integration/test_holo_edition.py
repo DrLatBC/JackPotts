@@ -1,4 +1,4 @@
-"""Test HOLO edition mult scoring — diagnose contamination from enhancements.
+"""Test HOLO edition mult scoring alongside card enhancements.
 
 Injects cards with HOLO edition + various enhancements (MULT, LUCKY, none)
 and compares bot scoring estimate vs actual game score. Also dumps the raw
@@ -199,7 +199,7 @@ def main():
         {"key": "S_Q"},
     ], seed="HOLO1"))
 
-    # Test 2: HOLO + MULT enhancement — the suspected contamination case
+    # Test 2: HOLO + MULT enhancement — edition.mult must not pick up ability.mult
     results.append(run_test(client, "HOLO + MULT enhancement", [
         {"key": "S_A", "edition": "HOLO", "enhancement": "MULT"},
         {"key": "H_A", "edition": "HOLO", "enhancement": "MULT"},

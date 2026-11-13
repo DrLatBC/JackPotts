@@ -1,4 +1,4 @@
-"""Tests for consumable_policy, pack_policy, and blind_policy — Phase 6 extraction."""
+"""Tests for consumable_policy, pack_policy, and blind_policy."""
 
 from __future__ import annotations
 
@@ -152,8 +152,8 @@ class TestScoreHold:
 
     def test_suit_convert_with_discards(self):
         hold = score_hold("c_lovers", ante=1, slots_full=False, desperate=False, hands_left=4, discards_left=3)
-        # c_lovers is a targeting tarot (enhance, Wild) — not suit_convert
-        # Let's use a known suit_convert key instead
+        # c_lovers is a targeting tarot (enhance, Wild), not suit_convert;
+        # this only checks the return type.
         assert isinstance(hold, float)
 
     def test_slot_pressure_reduces_hold(self):

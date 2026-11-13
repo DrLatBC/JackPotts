@@ -149,7 +149,7 @@ def _rocket_dollars(ante: int, **_: object) -> float:
 def _to_the_moon_dollars(ante: int, **_: object) -> float:
     """To the Moon: +$1 extra interest per $5 held at end of round.
 
-    No money threaded into evaluator yet — assume the bot sits near the
+    The evaluator has no money input, so assume the bot sits near the
     $25 interest cap for most of the run (5 interest tiers × $1 = +$5/round).
     Early antes haven't accumulated, so dampen by ante.
     """
@@ -471,7 +471,7 @@ def _astronomer_dollars(ante: int, **_: object) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Phase 6: consumable / event-generator valuators
+# Consumable / event-generator valuators
 # ---------------------------------------------------------------------------
 
 # Typical realized $-value of a generated consumable. Tarot avg is weighted
@@ -484,8 +484,8 @@ _SPECTRAL_DOLLARS = 4.5
 _COMMON_JOKER_DOLLARS = 4.0
 
 # Hand scalers — rosters whose scaling triggers per hand played. Merry Andy's
-# -1 hand is a net loss against these. Kept local (tight Phase 6 scope) rather
-# than imported from scaling.py.
+# -1 hand is a net loss against these. Kept local rather than imported from
+# scaling.py.
 _HAND_SCALERS = frozenset({
     "j_space", "j_burnt", "j_obelisk", "j_green_joker", "j_supernova",
     "j_ride_the_bus", "j_constellation", "j_throwback",
@@ -738,8 +738,8 @@ def _gift_card_dollars(
 # ---------------------------------------------------------------------------
 
 # Each valuator returns expected net *dollars* over the remainder of the run.
-# Keep signatures uniform: accept ante + deck_profile + **kwargs for future
-# signals (money, owned jokers, etc.) without breaking existing entries.
+# Keep signatures uniform: accept ante + named signals + **kwargs so a new
+# signal can be added without breaking existing entries.
 UTILITY_ROI_VALUATORS: dict[str, Callable[..., float]] = {
     # Flat per-round income
     "j_golden":           _golden_dollars,
@@ -791,11 +791,11 @@ UTILITY_ROI_VALUATORS: dict[str, Callable[..., float]] = {
 
 
 # ---------------------------------------------------------------------------
-# Eco overstack gate (batch 156 fix)
+# Eco overstack gate
 #
-# Rationale: the bot stacks eco jokers (2-3 of them) behind a thin scoring
-# roster, then dies at ante 3-4 because slot + money opportunity cost outweighs
-# the eco payoff. Gate the 2nd+ eco purchase behind a proxy "real scorer" count.
+# Stacking 2-3 eco jokers behind a thin scoring roster dies at ante 3-4: slot +
+# money opportunity cost outweighs the eco payoff. Gate the 2nd+ eco purchase
+# behind a proxy "real scorer" count.
 # Gate fires on acquisition only — retention (candidate already owned) is never
 # deflated, otherwise the bot would immediately sell its own Mail-In.
 # ---------------------------------------------------------------------------

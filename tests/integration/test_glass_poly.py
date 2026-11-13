@@ -4,8 +4,8 @@ Injects a hand of Glass+Polychrome cards and verifies that the bot's
 scoring estimate matches the actual game score (both should apply:
 Glass x2.0 * Polychrome x1.5 = x3.0 per card).
 
-This validates the mod's API fix (separating edition_x_mult from
-enhancement_x_mult in gamestate.lua) and the bot's card_xmult_value().
+This checks that the mod's gamestate.lua reports edition_x_mult separately
+from enhancement_x_mult, and that the bot's card_xmult_value() combines them.
 
 Usage:
     python test_glass_poly.py [--port PORT]
@@ -128,7 +128,7 @@ def main():
             xmult = card_xmult_value(c)
             print(f"  [{i}] {rank}{suit} Glass+Poly | edition_x_mult={ed_xm} enhancement_x_mult={enh_xm} | bot_xmult={xmult}")
 
-            # Verify the API now separates them
+            # Verify the API separates them
             if enh_xm is not None:
                 print(f"       enhancement_x_mult field present: {enh_xm} (expected ~2.0)")
             else:

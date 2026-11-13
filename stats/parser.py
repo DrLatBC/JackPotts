@@ -35,7 +35,6 @@ def parse_game_log(path: Path) -> dict:
     diet_cola_sells = 0
     wins = 0
 
-    # New metrics
     round_results = []          # list of dicts per round
     hand_types_played = Counter()
     killing_blinds = Counter()  # blind name that ended each lost game

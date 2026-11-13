@@ -1,9 +1,9 @@
 """Low-level card accessor functions.
 
-Both hand_evaluator and joker_effects import from here, breaking the
-dependency cycle between them.
+Kept in its own module so domain/scoring and joker_effects can both use
+these accessors without importing each other.
 
-Accepts both typed Card objects and raw dicts during the migration period.
+Each accessor accepts either a typed Card object or a raw API card dict.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 def _modifier(card: CardLike) -> dict[str, Any]:
     """Return the modifier as a dict, handling Card, Joker, and raw dicts.
 
-    For typed objects, converts CardModifier to a dict for backward compat
-    with callers that use .get() on the result.
+    For typed objects, converts CardModifier to a dict for
+    callers that use .get() on the result.
     """
     if isinstance(card, (Card, Joker)):
         mod = card.modifier

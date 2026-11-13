@@ -25,7 +25,7 @@ JOKER_EFFECTS.update(COMPLEX_EFFECTS)
 for key in ("j_hack", "j_dusk", "j_sock_and_buskin", "j_hanging_chad", "j_selzer", "j_mime"):
     JOKER_EFFECTS[key] = _noop
 
-# --- Per-card jokers handled in _apply_card_scoring (hand_evaluator.py) ---
+# --- Per-card jokers handled in _apply_card_scoring (domain/scoring/estimate.py) ---
 # Hiker: +5 chips per card per trigger — handled as "all_chips" in per-card loop
 JOKER_EFFECTS["j_hiker"] = _noop
 

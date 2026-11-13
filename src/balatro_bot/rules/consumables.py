@@ -105,8 +105,7 @@ class UseConsumables:
 
         can_win_now = current_score >= chips_remaining
         # Desperate = genuinely about to lose: last 2 hands AND can't win yet.
-        # Old code fired desperate paths on any hands_left<=2, wasting tarots
-        # on rounds we were already crushing.
+        # hands_left alone would waste tarots on rounds already won.
         desperate = hands_left <= 2 and not can_win_now
         consumable_limit = state.get("consumables", {}).get("limit", 2)
         slots_full = len(consumables) >= consumable_limit
@@ -158,7 +157,6 @@ class UseConsumables:
                 key, ante, slots_full, desperate, hands_left, discards_left,
             )
 
-            # Staleness penalty
             rounds_held = self._held_rounds.get(key, 0)
             if rounds_held >= _STALENESS_THRESHOLD:
                 hold_value -= (rounds_held - 1) * _STALENESS_PENALTY_PER_ROUND
@@ -189,7 +187,6 @@ class UseConsumables:
                         )
             return None
 
-        # Pick highest use_value
         candidates.sort(key=lambda x: -x[1])
         idx, use_val, label, action = candidates[0]
         # Track last used tarot/planet so Fool knows what it copies

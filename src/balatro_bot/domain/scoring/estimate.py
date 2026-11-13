@@ -1,6 +1,4 @@
 """Hand scoring — compute chips, mult, and total for a played hand.
-
-Moved from hand_evaluator.py during Phase 2 of the logic separation refactor.
 """
 
 from __future__ import annotations

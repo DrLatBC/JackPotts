@@ -1,8 +1,8 @@
-"""Integration tests for Cavendish joker — 63% mismatch rate, 5.9x lift.
+"""Integration tests for Cavendish joker scoring accuracy.
 
 Cavendish: static X3 Mult (no conditions, no scaling). Should be trivial.
 Tests: alone, with other jokers, different hand types.
-Dumps raw ability/effect/parsed data to find the discrepancy.
+Dumps raw ability/effect/parsed data for each case.
 
 Usage:
     python test_cavendish.py [--port PORT]

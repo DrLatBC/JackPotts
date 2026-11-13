@@ -5,6 +5,7 @@ No classes — just stateless utility functions.
 
 Usage from test scripts:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "support"))
     from harness import wait_for_state, setup_game, force_boss, ...
 
 Server management:

@@ -1,6 +1,6 @@
 """Characterization tests — freeze current behavior before refactoring.
 
-These tests record the exact outputs of core functions as of Phase 0.
+These tests record the exact outputs of core functions.
 They are snapshot tests, not correctness tests. If a refactor changes
 any of these values, the test fails and the change must be verified.
 """

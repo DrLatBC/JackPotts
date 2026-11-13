@@ -2,7 +2,7 @@
 
 Flint: Verifies that pre-halving hand levels matches the game's Blind:modify_hand().
   Tests with per-card jokers (Greedy, Photograph), editions (Foil, Steel), and
-  accumulator jokers (Ride the Bus) that appeared in batch 073 mismatches.
+  accumulator jokers (Ride the Bus).
 
 Vampire: Verifies enhancement stripping in the 'before' phase, and that joker
   order doesn't affect the outcome (Vampire fires in 'before', per-card effects
@@ -170,7 +170,7 @@ def play_and_compare(client, state, play_count=5, label="", blind_name_override=
     """Play the last N cards and compare bot estimate vs game actual.
 
     Applies Flint halving to hand levels when The Flint is detected,
-    matching what the bot does in bot.py.
+    matching what the bot does in bot_logging.build_play_snapshot.
     """
     jokers = state.get("jokers", {}).get("cards", [])
     hand_cards = state.get("hand", {}).get("cards", [])
@@ -180,7 +180,7 @@ def play_and_compare(client, state, play_count=5, label="", blind_name_override=
     if not blind_name:
         blind_name, _ = get_current_blind(state)
 
-    # Apply Flint halving (same as bot.py line 728-733)
+    # Apply Flint halving (same as bot_logging.build_play_snapshot)
     if blind_name == "The Flint":
         hand_levels = flint_halve_hand_levels(hand_levels)
 
@@ -245,7 +245,7 @@ def play_and_compare(client, state, play_count=5, label="", blind_name_override=
 # =========================================================================
 
 def run_flint_tests(client):
-    """Test Flint halving with joker combos that appeared in batch 073 mismatches."""
+    """Test Flint halving with per-card, edition, and xmult joker combos."""
     print("\n" + "=" * 60)
     print("FLINT TESTS — halving accuracy with per-card jokers")
     print("=" * 60)
@@ -267,7 +267,6 @@ def run_flint_tests(client):
 
     # -----------------------------------------------------------------
     # Test 2: Flint + Foil Joker (Juggler) + Greedy Joker (Foil)
-    # Reproduces the batch 073 port 12354 Flint mismatch pattern.
     # -----------------------------------------------------------------
     print(f"\n--- Flint + Foil Juggler + Foil Greedy + Ride the Bus ---")
     state = setup_round(client, "FV2", boss_blind_key="bl_flint", ante=2,

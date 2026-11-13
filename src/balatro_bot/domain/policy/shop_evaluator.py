@@ -1,9 +1,8 @@
 """Unified shop evaluator — scores everything, plans a budget, ranks actions.
 
-Replaces the siloed shop rules (SellWeakJoker, BuyJokersInShop, BuyPacksInShop,
-BuyVouchersInShop, BuyConsumablesInShop, FeedCampfire, SellDietCola,
-ReorderJokersForScoring, RerollShop, LeaveShop, SellInvisible) with one
-system that evaluates composite action plans and picks the best one.
+One system covers every shop action (sell, buy jokers / packs / vouchers /
+consumables, Campfire feeding, Diet Cola sell, reorder, reroll, leave,
+SellInvisible): it evaluates composite action plans and picks the best one.
 """
 
 from __future__ import annotations
@@ -50,7 +49,7 @@ log = logging.getLogger("balatro_bot")
 class Budget:
     """Economy plan for this shop visit.
 
-    Two aggression dials separate concerns that used to share one knob:
+    Two aggression dials separate concerns:
       - scoring_aggression: how eagerly to buy scoring power (jokers,
         planets/tarots, Celestial/Buffoon packs, Campfire feed). High early
         because building scoring power is the whole point of the early game.
@@ -202,7 +201,6 @@ def score_roster(
     """Compute live EV delta for each owned joker."""
     scores: list[JokerScore] = []
 
-    # Check if Ceremonial Dagger is owned (for fodder scoring)
     dagger_owned = any(joker_key(j) == "j_ceremonial" for j in owned)
 
     for i, j in enumerate(owned):
@@ -253,7 +251,7 @@ class ActionPlan:
 
 
 # ---------------------------------------------------------------------------
-# Reorder computation (ported from ReorderJokersForScoring)
+# Reorder computation (same ordering as ReorderJokersForScoring)
 # ---------------------------------------------------------------------------
 
 def _pick_copy_target_pos(
@@ -328,7 +326,6 @@ def _compute_optimal_order(
     if ceremonial_idx is not None:
         available_fodder = [f for f in noop_fodder if f != ceremonial_idx
                             and f not in excluded]
-        # Also consider the explicit fodder_idx
         if fodder_idx is not None and fodder_idx not in available_fodder and fodder_idx != ceremonial_idx:
             available_fodder.append(fodder_idx)
 
@@ -368,7 +365,6 @@ def _compute_optimal_order(
             target_idx = desired_order.pop(target_pos)
             desired_order.insert(0, target_idx)
 
-    # Check if order actually changed
     if desired_order == list(range(len(owned))):
         return None
     return desired_order
@@ -413,8 +409,8 @@ def _score_pack(
 
     # Early-ante pack deflator: at ante ≤2 the bot has little scoring roster to
     # amplify pack picks, so realized value of a random planet/tarot is much
-    # lower than the raw heuristic suggests. Packs were the biggest cash leak
-    # in the ante 1-2 data (1.8/ante vs 1.4 jokers/ante).
+    # lower than the raw heuristic suggests. Packs are the biggest ante 1-2
+    # cash leak (1.8/ante vs 1.4 jokers/ante).
     early = ante <= 2
 
     # Celestial and Buffoon: SkipPackForRedCard exempts these (planets/jokers),
@@ -707,8 +703,7 @@ def _money_opportunity_cost(cost: int, money: int, budget: Budget,
 
     # Minimum 0.2 floor so even at full aggression interest-breaking
     # buys pay a small tax. Without this, ante 1-2 buys are literally
-    # free (cost_factor = 1 - 1.0 = 0) and the bot never banks cash —
-    # tune data shows ~0% of ante 1-2 rounds start at interest cap.
+    # free (cost_factor = 1 - 1.0 = 0) and the bot never banks cash.
     cost_factor = max(0.2, 1.0 - category_aggression)
     return lost_per_round * effective_rounds * cost_factor
 
@@ -790,7 +785,7 @@ class ShopEvaluator:
         budget = compute_budget(money, ante, joker_count, owned_jokers=owned,
                                 owned_vouchers=owned_vouchers)
 
-        # Issue #41: bot attaches its observed per-run averages (discards/round,
+        # bot.py attaches its observed per-run averages (discards/round,
         # sells/ante) on the state dict. Thread into every valuation call so
         # scaling-xmult projections reflect real play behavior instead of the
         # conservative 1.5/1.5 defaults.
@@ -951,9 +946,9 @@ class ShopEvaluator:
 
         # 3. Dagger fodder positioning (no sell needed — just reorder)
         # Dagger only eats ONE joker (the one to its right) at blind select, so
-        # emit at most one plan — picking the best fodder. Emitting one plan per
-        # eligible fodder caused ping-pong between candidates with different
-        # target orders (each passed the _last_order check indefinitely).
+        # emit at most one plan — picking the best fodder. One plan per
+        # eligible fodder ping-pongs between candidates with different target
+        # orders (each passes the _last_order check indefinitely).
         dagger_owned = any(joker_key(j) == "j_ceremonial" for j in owned)
         if dagger_owned and roster:
             fodder_candidates = [
@@ -1200,7 +1195,6 @@ class ShopEvaluator:
         if isinstance(action, RearrangeJokers):
             self._last_order = action.order
 
-        # Track reroll count
         if isinstance(action, Reroll):
             self._rerolls_this_shop += 1
         elif isinstance(action, SellJoker):

@@ -2,10 +2,9 @@
 
 The sell-then-buy branch must evaluate the shop candidate against the
 post-sell roster so the buyer doesn't inherit synergy from the joker
-we're about to sell. Without this, _AMPLIFICATION_PAIRS credits the
-seller's enabler boost to the buyer — the concrete failure was bot
-selling Shortcut to buy The Order while The Order's value was still
-scored with Shortcut in the roster.
+we're about to sell. Otherwise _AMPLIFICATION_PAIRS credits the
+seller's enabler boost to the buyer — e.g. selling Shortcut to buy The
+Order while The Order's value is still scored with Shortcut in the roster.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from tests.conftest import joker
 
 
 # Straight build — Crazy drives Straight into preferred_hands, Shortcut
-# + Four Fingers are Straight enablers, similar to the Game 095 failure.
+# + Four Fingers are Straight enablers.
 ROSTER_KEYS = [
     "j_four_fingers",
     "j_shortcut",
@@ -51,9 +50,8 @@ def _value(card_key: str, owned: list[dict]) -> float:
 
 def test_order_value_drops_when_shortcut_removed() -> None:
     """Removing Shortcut (an enabler amplification pair) should collapse
-    The Order's value. This is the core mechanism the fix relies on:
-    the sell-then-buy branch now scores the buyer against the post-sell
-    roster, so the synergy boost disappears correctly."""
+    The Order's value. The sell-then-buy branch relies on this: it scores
+    the buyer against the post-sell roster, so the synergy boost disappears."""
     owned = _owned()
     pre = _value("j_order", owned)
 

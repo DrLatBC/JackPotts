@@ -1,14 +1,11 @@
 """Per-joker projection of scaling-joker end-of-run state.
 
-Phase 4 of the valuation refactor (see issue #36). Replaces the two bolted-on
-floors in ``evaluate_joker_value`` (the flat ``milk_priority`` runway and the
-``projected_xmult_gain`` block) with a live-anchor-aware projection per joker.
-
-For each scaling joker, ``project_end_state`` returns a ``(chips, mult, xmult)``
-tuple representing the *total* value the joker is expected to reach by end of
-run, combining its live anchor (parsed from effect text when owned) with a
-forward projection based on its trigger rate × rounds remaining. The caller
-converts the tuple to a floor via the same ``_dynamic_power`` conversion used
+For each scaling joker, ``project_total_xmult`` (xmult scalers) and
+``project_additive_total`` (chip/mult scalers) return the *total* value the
+joker is expected to reach by end of run, combining its live anchor (parsed
+from effect text when owned) with a forward projection based on its trigger
+rate × rounds remaining. The caller
+converts the result to a floor via the same ``_dynamic_power`` conversion used
 for the live-anchor-only floor.
 """
 
@@ -212,10 +209,8 @@ def project_total_xmult(key: str, ctx: "SimContext") -> float:
     return live_anchor + max(0.0, gain)
 
 
-# Additive-gain scalers (chip/mult). These used to get the milk_priority
-# runway floor. Modelled here as: bot plays ~3 hands/blind × blinds_left,
-# multiplied by trigger probability and gain_per. For fresh candidates this
-# replaces the flat 2/3/4 runway with something trigger-rate-aware.
+# Additive-gain scalers (chip/mult). Modelled as: bot plays ~3 hands/blind ×
+# blinds_left, multiplied by trigger probability and gain_per.
 def _hands_remaining(ante: int) -> float:
     return 3.0 * _blinds_remaining(ante)
 
@@ -256,7 +251,6 @@ def project_additive_total(key: str, ctx: "SimContext", effect_text: str) -> tup
     live_chips = parsed.get("chips") or 0.0
     live_mult = parsed.get("mult") or 0.0
 
-    # Projected future gain.
     lt = ctx.lifetime
     gain = 0.0
     if lt is not None and profile.gain_per != 0 and key in _ADDITIVE_PROJECTORS:
@@ -269,5 +263,4 @@ def project_additive_total(key: str, ctx: "SimContext", effect_text: str) -> tup
 
     if profile.gain_type in ("chips", "perma_chips"):
         return (live_chips + gain, live_mult)
-    # mult
     return (live_chips, live_mult + gain)

@@ -1,4 +1,4 @@
-"""Issue #41 — live per-run averages plumbed into LifetimeState / SimContext."""
+"""Live per-run averages plumbed into LifetimeState / SimContext."""
 
 from __future__ import annotations
 

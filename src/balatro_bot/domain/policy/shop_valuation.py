@@ -1,7 +1,7 @@
 """Unified joker valuation system.
 
 Single entry point ``evaluate_joker_value()`` produces a comparable float for
-any joker, used by both BuyJokersInShop and SellWeakJoker.
+any joker, used for both buy and sell decisions.
 
 Three layers:
   1. Scoring line simulation — score with/without candidate across preferred hands
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from balatro_bot.domain.policy.sim_context import LiveRunStats
 
 # ---------------------------------------------------------------------------
-# Scoring category metadata (moved from BuyJokersInShop)
+# Scoring category metadata
 # ---------------------------------------------------------------------------
 
 JOKER_SCORE_CATEGORY: dict[str, set[str]] = {
@@ -107,7 +107,7 @@ for _cat, _keys in JOKER_SCORE_CATEGORY.items():
 
 # Compression coefficient on ``log2(1 + raw_delta)``. Higher = aligned strong
 # jokers score bigger. Xmult uses a higher coefficient because its deltas are
-# genuinely larger; flat mult/chips stay at the historical 3.0.
+# genuinely larger; flat mult/chips use 3.0.
 SIM_COEFF_XMULT = 5.0
 SIM_COEFF_MULT = 3.0
 SIM_COEFF_CHIPS = 3.0
@@ -120,21 +120,20 @@ PIVOT_FLOOR_A1 = 2.5        # floor at ante 1
 PIVOT_FLOOR_DECAY = 0.5     # subtract this per ante (hits 0 at ante 6)
 PIVOT_FLOOR_THRESHOLD = 2.5  # sim base_value must be below this to trigger floor
 
-# Phase 9: deck-sampled Monte Carlo. Every scoring valuation now samples hands
-# from the actual deck profile (rank/suit/enhancement counts) rather than
-# fabricating a hand engineered to make the candidate proc. This fixes the
-# chronic overvaluation of rank-conditional flat-mult jokers (Scholar, Walkie
-# Talkie) that die at ante 4 when their target rank shows up once every 3 hands
-# instead of once per hand.
+# Deck-sampled Monte Carlo. Every scoring valuation samples hands from the
+# actual deck profile (rank/suit/enhancement counts) rather than fabricating a
+# hand engineered to make the candidate proc. A fabricated hand overvalues
+# rank-conditional flat-mult jokers (Scholar, Walkie Talkie) that die at ante 4
+# when their target rank shows up once every 3 hands instead of once per hand.
 #
-# Opt-out via ``BALATRO_MC_VALUATION=0`` for A/B comparison in shadow batches.
+# Opt-out via ``BALATRO_MC_VALUATION=0`` for A/B comparison.
 _MC_SAMPLING_ENABLED = os.environ.get("BALATRO_MC_VALUATION", "1") != "0"
 
 # Jokers whose sim delta is invariant across hand composition: their
 # contribution is either a global xmult/mult (Hologram, Stencil) or is driven
 # entirely by a runway projection floor that bypasses the sim (anything in
 # SCALING_XMULT_KEYS — see the ``max(base_value, projected_floor)`` gate).
-# Use N=1 for these. Every other candidate takes the full N=16 pass.
+# Use N=1 for these. Every other candidate takes the full _MC_FULL_SAMPLES pass.
 _CARD_AGNOSTIC: frozenset[str] = SCALING_XMULT_KEYS | frozenset({
     "j_joker",         # +4 mult flat
     "j_stencil",       # xmult per empty joker slot
@@ -158,7 +157,8 @@ _STOCHASTIC_KEYS: frozenset[str] = frozenset({
     "j_misprint", "j_bloodstone", "j_lucky_cat", "j_oops",
 })
 
-# Kept for transitional fallback when _MC_SAMPLING_ENABLED is off.
+# Per-hand sample count for stochastic jokers on the synthetic-hand path
+# (_MC_SAMPLING_ENABLED off).
 _MC_DEFAULT_SAMPLES = 16
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ _BLACKLISTED_JOKERS: frozenset[str] = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# Utility joker base values (moved from shop.py)
+# Utility joker base values
 # ---------------------------------------------------------------------------
 
 UTILITY_VALUE: dict[str, float] = {
@@ -234,7 +234,7 @@ def _make_card(rank: str, suit: str, enhancement: str | None = None) -> Card:
 
 
 # ---------------------------------------------------------------------------
-# Phase 9: deck-sampled Monte Carlo hand generator
+# Deck-sampled Monte Carlo hand generator
 # ---------------------------------------------------------------------------
 
 _ALL_RANKS: tuple[str, ...] = ("2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A")
@@ -700,7 +700,7 @@ def _idol_context_suit(ctx: SimContext) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Legacy synthetic-hand builder (fallback when _MC_SAMPLING_ENABLED=0)
+# Synthetic-hand builder (fallback when _MC_SAMPLING_ENABLED=0)
 # ---------------------------------------------------------------------------
 
 def _preferred_suit(ctx: SimContext) -> str:
@@ -961,7 +961,7 @@ def _synthetic_hand(
 # ---------------------------------------------------------------------------
 
 def _dynamic_power(parsed: dict) -> float:
-    """Convert parsed effect values to a power score (same scale as old system)."""
+    """Convert parsed effect values to a power score."""
     power = 0.0
     xm = parsed.get("xmult")
     if xm and xm > 1.0:
@@ -1059,8 +1059,7 @@ def _synthetic_held_cards(ctx: SimContext) -> list[Card]:
 
 # Deck-density xmult scalers — their parsed effect text is X1.0 at buy-time so
 # the raw sim sees zero delta. Project a forward xmult from deck composition
-# and feed it to the sim via a rewritten candidate copy. Previously handled by
-# the flat ``_deck_composition_adjustment`` post-hoc boost.
+# and feed it to the sim via a rewritten candidate copy.
 _DECK_DENSITY_XMULT_EXTRA: dict[str, tuple[str, float]] = {
     # joker_key -> (enhancement_counted, xmult_per_card)
     "j_steel_joker": ("STEEL", 0.2),   # +X0.2 per Steel in deck (game formula)
@@ -1321,7 +1320,7 @@ def _scoring_delta_legacy(
             out.append(_make_card(c.value.rank, new_suit, enhancement=enh))
         return out
 
-    # Phase 8: normalize joker order to match the live bot's
+    # Normalize joker order to match the live bot's
     # ReorderJokersForScoring (chips→mult→xmult). Without this the sim scores
     # in owned order and understates jokers that benefit from being placed
     # rightmost (Hologram after chips/mult) or left of xmult (Blueprint).
@@ -1511,7 +1510,7 @@ def _copier_base_value(ante: int) -> float:
 def _copier_amplification(copy_value: float) -> float:
     """Map a live copy-target value (xmult-equivalent) to a multiplier bonus.
 
-    Cavendish X3 live → +0.30 (total ~1.30×, matches old flat anchor)
+    Cavendish X3 live → +0.30 (total ~1.30×)
     Constellation live X5+ → +0.50 (capped)
     Duo post-discount X1 → +0.10 (conditional, smaller bonus — correct)
     Empty roster → +0.0
@@ -1563,7 +1562,8 @@ def _synergy_multiplier(
     candidate: dict | None = None,
     ante: int = 1,
 ) -> float:
-    """Unified synergy multiplier replacing _cross_synergy + coherence bonus."""
+    """Unified synergy multiplier: amplification pairs, copier synergy,
+    Baseball rarity, trigger coherence, strategy alignment, archetypes."""
     mult = 1.0
 
     # --- Amplification pairs (data-driven) ---
@@ -1740,9 +1740,7 @@ def _context_scale(
         factor *= 1.0 / (1.0 + same_count * 0.25)
 
     # Cross-category saturation: once multiple scoring phases are covered,
-    # the next scoring joker is marginal. Matches the tune signal that ~65%
-    # of ante 1-2 joker buys after chip+mult coverage were more scorers.
-    # Only applies to scoring jokers (chips/mult/xmult).
+    # the next scoring joker is marginal. Only applies to scoring jokers (chips/mult/xmult).
     if cat in ("chips", "mult", "xmult"):
         owned_cats = {
             _KEY_TO_CATEGORY.get(joker_key(j))
@@ -1775,12 +1773,11 @@ def _deck_composition_adjustment(
 ) -> float:
     """Adjust base_value based on deck composition.
 
-    Phase 3 moved Steel / Lucky / Glass / suit-enhancement boosts into the
-    sim itself (scoring cards now carry density-planned enhancements; Steel
-    & Glass candidates get their xmult projected from deck counts before the
-    sim runs — see ``_project_deck_density_candidate`` and
-    ``_plan_enhancements``). What stays here is only what the sim genuinely
-    cannot express: Drivers License (activation gate, not per-card) and
+    Steel / Lucky / Glass / suit-enhancement boosts live in the sim itself
+    (scoring cards carry density-planned enhancements; Steel & Glass
+    candidates get their xmult projected from deck counts before the sim
+    runs — see ``_project_deck_density_candidate`` and
+    ``_plan_enhancements``). This handles only what the sim cannot express: Drivers License (activation gate, not per-card) and
     Blackboard (held-phase proc rate, driven by deck-wide S/C density).
     """
     # --- Drivers License: gate on enhanced card count ---
@@ -1834,7 +1831,7 @@ def evaluate_joker_value(
     """Unified joker valuation. Returns ~0.0 to ~15.0.
 
     Higher = more valuable to the current build.
-    Used by both BuyJokersInShop and SellWeakJoker.
+    Used for both buy and sell decisions.
     """
     cand_key = candidate.get("key", "") or joker_key(candidate)
 
@@ -1848,7 +1845,7 @@ def evaluate_joker_value(
     if strategy is None:
         strategy = compute_strategy(owned_jokers, hand_levels, deck_profile=deck_profile)
     owned_key_set = {joker_key(j) for j in owned_jokers}
-    # Phase 8: turn on Monte Carlo sampling only when a stochastic joker is
+    # Turn on Monte Carlo sampling only when a stochastic joker is
     # involved. The expected-value path stays the default for speed.
     mc_samples = _MC_DEFAULT_SAMPLES if (
         cand_key in _STOCHASTIC_KEYS or owned_key_set & _STOCHASTIC_KEYS
@@ -1932,14 +1929,13 @@ def evaluate_joker_value(
         # matches Acrobat's finisher weighting.
         elif key == "j_mystic_summit":
             raw_delta *= 0.45
-        # Phase 3: rank-per-card jokers fire once per scored target rank. The
+        # Rank-per-card jokers fire once per scored target rank. The
         # synthetic hand forces its target rank into a scoring slot (so the
         # effect fires at all), but how often that rank realistically shows up
         # across the ante scales with deck density. Factor=1.0 at vanilla
         # (4 copies baseline), linear out to 2.0 at 8+ copies, down to 0.25 at
-        # 1 copy — matches Wee/Scholar density intuition from issue #35.
-        # Rank density is captured directly by deck sampling under MC; the
-        # post-hoc factor is only needed for the legacy synthetic-hand path.
+        # 1 copy. Rank density is captured directly by deck sampling under MC;
+        # the post-hoc factor is only needed for the synthetic-hand path.
         if not _MC_SAMPLING_ENABLED:
             raw_delta *= _rank_density_factor(ctx, key)
         coeff = _sim_coefficient(key)
@@ -1970,7 +1966,7 @@ def evaluate_joker_value(
             # Room for Riff-Raff + 2 spawns — full value
             base_value = 2.0 if ante <= 3 else 1.0
 
-    # Scaling-joker projection (Phase 4, issue #36): for every joker with a
+    # Scaling-joker projection: for every joker with a
     # ScalingProfile, predict end-of-run state as (live_anchor + projected
     # gain) and floor the sim with the same xmult × 5 / mult / 5 / chips / 50
     # conversion used for the live anchor alone. Live anchor comes from
@@ -2042,7 +2038,7 @@ def evaluate_joker_value(
             candidate_anchor = getattr(candidate_lt, field_name, 1.0)
     context = _context_scale(key, owned_jokers, ante, candidate_anchor)
 
-    # Layer 4 (Phase 7): boss-blind adjustment. In-round uses the active boss;
+    # Layer 4: boss-blind adjustment. In-round uses the active boss;
     # shop phase blends across the upcoming-boss pool. Note: if the caller
     # passed a blind_name that isn't in _BOSS_TEMPLATES (non-templated boss
     # like Verdant Leaf / Cerulean Bell / Crimson Heart), from_name() returns
@@ -2061,7 +2057,8 @@ def _edition_bonus(card: dict) -> float:
     """Additive value bonus for joker editions.
 
     Polychrome (×1.5 every hand) is massive.  Holo (+10 mult) is solid.
-    Foil (+50 chips) is minor.  Negative is handled separately in shop.py.
+    Foil (+50 chips) is minor.  Negative is handled separately (slot logic
+    in shop_evaluator / pack_policy).
     """
     mod = card.get("modifier")
     if not isinstance(mod, dict):

@@ -101,7 +101,7 @@ _win_handler: WinCaptureHandler | None = None
 
 
 def _compute_live_stats(gs: "GameLoopState"):
-    """Snapshot per-run averages from observed bot activity (issue #41).
+    """Snapshot per-run averages from observed bot activity.
 
     Returns a ``LiveRunStats`` populated from ``gs``, or ``None`` when not enough
     data has accumulated (rounds/antes still at zero) — callers then fall back
@@ -582,7 +582,6 @@ def run_bot(
                         target_labels.append(f"{rank} of {suit}")
                 _action_detail = dict(params, target_labels=target_labels)
             if method == "use" and params and "consumable" in params:
-                # Add the consumable name
                 _action_detail = dict(_action_detail or params,
                                       consumable_name=_using_consumable_name)
             gs.action_log.append({
@@ -876,7 +875,7 @@ def run_bot(
         _deck_comp["seals"][seal] = _deck_comp["seals"].get(seal, 0) + 1
 
     # Capture log text AFTER log_game_over (includes game summary lines).
-    # flush_win() no longer clears the buffer, so it's intact for both wins and losses.
+    # flush_win() leaves the buffer intact, so this works for wins and losses.
     _captured_log_text = _win_handler.get_log_text() if _win_handler else None
     if _win_handler:
         _win_handler.reset()

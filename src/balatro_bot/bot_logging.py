@@ -474,7 +474,7 @@ def log_game_over(gs: GameLoopState, state: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scoring diagnostics (the 270-line _log_played_hand)
+# Scoring diagnostics
 # ---------------------------------------------------------------------------
 
 def compute_played_hand_detail(snapshot: dict | None) -> dict | None:

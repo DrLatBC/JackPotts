@@ -1,13 +1,13 @@
-"""Integration tests for batch 069 scoring fixes.
+"""Integration tests for five scoring edge cases.
 
-Reproduces the exact scenarios that exposed bugs 1-5 in-game and verifies
-that our scoring estimate matches the game's actual score (diff == 0).
+Sets up each scenario in-game and verifies that the scoring estimate matches
+the game's actual score (diff == 0).
 
-Fix 1: Four Fingers straight detection (sliding window)
-Fix 2: Four Fingers Flush House / Flush Five scoring cards
-Fix 3: Flower Pot + debuffed WILD cards (under The Head)
-Fix 4: The Ox + Bull money zeroing
-Fix 5: Luchador + The Mouth boss disable
+Case 1: Four Fingers straight detection (sliding window)
+Case 2: Four Fingers Flush House / Flush Five scoring cards
+Case 3: Flower Pot + debuffed WILD cards (under The Head)
+Case 4: The Ox + Bull money zeroing
+Case 5: Luchador + The Mouth boss disable
 
 Usage:
     python test_batch069_fixes.py --start-server
@@ -133,7 +133,7 @@ def play_and_compare(client, state, play_indices, label="", blind_name="",
 
 
 # ---------------------------------------------------------------------------
-# Fix 1+2: Four Fingers — comprehensive edge case diagnostics
+# Cases 1+2: Four Fingers — comprehensive edge case diagnostics
 #
 # Tests every combination to determine exactly which cards score in-game:
 #   ff_a: 4-card straight + off-rank (4567+A, all diff suits)
@@ -235,7 +235,7 @@ def test_ff_sf_disjoint(client, results):
 
 
 # ---------------------------------------------------------------------------
-# Fix 3: Flower Pot + debuffed WILD under The Head
+# Case 3: Flower Pot + debuffed WILD under The Head
 # ---------------------------------------------------------------------------
 
 def test_flower_pot_debuffed_wild(client, results):
@@ -367,7 +367,7 @@ def test_flower_pot_non_debuffed_wild(client, results):
 
 
 # ---------------------------------------------------------------------------
-# Fix 4: The Ox + Bull money zeroing
+# Case 4: The Ox + Bull money zeroing
 # ---------------------------------------------------------------------------
 
 def test_ox_bull(client, results):
@@ -420,7 +420,7 @@ def test_ox_bull(client, results):
                 break
             time.sleep(0.3)
 
-    # Now advance to ante 6 boss select
+    # Advance to ante 6 boss select
     state = advance_to_boss_select(client, target_ante=6)
 
     if not force_boss(client, "The Ox"):
@@ -532,7 +532,7 @@ def test_ox_bull(client, results):
 
 
 # ---------------------------------------------------------------------------
-# Fix 5: Luchador + The Mouth boss disable
+# Case 5: Luchador + The Mouth boss disable
 # ---------------------------------------------------------------------------
 
 def test_luchador_mouth(client, results):
@@ -643,9 +643,9 @@ def test_luchador_mouth(client, results):
     if locked and new_hand == locked:
         print(f"    (Same as locked type — boss disable less observable but score should still match)")
 
-    # The key test: our estimate should match actual.
-    # Before the fix, if new_hand != locked, the bot would estimate 0 (Mouth blocks it)
-    # but the game would score normally (Mouth is disabled).
+    # The key test: our estimate should match actual. With The Mouth disabled,
+    # a hand type other than the locked one scores normally, so the estimate
+    # must not be 0.
     r = play_and_compare(client, state, play_indices,
                          f"Luchador sold: playing {new_hand} (was locked to {locked})",
                          blind_name="")  # Empty blind_name = boss disabled

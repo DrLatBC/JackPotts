@@ -1,9 +1,9 @@
 """Tests for _money_opportunity_cost roster-aware horizon cap.
 
 The opportunity cost of breaking interest only matters if we survive to
-collect it. With a thin roster, the 21-round ante 1 horizon dominated
-opp_cost and blocked every affordable joker buy — the fix caps effective
-rounds by roster strength (3 + joker_count * 4).
+collect it. With a thin roster, an uncapped 21-round ante 1 horizon would
+dominate opp_cost and block every affordable joker buy, so effective rounds
+are capped by roster strength (3 + joker_count * 4).
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ def test_zero_jokers_caps_horizon_at_3_rounds() -> None:
 
     Ante 1 rounds_est = (8-1)*3 = 21. Roster cap = 3 + 0*4 = 3.
     Breaking $1 interest tier at full scoring_aggression (floor 0.2):
-      old: 1 * 21 * 0.2 = 4.2   (blocked most buys)
-      new: 1 * 3  * 0.2 = 0.6   (leaves room for scoring_value to win)
+      uncapped: 1 * 21 * 0.2 = 4.2   (blocks most buys)
+      capped:   1 * 3  * 0.2 = 0.6   (leaves room for scoring_value to win)
     """
     budget = _budget(ante=1, joker_count=0)
     # Spending $5 of $7 drops interest tier from $5→$0 (lost=1/round)
@@ -80,8 +80,8 @@ def test_horizon_scales_linearly_with_roster() -> None:
 # ---------------------------------------------------------------------------
 
 def test_floor_applies_at_full_scoring_aggression() -> None:
-    """Even at scoring_aggression=1.0 the floor charges 0.2×. This is the
-    existing knob — tune data showed without it, antes 1-2 never banked.
+    """Even at scoring_aggression=1.0 the floor charges 0.2×. Without the
+    floor, tune data shows antes 1-2 never bank.
     """
     budget = _budget(ante=1, joker_count=3)
     cost = _money_opportunity_cost(
@@ -130,13 +130,13 @@ def test_above_interest_cap_no_loss_for_small_buy() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Regression: the ante 1 "pass on all jokers" scenario
+# Ante 1 "pass on all jokers" scenario
 # ---------------------------------------------------------------------------
 
 def test_ante_1_zero_jokers_affords_typical_shop_joker() -> None:
-    """The bug: at ante 1 with 0 jokers and ~$7, buying a $5 joker had
-    opp_cost=4.2, which exceeded typical shop_value (~4-5), so the bot
-    skipped every joker and died in ante 1.
+    """At ante 1 with 0 jokers and ~$7, an uncapped horizon gives a $5 joker
+    opp_cost=4.2, which exceeds typical shop_value (~4-5), so the bot would
+    skip every joker and die in ante 1.
 
     With the cap, opp_cost=0.6, so a 4.0-value joker at full aggression
     clears (net = 4.0 - 0.6 = 3.4) well above leave_value (~0.35).

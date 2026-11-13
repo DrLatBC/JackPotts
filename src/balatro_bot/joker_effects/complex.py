@@ -296,8 +296,8 @@ def _vampire(ctx: ScoreContext, j: dict) -> None:
     """Vampire: xMult that grows by stripping enhancements from scoring cards.
 
     The before-phase logic (strip enhancements, count enhanced cards, compute
-    new xmult) is handled in hand_evaluator._apply_before_phase() because it
-    must happen BEFORE card scoring. Here we just apply the pre-computed xmult.
+    new xmult) is handled in domain/scoring/estimate._apply_before_phase()
+    because it must happen BEFORE card scoring. Here we just apply the pre-computed xmult.
     """
     if ctx.vampire_xmult is not None:
         ctx.mult *= ctx.vampire_xmult

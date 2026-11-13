@@ -348,10 +348,10 @@ class TestBaseballCardSynergy:
 
 
 class TestDeckCompositionAdjustment:
-    """What's left of ``_deck_composition_adjustment`` after Phase 3: only
-    Drivers License (activation gate) and Blackboard (held-phase proc rate
-    from deck-wide S/C density). Steel / Lucky / Glass / suit-enhancement
-    boosts moved into the sim itself — see ``TestPhase3DensityAwareSim``."""
+    """``_deck_composition_adjustment`` covers only Drivers License
+    (activation gate) and Blackboard (held-phase proc rate from deck-wide S/C
+    density). Steel / Lucky / Glass / suit-enhancement boosts live in the sim
+    itself — see ``TestPhase3DensityAwareSim``."""
 
     def _profile_with_enhancements(self, **enh_counts):
         cards = []
@@ -387,7 +387,7 @@ class TestDeckCompositionAdjustment:
         assert adjusted == base
 
     def test_steel_joker_moved_to_sim(self):
-        """Steel Joker's deck-count boost is now a sim-input (projected xmult)."""
+        """Steel Joker's deck-count boost is a sim input (projected xmult), not an adjustment."""
         dp = self._profile_with_enhancements(STEEL=8)
         base = 5.0
         adjusted = _deck_composition_adjustment("j_steel_joker", base, dp, None)
@@ -395,12 +395,11 @@ class TestDeckCompositionAdjustment:
 
 
 class TestPhase3DensityAwareSim:
-    """Phase 3 (issue #35): deck-density-aware synthetic hands.
+    """Deck-density-aware synthetic hands.
 
-    Replaces the Steel/Lucky/Glass/suit-enhancement branches of
-    ``_deck_composition_adjustment`` with sim inputs — scoring cards carry
-    density-planned enhancements; Steel & Glass get xmult projected from deck
-    counts before the sim runs."""
+    Steel/Lucky/Glass/suit-enhancement effects are sim inputs — scoring cards
+    carry density-planned enhancements; Steel & Glass get xmult projected from
+    deck counts before the sim runs."""
 
     _HL = {h: {"level": 1, "chips": c, "mult": m, "played": 0} for h, c, m in [
         ("High Card", 5, 1), ("Pair", 10, 2), ("Two Pair", 20, 2),
@@ -472,9 +471,8 @@ class TestPhase3DensityAwareSim:
     # --- Lucky Cat: per-card triggers fire inside the sim ---
 
     def test_lucky_cat_fires_with_lucky_cards_in_deck(self):
-        """With Lucky cards planted on scoring slots, the sim layer produces a
-        positive delta (the pre-Phase 3 sim with plain scoring cards returned
-        exactly 0 for Lucky Cat regardless of deck density)."""
+        """Lucky cards in the deck are planted on scoring slots in the sim, so
+        a Lucky-heavy deck never values Lucky Cat below a Lucky-free one."""
         cand = self._cand("j_lucky_cat", "X1.5 Mult, +X0.25 per Lucky trigger")
         ctx = _ctx(candidate=cand, ante=2)
         # No Lucky in deck → sim picks no Lucky scoring slots → delta 0
@@ -491,7 +489,7 @@ class TestPhase3DensityAwareSim:
         )
         d_none = _scoring_delta(no_lucky_ctx, [("Flush", 1.0)])
         d_lucky = _scoring_delta(with_lucky_ctx, [("Flush", 1.0)])
-        # Post-MC: Lucky Cat's parsed base X1.5 Mult applies unconditionally in
+        # Lucky Cat's parsed base X1.5 Mult applies unconditionally in
         # the sim (the per-trigger bonus is too small to distinguish from
         # variance at N=32). Assert Lucky-heavy deck is at least non-worse.
         assert d_lucky >= d_none, (
@@ -501,7 +499,7 @@ class TestPhase3DensityAwareSim:
 
 class TestHeldCardJokerValuation:
     """Held-phase jokers (Baron, Shoot the Moon, Raised Fist, Mime, Blackboard)
-    are driven by _synthetic_held_cards in _scoring_delta (Phase 2).
+    are driven by _synthetic_held_cards in _scoring_delta.
     These tests pin the end-to-end evaluate_joker_value behavior."""
 
     _HL = {h: {"level": 1, "chips": c, "mult": m} for h, c, m in [
@@ -523,7 +521,7 @@ class TestHeldCardJokerValuation:
     def test_baron_empty_roster_exceeds_floor(self):
         cand = self._cand("j_baron", "Each King held in hand gives X1.5 Mult")
         v = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
-        # Post-MC: held-card sampling from vanilla deck yields ~0.23 Kings per
+        # Held-card sampling from vanilla deck yields ~0.23 Kings per
         # 3-card held sample, so Baron's delta is modest until Kings accumulate.
         assert v > 0.5, f"Baron empty-roster @ ante 3 should be >0.5, got {v}"
 
@@ -586,7 +584,7 @@ class TestEvaluateJokerWithDeckProfile:
 
 
 class TestPhase4LifetimeProjection:
-    """Phase 4 (issue #36): lifetime-aware projection for scaling xmult jokers."""
+    """Lifetime-aware projection for scaling xmult jokers."""
 
     _HL = {
         "Pair": {"chips": 10, "mult": 2, "level": 1, "played": 0, "played_this_round": 0},
@@ -677,7 +675,7 @@ class TestPhase4LifetimeProjection:
 
 
 # ---------------------------------------------------------------------------
-# Eco overstack gate (batch 156 fix)
+# Eco overstack gate
 # ---------------------------------------------------------------------------
 
 class TestEcoOverstackGate:

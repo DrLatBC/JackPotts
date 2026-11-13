@@ -243,7 +243,7 @@ def test_pad_with_splash_preserves_pair_classification():
 
 
 def test_pad_without_splash_still_respects_high_card_rank_cap():
-    """Regression guard: without Splash, the original rank cap still applies."""
+    """Without Splash, the High Card rank cap applies."""
     hand = [
         card("3", "S"),  # 0: scoring High Card
         card("K", "H"),  # 1: outranks scoring card

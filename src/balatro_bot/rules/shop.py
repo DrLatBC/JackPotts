@@ -22,8 +22,6 @@ class ReorderJokersForScoring:
     - Blueprint: placed immediately left of the best xmult joker to copy
     - Brainstorm: ensures leftmost joker is a good copyable effect
     - Ceremonial Dagger: placed immediately left of fodder to sacrifice
-
-    Subsumes the old ReorderJokersForCeremonial rule.
     """
     name = "reorder_jokers_for_scoring"
 

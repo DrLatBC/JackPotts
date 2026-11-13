@@ -122,8 +122,8 @@ TACTICAL_TARGETING = {"suit_convert", "glass", "enhance", "gold"}
 SAFE_SPECTRAL_CONSUMABLES = {
     "c_ankh", "c_immolate", "c_ectoplasm", "c_hex", "c_wraith",
     # Familiar/Grim/Incantation destroy a *random* hand card — highlights
-    # are ignored by the game. Classifying them as targeting wasted picks
-    # and sent targets the game discarded. They still require hand cards
+    # are ignored by the game, so they are not targeting consumables.
+    # They still require hand cards
     # to exist; callers check that separately.
     "c_familiar", "c_grim", "c_incantation",
 }

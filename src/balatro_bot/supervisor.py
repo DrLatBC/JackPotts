@@ -65,8 +65,8 @@ BALATROBOT_LOGS_KEEP = 10
 
 # Per-instance Balatro save directories. Each instance gets its own APPDATA
 # override so Love2D writes meta.jkr/profile.jkr/save.jkr/settings.jkr into
-# a dedicated folder — concurrent writes to the same .jkr files across 4
-# instances was corrupting meta.jkr (tutorial flag, unlocks).
+# a dedicated folder — concurrent writes to the same .jkr files across
+# instances corrupt meta.jkr (tutorial flag, unlocks).
 PROFILES_DIR = BASE_DIR / "profiles"
 REAL_APPDATA = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
 REAL_BALATRO_DIR = REAL_APPDATA / "Balatro"
@@ -277,7 +277,7 @@ class Slot:
 
         Bot is force-killed (it doesn't write save files). Server is closed
         gracefully so Balatro can finish any in-flight save to disk before
-        exiting — force-kill during save was corrupting meta.jkr.
+        exiting — force-killing it mid-save corrupts meta.jkr.
         """
         # Bot first, force — it holds no on-disk state worth preserving.
         if self.bot_proc and self.bot_proc.poll() is None:
@@ -349,8 +349,8 @@ class Slot:
                 self.recent_lines.append(stripped)
 
         # Wall-clock stall backstop: catches long-period loops the cycle
-        # detector can't see (e.g. the monotonic "retry N" counter produced
-        # an 11-line unique-per-iteration cycle that soft-locked for hours).
+        # detector can't see (e.g. a monotonic "retry N" counter makes every
+        # line of the loop unique).
         if (
             self.last_action_seq_time > 0
             and time.time() - self.last_action_seq_time >= _STALL_TIMEOUT
@@ -443,10 +443,10 @@ class Supervisor:
             print(f"Cleaned up {killed} orphan processes")
             time.sleep(2)
 
-        # Session number now comes from the dashboard (MAX(batch_number)+1),
-        # not from scanning local log files. Fall back to the local scan only
-        # when the dashboard is unreachable / unconfigured, so an offline run
-        # still gets a plausible number for log filenames.
+        # Session number comes from the dashboard (MAX(batch_number)+1).
+        # Fall back to scanning local log files only when the dashboard is
+        # unreachable / unconfigured, so an offline run still gets a
+        # plausible number for log filenames.
         result = dashboard_client.post_batch_start(
             num_instances=len(self.slots),
             games_per_inst=self.games,
@@ -520,7 +520,7 @@ class Supervisor:
 
         # Point Love2D at a per-port APPDATA so each instance has its own
         # Balatro/ save folder (meta.jkr, profile.jkr, save.jkr, settings.jkr).
-        # Shared concurrent writes to the global profile were corrupting it.
+        # Shared concurrent writes to the global profile corrupt it.
         env = os.environ.copy()
         env["APPDATA"] = ensure_isolated_profile(slot.port)
 

@@ -2,10 +2,10 @@
 """Batch stats aggregator for Balatro bot runs.
 
 Usage:
-    python stats.py                    # latest batch across all instances
-    python stats.py 018                # specific batch number
-    python stats.py 018 019 020        # compare multiple batches
-    python stats.py --dir bot_log      # custom log directory
+    python -m stats                    # latest batch across all instances
+    python -m stats 018                # specific batch number
+    python -m stats 018 019 020        # compare multiple batches
+    python -m stats --dir bot_log      # custom log directory
 """
 
 from __future__ import annotations
@@ -51,7 +51,6 @@ def main():
             sys.exit(1)
         batch_nums = [latest]
 
-    # Output directory
     out_dir = log_dir / "stats_output"
     out_dir.mkdir(exist_ok=True)
 
@@ -76,7 +75,6 @@ def main():
         merged = merge_stats(all_stats)
         md = generate_markdown(merged, f"Batch {batch_num}")
 
-        # Write markdown file keyed by batches being compared
         out_file = out_dir / f"batch_{batch_num}.md"
         out_file.write_text(md, encoding="utf-8")
 

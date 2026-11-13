@@ -120,9 +120,9 @@ class PickFromTarotPack:
 
         # Only handle Tarot packs — require the majority of cards to be
         # tarots. Mixed SMODS packs (e.g. a Spectral pack containing a lone
-        # tarot via Hallucination/Perkeo or content mods) used to misroute
-        # here, then choose_from_tarot_pack would happily rank a spectral
-        # at score 0 and fire a targetless RPC that wedged the mod.
+        # tarot via Hallucination/Perkeo or content mods) must not route
+        # here: choose_from_tarot_pack would rank a spectral at score 0 and
+        # fire a targetless RPC that wedges the mod.
         known_keys = set(NO_TARGET_TAROTS) | set(TARGETING_TAROTS)
         tarot_count = sum(1 for c in cards if c.get("key", "") in known_keys)
         if tarot_count * 2 <= len(cards):
@@ -355,8 +355,8 @@ class PickBestFromPack:
     """Fallback: pick the first non-targeting card, or skip."""
     name = "pick_best_from_pack"
 
-    # Tarot cards that require target card selection — we can't use these
-    # from packs since we don't have target selection logic yet.
+    # Tarot cards that require target card selection. This fallback has no
+    # targeting logic, so it never picks them.
     NEEDS_TARGETS = {
         "c_magician", "c_high_priestess", "c_empress", "c_emperor",
         "c_hierophant", "c_lovers", "c_chariot", "c_justice", "c_hermit",

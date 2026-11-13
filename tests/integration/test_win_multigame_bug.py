@@ -1,11 +1,10 @@
-"""Integration test: reproduces game_103 crash — server dies after win screen.
+"""Integration test: the server survives the win screen for a second game.
 
-Reproduces the multi-game crash (2026-04-12):
-  Bot beats ante 8 boss → run_bot returns won=True →
-  server is dead (ConnectError) → next game start fails.
+Failure mode checked: bot beats ante 8 boss → run_bot returns won=True →
+server is dead (ConnectError) → next game start fails.
 
-The existing test_win_crash.py only runs ONE game, so it never
-catches this. This test runs TWO games:
+test_win_crash.py runs only ONE game, so it cannot catch this.
+This test runs TWO games:
   1. Cheat to win at ante 8, run the bot
   2. Verify the server is still alive
   3. Start a second game
@@ -57,7 +56,7 @@ def main():
         print(f"  Server already running on port {args.port}")
         client = BalatroClient(port=args.port)
     else:
-        # fast=False to match stream mode — the bug only triggers with normal
+        # fast=False to match stream mode — the hang only triggers with normal
         # animation speed (fast mode skips the win animation that causes the hang)
         server_proc = start_server(port=args.port, headless=False, fast=False)
         client = BalatroClient(port=args.port)

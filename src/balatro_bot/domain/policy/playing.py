@@ -1,4 +1,4 @@
-"""Playing-phase policy functions — pure decision logic extracted from rules."""
+"""Playing-phase policy functions — pure decision logic behind the rules."""
 
 from __future__ import annotations
 

@@ -3,7 +3,7 @@
 Provides:
 - Score estimation via bot internals (build_snapshot, score_snapshot, play_hand_and_score)
 - Formatted card/joker display (fmt_card, fmt_joker_ability)
-- Detailed scoring dumps matching bot.py's scoring log format
+- Detailed scoring dumps matching the bot's scoring log format (bot_logging.py)
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def fmt_joker_ability(j: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Diagnostic dumps — matches bot.py _log_played_hand detail level
+# Diagnostic dumps — matches bot_logging.log_played_hand detail level
 # ---------------------------------------------------------------------------
 
 def dump_hand_detail(detail: dict, played: list, held: list, scoring: list,
@@ -177,7 +177,7 @@ def dump_joker_diff(pre_jokers: list, post_jokers: list, prefix: str = "    ") -
 # ---------------------------------------------------------------------------
 
 def build_snapshot(state: dict, params: dict, hand_name: str) -> dict:
-    """Build a play snapshot exactly like bot.py lines 700-740."""
+    """Build a play snapshot exactly like bot_logging.build_play_snapshot."""
     hand_cards = state.get("hand", {}).get("cards", [])
     play_indices = set(params.get("cards", []))
 
@@ -211,7 +211,7 @@ def build_snapshot(state: dict, params: dict, hand_name: str) -> dict:
 
 
 def score_snapshot(snapshot: dict) -> tuple[dict, list]:
-    """Score a snapshot exactly like bot.py _log_played_hand.
+    """Score a snapshot exactly like bot_logging.compute_played_hand_detail.
 
     Returns (detail_dict, scoring_cards).
     """

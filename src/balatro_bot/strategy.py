@@ -571,10 +571,9 @@ def _level_signal(
 ) -> dict[str, float]:
     """Sunk-commitment signal: each planet used generates hand affinity.
 
-    Previously the hand-level map only scaled existing scores by 1.2^(level-1),
-    which meant leveling Flush to 5 without owning any Flush joker added zero
-    affinity. Now each level above 1 contributes a base weight regardless of
-    joker ownership, so planet usage reflects commitment.
+    Each level above 1 contributes a base weight regardless of joker
+    ownership, so leveling Flush to 5 adds Flush affinity even without a
+    Flush joker.
     """
     out: dict[str, float] = {}
     if not hand_levels:
