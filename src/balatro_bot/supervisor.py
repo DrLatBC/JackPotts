@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import json
 import logging
 import os
 import random
@@ -51,6 +52,10 @@ SERVER_STARTUP_WAIT = cfg.server_startup_wait
 SERVER_STAGGER = cfg.server_stagger
 BOT_STAGGER = cfg.bot_stagger
 POLL_INTERVAL = cfg.poll_interval
+# The GUI reads STATUS_FILE to show the batch, and creates STOP_FILE to ask
+# for a clean shutdown; the terminal supervisor honours both too.
+STATUS_FILE = LOG_DIR / "supervisor_status.json"
+STOP_FILE = LOG_DIR / "supervisor.stop"
 DEEP_RECOVERY_THRESHOLD = 5
 
 # ---------------------------------------------------------------------------
@@ -454,6 +459,7 @@ class Supervisor:
 
     def setup(self) -> None:
         WINS_DIR.mkdir(parents=True, exist_ok=True)
+        STOP_FILE.unlink(missing_ok=True)
         for slot in self.slots:
             (LOG_DIR / str(slot.port)).mkdir(parents=True, exist_ok=True)
 
@@ -529,6 +535,17 @@ class Supervisor:
 
         prune_balatrobot_logs()
 
+    def _child_console_flags(self) -> int:
+        """Stream mode keeps visible consoles to watch; batches give each child a hidden one.
+
+        Children still get their own console (CREATE_NO_WINDOW), so their
+        output has somewhere to go and they never share the supervisor's.
+        Everything they log already lands in bot_log/ and logs/.
+        """
+        if self.stream:
+            return subprocess.CREATE_NEW_CONSOLE
+        return subprocess.CREATE_NO_WINDOW
+
     def launch_server(self, slot: Slot) -> None:
         cmd = [
             BALATROBOT, "serve",
@@ -548,7 +565,7 @@ class Supervisor:
         slot.server_proc = subprocess.Popen(
             cmd,
             env=env,
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            creationflags=self._child_console_flags(),
         )
         slot.state = "starting"
         slot.last_health = time.time()
@@ -603,7 +620,7 @@ class Supervisor:
             cmd.extend(["--explore", str(explore)])
         slot.bot_proc = subprocess.Popen(
             cmd,
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            creationflags=self._child_console_flags(),
         )
         slot.state = "running"
         slot.log_file = LOG_DIR / str(slot.port) / f"game_{self.session_num:03d}.log"
@@ -719,74 +736,96 @@ class Supervisor:
             self.restart_slot(slot, reason=f"server died rc={server_rc}")
             return
 
+    def _status(self, phase: str) -> dict:
+        """Snapshot of every slot and the batch totals, for the console, the GUI and the dashboard."""
+        slots = []
+        for slot in self.slots:
+            slot.read_progress()
+            slot.read_wins(self.session_num)
+            slots.append({
+                "port": slot.port,
+                "name": slot.name,
+                "deck": self._deck_for_slot(slot),
+                "explore_rate": self._explore_rate_for_slot(slot),
+                "state": slot.state,
+                "progress": slot.progress,
+                "games_completed": int(slot.progress.split("/")[0]) if "/" in slot.progress else 0,
+                "wins": slot.wins,
+                "restarts": slot.restarts,
+                "last_reason": slot.last_reason,
+            })
+        completed = sum(s["games_completed"] for s in slots)
+        total_expected = len(self.slots) * self.games
+        elapsed = time.time() - self.session_start if self.session_start else 0
+        rate = completed / (elapsed / 3600) if elapsed > 30 and completed > 0 else 0.0
+        eta_secs = int((total_expected - completed) / (rate / 3600)) if rate > 0 else None
+        return {
+            "phase": phase,
+            "pid": os.getpid(),
+            "updated": time.time(),
+            "session": self.session_num,
+            "games_per_instance": self.games,
+            "slots": slots,
+            "completed": completed,
+            "total_expected": total_expected,
+            "wins": sum(s["wins"] for s in slots),
+            "rate_per_hour": round(rate, 1),
+            "eta_secs": eta_secs,
+        }
+
+    def _write_status(self, status: dict) -> None:
+        tmp = STATUS_FILE.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(status), encoding="utf-8")
+            os.replace(tmp, STATUS_FILE)
+        except OSError as e:
+            log.warning("Could not write status file: %s", e)
+
     def print_status(self) -> None:
+        status = self._status("running")
+        self._write_status(status)
+
         os.system("cls" if os.name == "nt" else "clear")
         print("  Mother Gothel")
         print("  " + "=" * 50)
         print()
-        for slot in self.slots:
-            slot.read_progress()
-            slot.read_wins(self.session_num)
-            restarts = f" (restarts: {slot.restarts})" if slot.restarts else ""
-            prog = slot.progress or "..."
-            state_icon = {
-                "stopped": ".",
-                "starting": "~",
-                "running": "+",
-                "restarting": "!",
-                "cooldown": "Z",
-                "done": "*",
-                "dead": "X",
-            }.get(slot.state, "?")
-            deck = self._deck_for_slot(slot)
-            if self._explore_rate_for_slot(slot) > 0:
-                deck = f"{deck}*"
-            name_pad = f"{slot.name:<12}"
-            wins_col = f"W:{slot.wins}"
-            state_str = slot.state
-            if slot.last_reason:
-                state_str = f"{slot.state} ({slot.last_reason})"
-            print(f"  [{state_icon}] {name_pad} {deck:<8} {prog:>12}  {wins_col:<6} {state_str}{restarts}")
+        state_icons = {
+            "stopped": ".", "starting": "~", "running": "+", "restarting": "!",
+            "cooldown": "Z", "done": "*", "dead": "X",
+        }
+        for s in status["slots"]:
+            restarts = f" (restarts: {s['restarts']})" if s["restarts"] else ""
+            deck = f"{s['deck']}*" if s["explore_rate"] > 0 else s["deck"]
+            state_str = f"{s['state']} ({s['last_reason']})" if s["last_reason"] else s["state"]
+            print(f"  [{state_icons.get(s['state'], '?')}] {s['name']:<12} {deck:<8} "
+                  f"{s['progress'] or '...':>12}  {'W:' + str(s['wins']):<6} {state_str}{restarts}")
         print()
-        active = sum(1 for s in self.slots if s.state in ("running", "starting"))
-        done = sum(1 for s in self.slots if s.state == "done")
-        total_wins = sum(s.wins for s in self.slots)
-
-        completed = sum(
-            int(s.progress.split("/")[0])
-            for s in self.slots if "/" in s.progress
-        )
-        total_expected = len(self.slots) * self.games
-        win_pct = f" ({100 * total_wins / completed:.1f}%)" if completed > 0 else ""
-
-        elapsed = time.time() - self.session_start if self.session_start else 0
-        if elapsed > 30 and completed > 0:
-            rate = completed / (elapsed / 3600)
-            remaining = total_expected - completed
-            eta_secs = int(remaining / (rate / 3600))
-            h, m = divmod(eta_secs // 60, 60)
-            rate_str = f"  Rate: {rate:.0f} g/hr  ETA: ~{h}h{m:02d}m"
-        else:
-            rate_str = ""
-
-        print(f"  Active: {active}  Done: {done}  Wins: {total_wins}{win_pct}  Session: {self.session_num}{rate_str}")
+        active = sum(1 for s in status["slots"] if s["state"] in ("running", "starting"))
+        done = sum(1 for s in status["slots"] if s["state"] == "done")
+        completed = status["completed"]
+        win_pct = f" ({100 * status['wins'] / completed:.1f}%)" if completed > 0 else ""
+        rate_str = ""
+        if status["eta_secs"] is not None:
+            h, m = divmod(status["eta_secs"] // 60, 60)
+            rate_str = f"  Rate: {status['rate_per_hour']:.0f} g/hr  ETA: ~{h}h{m:02d}m"
+        print(f"  Active: {active}  Done: {done}  Wins: {status['wins']}{win_pct}  Session: {self.session_num}{rate_str}")
         print(f"  Ctrl+C to stop all")
 
         if self.dashboard_batch_id:
             dashboard_client.post_instance_states(self.dashboard_batch_id, [
                 {
-                    "port": s.port,
-                    "name": s.name,
-                    "deck": self._deck_for_slot(s),
-                    "state": s.state,
-                    "games_completed": int(s.progress.split("/")[0]) if "/" in s.progress else 0,
+                    "port": s["port"],
+                    "name": s["name"],
+                    "deck": s["deck"],
+                    "state": s["state"],
+                    "games_completed": s["games_completed"],
                     "games_total": self.games,
-                    "wins": s.wins,
-                    "restarts": s.restarts,
-                    "last_reason": s.last_reason,
-                    "explore_rate": self._explore_rate_for_slot(s),
+                    "wins": s["wins"],
+                    "restarts": s["restarts"],
+                    "last_reason": s["last_reason"],
+                    "explore_rate": s["explore_rate"],
                 }
-                for s in self.slots
+                for s in status["slots"]
             ])
 
     def run(self) -> None:
@@ -809,6 +848,11 @@ class Supervisor:
 
         last_status = 0.0
         while self.running:
+            if STOP_FILE.exists():
+                log.info("Stop file found, shutting down")
+                STOP_FILE.unlink(missing_ok=True)
+                break
+
             for slot in self.slots:
                 self.check_slot(slot)
 
@@ -832,6 +876,7 @@ class Supervisor:
         self.running = False
         log.info("Shutdown requested")
         print("\n  Shutting down...")
+        self._write_status(self._status("stopping"))
         for slot in self.slots:
             slot.kill_pair()
         # Sweep ports for any orphans that escaped process tree kill
@@ -841,6 +886,7 @@ class Supervisor:
         log.info("Shutdown complete. Total restarts: %d", total_restarts)
         if self.session_num > 0:
             self.post_run()
+        self._write_status(self._status("stopped"))
         print("  All princesses recalled.")
 
     def _atexit_abandon(self) -> None:
