@@ -225,6 +225,9 @@ def _check_victory(
         return False
 
     gs.actually_won = True
+    # The winning hand's chips may only be visible in this state; count them
+    # before the round is logged.
+    gs.max_chips_this_blind = max(gs.max_chips_this_blind, state.get("round", {}).get("chips", 0) or 0)
 
     log.info(
         "VICTORY at ante %s round %s (seed=%s) — entering endless mode",
@@ -484,6 +487,7 @@ def run_bot(
         _buying_consumable = None
         _buying_pack_label = None
         _picking_pack_card_label = None
+        _picking_pack_card_set = None
         _selling_joker_label = None
         if method == "sell" and params and "joker" in params:
             jokers_list = state.get("jokers", {}).get("cards", []) or []
@@ -518,6 +522,7 @@ def run_bot(
             cidx = params["card"]
             if cidx < len(pack_open):
                 _picking_pack_card_label = pack_open[cidx].get("label", "?")
+                _picking_pack_card_set = pack_open[cidx].get("set")
 
         pre_play_chips = 0
         play_snapshot = None
@@ -565,7 +570,8 @@ def run_bot(
                 "game_state": game_state,
                 "action_type": method,
                 "detail": _action_detail,
-                "ante": state.get("ante_num"),
+                "ante": (gs.ante_at_blind_start or state.get("ante_num"))
+                        if method in ("play", "discard") else state.get("ante_num"),
                 "blind_name": gs.current_blind_name,
                 "chips_before": _pre_chips,
                 "chips_after": state.get("round", {}).get("chips", 0),
@@ -581,6 +587,10 @@ def run_bot(
                 if hand_name:
                     gs.hand_types_played[hand_name] += 1
                 post_chips = state.get("round", {}).get("chips", 0)
+                # A hand that ends the round can be the last time its chips are
+                # visible: the next poll may land after the round resets.
+                if post_chips > gs.max_chips_this_blind:
+                    gs.max_chips_this_blind = post_chips
                 _scoring_log.info("  POST_PLAY chips_in_round=%d, delta=%d", post_chips, post_chips - pre_play_chips)
                 # The Hook discards 2 held cards BEFORE scoring (before
                 # cards are replenished).  The pre-play snapshot is used
@@ -598,7 +608,7 @@ def run_bot(
                     joker_contribs = None
                 gs.hand_scores.append({
                     "seq": gs.hands_scored,
-                    "ante": state.get("ante_num"),
+                    "ante": gs.ante_at_blind_start or state.get("ante_num"),
                     "blind_name": gs.current_blind_name,
                     "hand_type": hand_name or None,
                     "total_score": actual_score if actual_score > 0 else None,
@@ -611,6 +621,13 @@ def run_bot(
                 gs.jokers_bought.append({
                     "joker_name": _buying_joker_label,
                     "buy_ante": state.get("ante_num", 0),
+                    "source": "shop",
+                })
+            if method == "pack" and _picking_pack_card_set == "JOKER" and _picking_pack_card_label:
+                gs.jokers_bought.append({
+                    "joker_name": _picking_pack_card_label,
+                    "buy_ante": state.get("ante_num", 0),
+                    "source": "pack",
                 })
 
             if _buying_consumable:
@@ -886,8 +903,12 @@ def run_bot(
                     "final_chips": (gs.joker_scaling.get(jb["joker_name"]) or {}).get("chips"),
                     "final_mult": (gs.joker_scaling.get(jb["joker_name"]) or {}).get("mult"),
                     "final_xmult": (gs.joker_scaling.get(jb["joker_name"]) or {}).get("xmult"),
+                    "source": jb.get("source"),
                 }
-                for jb in gs.jokers_bought
+                for jb in gs.jokers_bought + [
+                    {"joker_name": name, "buy_ante": None, "source": "other"}
+                    for name in sorted(final_roster - {jb["joker_name"] for jb in gs.jokers_bought})
+                ]
             ],
             "hand_types": dict(gs.hand_types_played),
             "consumables": gs.consumables_bought,
