@@ -812,13 +812,14 @@ class ControlPanel:
         self._watch_for_finish(status)
 
         if status is not None:
-            phase = "stopping" if status["phase"] == "stopping" or self.stop_requested else "running"
+            phase = ("stopping" if status["phase"] == "stopping" or self.stop_requested
+                     else "starting" if status["phase"] == "starting" else "running")
         else:
             phase = "starting" if starting else "outside" if outside else "idle"
         self.strip.configure(bg=PHASE_COLOURS[phase])
 
         self.start_btn.state(["disabled"] if self.running else ["!disabled"])
-        self.stop_btn.state(["!disabled"] if phase == "running" else ["disabled"])
+        self.stop_btn.state(["!disabled"] if status is not None and phase != "stopping" else ["disabled"])
         self._sync_inputs()
         if not self.running:
             self.stop_requested = False

@@ -903,10 +903,12 @@ class Supervisor:
         print(f"  ({names})\n")
         print(f"  Session {self.session_num}, {self.games} games each\n")
 
+        self._write_status(self._status("starting"))
         for i, slot in enumerate(self.slots):
-            if not self.running:
+            if not self.running or STOP_FILE.exists():
                 break
             self.start_slot(slot)
+            self._write_status(self._status("starting"))
             if i < len(self.slots) - 1:
                 time.sleep(SERVER_STAGGER)
 
