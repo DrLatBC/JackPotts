@@ -190,7 +190,19 @@ def _win_pct(wins: int, games: int) -> str:
     return f"{100 * wins / games:.1f}%" if games else ""
 
 
-# ── Windows notification ──
+# ── Tray icon ──
+
+_WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+
+
+class _WndClass(ctypes.Structure):
+    _fields_ = [
+        ("style", wintypes.UINT), ("lpfnWndProc", _WNDPROC), ("cbClsExtra", ctypes.c_int),
+        ("cbWndExtra", ctypes.c_int), ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON),
+        ("hCursor", wintypes.HANDLE), ("hbrBackground", wintypes.HBRUSH),
+        ("lpszMenuName", wintypes.LPCWSTR), ("lpszClassName", wintypes.LPCWSTR),
+    ]
+
 
 class _NotifyIconData(ctypes.Structure):
     _fields_ = [
@@ -203,27 +215,102 @@ class _NotifyIconData(ctypes.Structure):
     ]
 
 
-def notify(root: tk.Tk, title: str, message: str) -> None:
-    """Show a Windows notification, removing its tray icon a little later."""
-    nif_icon, nif_tip, nif_info = 0x2, 0x4, 0x10
-    nim_add, nim_delete = 0, 2
-    shell32, user32 = ctypes.windll.shell32, ctypes.windll.user32
-    user32.LoadIconW.restype = wintypes.HICON
-    user32.GetParent.restype = wintypes.HWND
-    data = _NotifyIconData()
-    data.cbSize = ctypes.sizeof(_NotifyIconData)
-    data.hWnd = user32.GetParent(root.winfo_id()) or root.winfo_id()
-    data.uID = 1
-    data.uFlags = nif_icon | nif_tip | nif_info
-    data.hIcon = user32.LoadIconW(None, ctypes.c_void_p(32516))  # IDI_INFORMATION
-    data.szTip = "JackPotts"
-    data.szInfoTitle = title[:63]
-    data.szInfo = message[:255]
-    data.dwInfoFlags = 0x1  # NIIF_INFO
-    if not shell32.Shell_NotifyIconW(nim_add, ctypes.byref(data)):
-        root.bell()
-        return
-    root.after(15000, lambda: shell32.Shell_NotifyIconW(nim_delete, ctypes.byref(data)))
+_user32, _shell32 = ctypes.windll.user32, ctypes.windll.shell32
+_user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+_user32.DefWindowProcW.restype = ctypes.c_ssize_t
+_user32.CreateWindowExW.argtypes = [
+    wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int,
+    ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
+_user32.CreateWindowExW.restype = wintypes.HWND
+_user32.FindWindowW.restype = wintypes.HWND
+_user32.RegisterClassW.argtypes = [ctypes.POINTER(_WndClass)]
+_user32.RegisterClassW.restype = wintypes.ATOM
+ctypes.windll.kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+_user32.LoadImageW.restype = wintypes.HANDLE
+_user32.CreatePopupMenu.restype = wintypes.HMENU
+_user32.AppendMenuW.argtypes = [wintypes.HMENU, wintypes.UINT, ctypes.c_size_t, wintypes.LPCWSTR]
+_user32.TrackPopupMenu.argtypes = [
+    wintypes.HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.LPVOID]
+_user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+
+TRAY_CLASS = "JackPottsTray"
+WM_TRAY = 0x8001  # WM_APP + 1: clicks on the tray icon
+WM_SHOW_PANEL = 0x8002  # WM_APP + 2: a second launch asking this panel to come forward
+_MENU_OPEN, _MENU_QUIT = 1, 2
+
+
+def show_running_panel() -> bool:
+    """Bring forward a panel that is already running; False when there is none."""
+    hwnd = _user32.FindWindowW(TRAY_CLASS, None)
+    return bool(hwnd) and bool(_user32.PostMessageW(hwnd, WM_SHOW_PANEL, 0, 0))
+
+
+class TrayIcon:
+    """The panel's tray icon: click to open, right-click for Open and Quit, and batch notifications.
+
+    Its hidden window lives on Tk's thread, so Tk's event loop delivers the
+    clicks and the callbacks can touch Tk directly.
+    """
+
+    def __init__(self, on_open, on_quit) -> None:
+        self.on_open, self.on_quit = on_open, on_quit
+        self._proc = _WNDPROC(self._wndproc)  # held so ctypes doesn't free the callback
+        self._taskbar_created = _user32.RegisterWindowMessageW("TaskbarCreated")
+        wc = _WndClass(lpfnWndProc=self._proc, lpszClassName=TRAY_CLASS,
+                       hInstance=ctypes.windll.kernel32.GetModuleHandleW(None))
+        _user32.RegisterClassW(ctypes.byref(wc))
+        # A plain hidden window rather than a message-only one: the tray menu
+        # needs a window that can take the foreground to close on outside clicks.
+        self.hwnd = _user32.CreateWindowExW(0, TRAY_CLASS, "JackPotts", 0, 0, 0, 0, 0,
+                                            None, None, wc.hInstance, None)
+        self.data = _NotifyIconData(cbSize=ctypes.sizeof(_NotifyIconData), hWnd=self.hwnd, uID=1,
+                                    uFlags=0x1 | 0x2 | 0x4,  # NIF_MESSAGE | NIF_ICON | NIF_TIP
+                                    uCallbackMessage=WM_TRAY, szTip="JackPotts")
+        self.data.hIcon = _user32.LoadImageW(None, str(ICON_FILE), 1, 0, 0, 0x10 | 0x40)  # file, default size
+        _shell32.Shell_NotifyIconW(0, ctypes.byref(self.data))  # NIM_ADD
+
+    def notify(self, title: str, message: str) -> None:
+        self.data.uFlags |= 0x10  # NIF_INFO
+        self.data.szInfoTitle = title[:63]
+        self.data.szInfo = message[:255]
+        self.data.dwInfoFlags = 0x1  # NIIF_INFO
+        _shell32.Shell_NotifyIconW(1, ctypes.byref(self.data))  # NIM_MODIFY
+        self.data.uFlags &= ~0x10
+
+    def close(self) -> None:
+        _shell32.Shell_NotifyIconW(2, ctypes.byref(self.data))  # NIM_DELETE
+        _user32.DestroyWindow(self.hwnd)
+
+    def _menu(self) -> None:
+        menu = _user32.CreatePopupMenu()
+        _user32.AppendMenuW(menu, 0, _MENU_OPEN, "Open")
+        _user32.AppendMenuW(menu, 0, _MENU_QUIT, "Quit panel")
+        pt = wintypes.POINT()
+        _user32.GetCursorPos(ctypes.byref(pt))
+        _user32.SetForegroundWindow(self.hwnd)
+        choice = _user32.TrackPopupMenu(menu, 0x100 | 0x2, pt.x, pt.y, 0, self.hwnd, None)  # RETURNCMD | RIGHTBUTTON
+        _user32.PostMessageW(self.hwnd, 0, 0, 0)  # WM_NULL, so the menu closes properly next time
+        _user32.DestroyMenu(menu)
+        if choice == _MENU_OPEN:
+            self.on_open()
+        elif choice == _MENU_QUIT:
+            self.on_quit()
+
+    def _wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == WM_TRAY:
+            event = lparam & 0xFFFF
+            if event == 0x202:  # WM_LBUTTONUP
+                self.on_open()
+            elif event == 0x205:  # WM_RBUTTONUP
+                self._menu()
+            return 0
+        if msg == WM_SHOW_PANEL:
+            self.on_open()
+            return 0
+        if msg == self._taskbar_created:  # Explorer restarted and dropped the icon
+            _shell32.Shell_NotifyIconW(0, ctypes.byref(self.data))
+            return 0
+        return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
 
 # ── Widgets ──
@@ -537,7 +624,18 @@ class ControlPanel:
         self._style()
         self.tooltip = Tooltip(root)
         self._build()
+        self.tray = TrayIcon(on_open=self.show, on_quit=self.quit)
+        root.protocol("WM_DELETE_WINDOW", root.withdraw)
         self.refresh()
+
+    def show(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def quit(self) -> None:
+        self.tray.close()
+        self.root.destroy()
 
     # ── Layout ──
 
@@ -804,7 +902,7 @@ class ControlPanel:
             return
         final = read_status_file()
         if final and final.get("session") == self.watched_session:
-            notify(self.root, f"Batch #{self.watched_session} ended", batch_summary(final))
+            self.tray.notify(f"Batch #{self.watched_session} ended", batch_summary(final))
         self.watched_session = None
 
     def refresh(self, reschedule: bool = True) -> None:
@@ -837,7 +935,7 @@ class ControlPanel:
             "starting": "Starting the supervisor…",
             "outside": "A batch started outside this panel holds the instance ports. Stop it there first.",
             "stopping": "Stopping: closing games, uploading results and running stats…",
-        }.get(phase, "Closing this window never stops a batch."))
+        }.get(phase, "Closing hides the panel to the tray. Batches keep running."))
 
         if reschedule:
             self.root.after(REFRESH_MS, self.refresh)
@@ -898,6 +996,8 @@ def main() -> None:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
         pass
+    if show_running_panel():
+        return
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     except (AttributeError, OSError):

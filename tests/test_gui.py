@@ -168,10 +168,10 @@ def test_bot_switches_rate_from_the_file_before_a_game(tmp_path, monkeypatch):
 
 def test_panel_notifies_once_when_its_batch_ends(monkeypatch):
     sent = []
-    monkeypatch.setattr(gui, "notify", lambda root, title, msg: sent.append((title, msg)))
     final = {"phase": "stopped", "session": 178, "completed": 120, "total_expected": 120, "wins": 6}
     monkeypatch.setattr(gui, "read_status_file", lambda: final)
-    panel = type("P", (), {"watched_session": None, "root": None})()
+    tray = type("T", (), {"notify": lambda self, title, msg: sent.append((title, msg))})()
+    panel = type("P", (), {"watched_session": None, "tray": tray})()
     watch = gui.ControlPanel._watch_for_finish
 
     watch(panel, None)
@@ -180,3 +180,22 @@ def test_panel_notifies_once_when_its_batch_ends(monkeypatch):
     watch(panel, None)
     watch(panel, None)
     assert sent == [("Batch #178 ended", "120 / 120 games  ·  6 wins  5.0%")]
+
+
+def test_tray_clicks_and_second_launch_open_the_panel():
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    events = []
+    tray = gui.TrayIcon(on_open=lambda: events.append("open"), on_quit=lambda: events.append("quit"))
+    try:
+        gui._user32.PostMessageW(tray.hwnd, gui.WM_TRAY, 0, 0x202)  # left click
+        assert gui.show_running_panel()
+        for _ in range(20):
+            root.update()
+        assert events == ["open", "open"]
+    finally:
+        tray.close()
+        root.destroy()
+    assert not gui.show_running_panel()
