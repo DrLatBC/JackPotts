@@ -26,6 +26,9 @@ from tkinter import messagebox, ttk
 
 from balatro_bot.supervisor import BASE_DIR, BASE_PORT, LOG_DIR, PYTHON, STATUS_FILE, STOP_FILE
 
+ICON_FILE = Path(__file__).parent / "assets" / "jackpotts.ico"
+# Without its own app ID, Windows groups the window under pythonw.exe and shows Python's icon.
+APP_ID = "DrLatBC.JackPotts.ControlPanel"
 SETTINGS_FILE = LOG_DIR / "gui_settings.json"
 CONSOLE_LOG = LOG_DIR / "supervisor_console.log"
 DASHBOARD_URL = "https://jackpotts.drlat.dev/dashboard"
@@ -895,7 +898,12 @@ def main() -> None:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
         pass
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except (AttributeError, OSError):
+        pass
     root = tk.Tk()
+    root.iconbitmap(default=str(ICON_FILE))
     ControlPanel(root)
     root.mainloop()
 
