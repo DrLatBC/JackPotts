@@ -722,12 +722,15 @@ class ShopEvaluator:
         self._rerolls_this_shop: int = 0
         self._last_round: int = -1
         self.slots_full: bool = False  # set by bot.py on "slots are full" API error
+        # What the last evaluate() weighed and chose; bot.py logs it per action.
+        self.last_decision: dict | None = None
         # SellInvisible state
         self._invisible_first_seen: int | None = None
         self._invisible_selling_down: bool = False
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         """Main entry point — called once per shop tick."""
+        self.last_decision = None
         round_num = state.get("round_num", 0)
 
         # Reset per-shop state on new shop visit
@@ -745,6 +748,7 @@ class ShopEvaluator:
                 action = self.pending_plan.pop(0)
                 if not self.pending_plan:
                     self.pending_plan = None
+                self.last_decision = {"kind": "shop", "continuation": True}
                 return action
             else:
                 log.info("[SHOP] pending plan invalidated, re-evaluating")
@@ -1169,6 +1173,7 @@ class ShopEvaluator:
             return NextRound(reason="done shopping")
 
         best = max(candidates, key=lambda c: c.net_value)
+        self.last_decision = _shop_decision_record(best, candidates, budget, roster)
 
         log.info(
             "[SHOP] %s (value=%.1f, budget=%s/$%d, aggression scoring=%.1f/spec=%.1f) | "
@@ -1249,6 +1254,51 @@ class ShopEvaluator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_DECISION_TOP_N = 8
+
+
+def _shop_decision_record(
+    best: ActionPlan,
+    candidates: list[ActionPlan],
+    budget: Budget,
+    roster: list[JokerScore],
+) -> dict:
+    """The ranked plans, budget and roster scores behind one shop choice.
+
+    The chosen plan is always candidates[0]; the rest are the runners-up by
+    net_value, so a learner can see what the bot turned down.
+    """
+    ranked = [best] + sorted(
+        (c for c in candidates if c is not best), key=lambda c: -c.net_value,
+    )[:_DECISION_TOP_N - 1]
+    return {
+        "kind": "shop",
+        "continuation": False,
+        "chosen_idx": 0,
+        "n_candidates": len(candidates),
+        "candidates": [
+            {
+                "desc": c.description,
+                "value": round(c.net_value, 3),
+                "steps": [list(s.to_rpc()) for s in c.steps],
+            }
+            for c in ranked
+        ],
+        "budget": {
+            "phase": budget.phase,
+            "reserve": budget.reserve,
+            "spend_ceiling": budget.spend_ceiling,
+            "scoring_agg": budget.scoring_aggression,
+            "speculative_agg": budget.speculative_aggression,
+        },
+        "roster_scores": [
+            {"key": r.key, "ev": round(r.ev_delta, 3), "sell": r.sell_value,
+             "effective": round(r.effective_value, 3)}
+            for r in roster
+        ],
+    }
+
 
 def _get_edition(card: dict) -> str | None:
     """Return the edition string for a card, or None."""

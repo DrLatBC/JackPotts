@@ -73,6 +73,22 @@ REAL_BALATRO_DIR = REAL_APPDATA / "Balatro"
 GRACEFUL_EXIT_TIMEOUT = 8.0  # seconds to wait for Balatro to finish saving on shutdown
 
 
+def _code_version() -> str | None:
+    """Short commit hash of the bot checkout, suffixed "-dirty" when tracked files differ."""
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=BASE_DIR,
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=BASE_DIR,
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return f"{sha}-dirty" if dirty else sha
+
+
 def ensure_isolated_profile(port: int) -> str:
     """Create a per-port APPDATA override and return its path.
 
@@ -452,6 +468,7 @@ class Supervisor:
             games_per_inst=self.games,
             decks=",".join(self.decks),
             stake=self.stake,
+            code_version=_code_version(),
         )
         if result is not None:
             self.dashboard_batch_id, self.session_num = result

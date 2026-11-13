@@ -143,6 +143,7 @@ def post_batch_start(
     decks: str,
     stake: str = "WHITE",
     batch_number: Optional[int] = None,
+    code_version: Optional[str] = None,
 ) -> Optional[tuple[int, int]]:
     """Create a new batch. Server auto-assigns batch_number when not supplied.
 
@@ -156,6 +157,8 @@ def post_batch_start(
     }
     if batch_number is not None:
         payload["batch_number"] = batch_number
+    if code_version is not None:
+        payload["code_version"] = code_version
 
     result = _post("/api/ingest/batch/start", payload)
     if result and "batch_id" in result and "batch_number" in result:

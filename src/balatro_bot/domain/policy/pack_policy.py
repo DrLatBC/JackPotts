@@ -1,4 +1,4 @@
-"""Pack-phase policy functions — pure decision logic extracted from rules.
+"""Pack-phase policy functions — pure decision logic behind the rules.
 
 Contains scoring and pick logic for pack decisions (Tarot, Planet, Buffoon, Spectral).
 Rules in rules/packs.py are thin wrappers around these.
@@ -104,21 +104,43 @@ def score_planet_card(
     return score
 
 
+def _record_option(
+    options_out: list[dict] | None,
+    idx: int,
+    card: dict,
+    score: float | None = None,
+    *,
+    excluded: str | None = None,
+) -> None:
+    """Append one pack card's score (or why it was ruled out) for decision logging."""
+    if options_out is None:
+        return
+    entry: dict = {"idx": idx, "key": card.get("key") or card.get("label")}
+    if score is not None:
+        entry["score"] = round(score, 3)
+    if excluded is not None:
+        entry["excluded"] = excluded
+    options_out.append(entry)
+
+
 def choose_from_planet_pack(
     cards: list[dict],
     strat: Strategy,
     hand_levels: dict,
     joker_keys: set[str],
+    options_out: list[dict] | None = None,
 ) -> tuple[int, float, str]:
     """Pick the best planet from a pack.
 
-    Returns (best_index, best_score, reason_string).
+    Returns (best_index, best_score, reason_string). When *options_out* is
+    given, every card's score is appended to it.
     """
     best_idx = 0
     best_score = -1.0
 
     for i, card in enumerate(cards):
         score = score_planet_card(card, strat, hand_levels, joker_keys)
+        _record_option(options_out, i, card, score)
         if score > best_score:
             best_score = score
             best_idx = i
@@ -145,10 +167,12 @@ def choose_from_buffoon_pack(
     always_buy_keys: set[str],
     deck_profile: DeckProfile | None = None,
     blind_name: str | None = None,
+    options_out: list[dict] | None = None,
 ) -> tuple[int, float, str]:
     """Pick the best joker from a Buffoon pack.
 
-    Returns (best_index, best_score, reason_string).
+    Returns (best_index, best_score, reason_string). When *options_out* is
+    given, every card's score, or the reason it was ruled out, is appended.
     """
     from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
     from balatro_bot.scaling import check_anti_synergy
@@ -166,15 +190,18 @@ def choose_from_buffoon_pack(
 
         # Non-Negative jokers can't be picked when slots are full
         if slots_full and not _is_negative(card):
+            _record_option(options_out, i, card, excluded="slots_full")
             continue
 
         # Don't add Madness onto an existing scaler roster — it will eat them.
         # (Buying scalers *into* a Madness roster is fine — they're fodder.)
         if key == "j_madness" and owned_keys & SCALING_JOKERS:
+            _record_option(options_out, i, card, excluded="madness_on_scalers")
             continue
 
         # General anti-synergy check
         if check_anti_synergy(key, owned_keys):
+            _record_option(options_out, i, card, excluded="anti_synergy")
             continue
 
         score = evaluate_joker_value(
@@ -191,6 +218,7 @@ def choose_from_buffoon_pack(
         if _is_negative(card):
             score = max(score, _NEGATIVE_MIN_SCORE)
 
+        _record_option(options_out, i, card, score)
         if score > best_score:
             best_score = score
             best_idx = i
@@ -305,10 +333,13 @@ def choose_from_spectral_pack(
     hand_levels: dict,
     hand_cards: list[dict],
     strat: Strategy | None,
+    options_out: list[dict] | None = None,
 ) -> tuple[int | None, float, str, list[int] | None]:
     """Pick the best spectral from a pack.
 
     Returns (best_index_or_None, best_score, reason_string, targets_or_None).
+    When *options_out* is given, every card's score, or the reason it was
+    ruled out, is appended.
     """
     from balatro_bot.strategy import compute_strategy
 
@@ -321,8 +352,10 @@ def choose_from_spectral_pack(
     for i, card in enumerate(cards):
         key = card.get("key", "")
         if key in random_destroy and len(hand_cards) < 2:
+            _record_option(options_out, i, card, excluded="hand_too_small")
             continue
         score = score_spectral_card(card, jokers, joker_slots, ante, hand_levels, strat)
+        _record_option(options_out, i, card, score)
         if score > best_score:
             best_score = score
             best_idx = i
@@ -356,10 +389,13 @@ def choose_from_tarot_pack(
     hand_cards: list[dict],
     jokers: list[dict],
     strat: Strategy,
+    options_out: list[dict] | None = None,
 ) -> tuple[int | None, float, str, list[int] | None]:
     """Pick the best tarot from a pack.
 
     Returns (best_index_or_None, best_score, reason_string, targets_or_None).
+    When *options_out* is given, every card's score, or the reason it was
+    ruled out, is appended.
     """
     from balatro_bot.domain.policy.consumable_policy import score_consumable
 
@@ -374,8 +410,10 @@ def choose_from_tarot_pack(
         # could otherwise win here, and firing pack({card: i}) without
         # targets wedges the mod's pack-selection guard.
         if key not in known_tarots:
+            _record_option(options_out, i, card, excluded="not_tarot")
             continue
         score = score_consumable(key, state, strat)
+        _record_option(options_out, i, card, score)
         if score <= best_score:
             continue
 
@@ -387,7 +425,9 @@ def choose_from_tarot_pack(
                 effect_type, extra, max_count, hand_cards, jokers, strat,
             )
             if not found_targets:
-                continue  # can't use this tarot — no valid targets
+                if options_out is not None:
+                    options_out[-1]["excluded"] = "no_targets"
+                continue
             targets = found_targets
 
         best_score = score

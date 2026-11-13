@@ -190,5 +190,9 @@ class UnifiedShopRule:
     def __init__(self) -> None:
         self._evaluator = ShopEvaluator()
 
+    @property
+    def last_decision(self) -> dict | None:
+        return self._evaluator.last_decision
+
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         return self._evaluator.evaluate(state)

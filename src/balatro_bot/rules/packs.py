@@ -17,6 +17,29 @@ if TYPE_CHECKING:
 log = logging.getLogger("balatro_bot")
 
 
+def _pack_decision(
+    rule: str,
+    state: dict[str, Any],
+    options: list[dict],
+    chosen_idx: int | None,
+    reason: str,
+    **extra: Any,
+) -> dict:
+    """What a pack rule weighed and chose, for bot.py's decision log.
+
+    chosen_idx is None when the pack is skipped.
+    """
+    return {
+        "kind": "pack",
+        "rule": rule,
+        "pack_state": state.get("state"),
+        "options": options,
+        "chosen_idx": chosen_idx,
+        "reason": reason,
+        **extra,
+    }
+
+
 class SkipPackForRedCard:
     """Skip packs to trigger Red Card's +3 mult scaling.
 
@@ -25,11 +48,13 @@ class SkipPackForRedCard:
     or Black Hole — those are always picked regardless of Red Card.
     """
     name = "skip_pack_for_red_card"
+    last_decision: dict | None = None
 
     # Margin: the pick must clearly beat the skip to override.
     _PICK_MARGIN = 1.3
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        self.last_decision = None
         from balatro_bot.scaling import red_card_skip_value
 
         jokers = state.get("jokers", {}).get("cards", [])
@@ -57,10 +82,15 @@ class SkipPackForRedCard:
         if best_pick > skip_value * self._PICK_MARGIN:
             return None  # let the normal pick rule fire
 
-        return PackAction(
+        action = PackAction(
             card_index=None,
             reason=f"skip pack for Red Card (+3 mult, skip={skip_value:.1f} > pick={best_pick:.1f})",
         )
+        self.last_decision = _pack_decision(
+            self.name, state, [], None, action.reason,
+            skip_value=round(skip_value, 3), best_pick=round(best_pick, 3),
+        )
+        return action
 
 
 def _best_pack_pick_value(state: dict[str, Any], cards: list[dict], jokers: list[dict]) -> float:
@@ -109,8 +139,10 @@ def _best_pack_pick_value(state: dict[str, Any], cards: list[dict], jokers: list
 class PickFromTarotPack:
     """Pick the best Tarot card from an Arcana pack using dynamic scoring."""
     name = "pick_from_tarot_pack"
+    last_decision: dict | None = None
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        self.last_decision = None
         from balatro_bot.domain.policy.pack_policy import choose_from_tarot_pack
 
         pack = state.get("pack", {})
@@ -133,9 +165,11 @@ class PickFromTarotPack:
         hand_levels = state.get("hands", {})
         strat = compute_strategy(jokers, hand_levels)
 
+        options: list[dict] = []
         best_idx, best_score, reason, targets = choose_from_tarot_pack(
-            cards, state, hand_cards, jokers, strat,
+            cards, state, hand_cards, jokers, strat, options_out=options,
         )
+        self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)
 
         if best_idx is not None:
             if targets:
@@ -148,8 +182,10 @@ class PickFromTarotPack:
 class PickFromPlanetPack:
     """Pick the planet card that best synergizes with our strategy."""
     name = "pick_from_planet_pack"
+    last_decision: dict | None = None
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        self.last_decision = None
         from balatro_bot.domain.policy.pack_policy import choose_from_planet_pack
 
         pack = state.get("pack", {})
@@ -172,9 +208,11 @@ class PickFromPlanetPack:
         hand_levels = state.get("hands", {})
         strat = compute_strategy(jokers, hand_levels)
 
+        options: list[dict] = []
         best_idx, best_score, reason = choose_from_planet_pack(
-            cards, strat, hand_levels, joker_keys,
+            cards, strat, hand_levels, joker_keys, options_out=options,
         )
+        self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)
 
         # Log planets not chosen
         passed = []
@@ -195,8 +233,10 @@ class PickFromPlanetPack:
 class PickFromBuffoonPack:
     """Pick the joker with the best scoring effect from a Buffoon pack."""
     name = "pick_from_buffoon_pack"
+    last_decision: dict | None = None
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        self.last_decision = None
         from balatro_bot.domain.policy.pack_policy import choose_from_buffoon_pack
 
         pack = state.get("pack", {})
@@ -214,7 +254,9 @@ class PickFromBuffoonPack:
         if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
             from balatro_bot.domain.policy.shop import _is_negative
             if not any(_is_negative(c) for c in cards):
-                return PackAction(card_index=None, reason="skip buffoon pack (joker slots full)")
+                reason = "skip buffoon pack (joker slots full)"
+                self.last_decision = _pack_decision(self.name, state, [], None, reason)
+                return PackAction(card_index=None, reason=reason)
 
         owned_jokers = joker_slots.get("cards", [])
         hand_levels = state.get("hands", {})
@@ -228,12 +270,15 @@ class PickFromBuffoonPack:
              if isinstance(b, dict) and b.get("status") == "CURRENT"),
             None,
         )
+        options: list[dict] = []
         best_idx, best_score, reason = choose_from_buffoon_pack(
             cards, owned_jokers, hand_levels, ante, joker_limit, strat,
             always_buy_keys=ALWAYS_BUY,
             deck_profile=_get_deck_profile(state),
             blind_name=blind_name,
+            options_out=options,
         )
+        self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)
 
         return PackAction(card_index=best_idx, reason=reason)
 
@@ -241,8 +286,10 @@ class PickFromBuffoonPack:
 class PickFromSpectralPack:
     """Pick the best Spectral card from a Spectral pack."""
     name = "pick_from_spectral_pack"
+    last_decision: dict | None = None
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        self.last_decision = None
         from balatro_bot.domain.policy.pack_policy import choose_from_spectral_pack
 
         pack = state.get("pack", {})
@@ -261,9 +308,12 @@ class PickFromSpectralPack:
         hand_cards = state.get("hand", {}).get("cards", [])
         strat = compute_strategy(jokers, hand_levels) if jokers else None
 
+        options: list[dict] = []
         best_idx, best_score, reason, targets = choose_from_spectral_pack(
             cards, jokers, joker_slots, ante, hand_levels, hand_cards, strat,
+            options_out=options,
         )
+        self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)
 
         if best_idx is None:
             return PackAction(card_index=None, reason=reason)
@@ -277,6 +327,7 @@ class PickFromSpectralPack:
 class PickFromStandardPack:
     """Evaluate Standard pack cards against strategy; pick or skip."""
     name = "pick_from_standard_pack"
+    last_decision: dict | None = None
 
     # Minimum score for a card to be worth picking (vs diluting the deck)
     _PICK_THRESHOLD = 2.0
@@ -293,6 +344,7 @@ class PickFromStandardPack:
     _SEAL_BONUS = {"RED": 6.0, "GOLD": 4.0, "BLUE": 3.0, "PURPLE": 3.0}
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        self.last_decision = None
         pack = state.get("pack", {})
         cards = pack.get("cards", [])
         if not cards:
@@ -308,6 +360,7 @@ class PickFromStandardPack:
 
         best_idx = None
         best_score = -1.0
+        options: list[dict] = []
 
         for i, card in enumerate(cards):
             score = 0.0
@@ -335,6 +388,7 @@ class PickFromStandardPack:
                 if seal:
                     score += self._SEAL_BONUS.get(seal.upper(), 0.0)
 
+            options.append({"idx": i, "key": card.get("label"), "score": round(score, 3)})
             if score > best_score:
                 best_score = score
                 best_idx = i
@@ -343,17 +397,23 @@ class PickFromStandardPack:
             c = cards[best_idx]
             label = c.get("label", "?")
             log.info("Standard pack: pick %s (score=%.1f)", label, best_score)
-            return PackAction(
-                card_index=best_idx,
-                reason=f"standard pack: pick {label} (value={best_score:.1f})",
+            reason = f"standard pack: pick {label} (value={best_score:.1f})"
+            self.last_decision = _pack_decision(
+                self.name, state, options, best_idx, reason, threshold=self._PICK_THRESHOLD,
             )
+            return PackAction(card_index=best_idx, reason=reason)
 
-        return PackAction(card_index=None, reason="skip standard pack (no strategic value)")
+        reason = "skip standard pack (no strategic value)"
+        self.last_decision = _pack_decision(
+            self.name, state, options, None, reason, threshold=self._PICK_THRESHOLD,
+        )
+        return PackAction(card_index=None, reason=reason)
 
 
 class PickBestFromPack:
     """Fallback: pick the first non-targeting card, or skip."""
     name = "pick_best_from_pack"
+    last_decision: dict | None = None
 
     # Tarot cards that require target card selection. This fallback has no
     # targeting logic, so it never picks them.
@@ -366,6 +426,7 @@ class PickBestFromPack:
     }
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
+        self.last_decision = None
         pack = state.get("pack", {})
         cards = pack.get("cards", [])
         if not cards:
@@ -375,7 +436,11 @@ class PickBestFromPack:
         for i, card in enumerate(cards):
             key = card.get("key", "")
             if key not in self.NEEDS_TARGETS:
-                return PackAction(card_index=i, reason=f"pick: {card.get('label', '?')}")
+                reason = f"pick: {card.get('label', '?')}"
+                self.last_decision = _pack_decision(self.name, state, [], i, reason)
+                return PackAction(card_index=i, reason=reason)
 
         # All cards need targets — skip the pack
-        return PackAction(card_index=None, reason="skip pack (all cards need targets)")
+        reason = "skip pack (all cards need targets)"
+        self.last_decision = _pack_decision(self.name, state, [], None, reason)
+        return PackAction(card_index=None, reason=reason)

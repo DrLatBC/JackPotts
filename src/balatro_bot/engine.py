@@ -63,6 +63,7 @@ class RuleEngine:
 
     def __init__(self, rules: dict[str, list[Rule]] | None = None) -> None:
         self.rules = rules or dict(DEFAULT_RULES)
+        self.last_rule: Rule | None = None
 
     def add_rule(self, game_state: str, rule: Rule, priority: int | None = None) -> None:
         if game_state not in self.rules:
@@ -77,11 +78,13 @@ class RuleEngine:
 
         game_state = state.get("state", "")
         rules = self.rules.get(game_state, [])
+        self.last_rule = None
 
         try:
             for rule in rules:
                 action = rule.evaluate(state)
                 if action is not None:
+                    self.last_rule = rule
                     return action
         finally:
             state.pop("_round_ctx", None)

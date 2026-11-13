@@ -13,6 +13,9 @@ import httpx
 from balatrobot import APIError, BalatroClient
 
 from balatro_bot.bot_format import fmt_card, format_card_detail
+from balatro_bot.bot_logging import (
+    build_decision_state, deck_composition, pack_offer_items, record_decision, shop_offer_items,
+)
 from balatro_bot.engine import RuleEngine
 
 log = logging.getLogger("balatro_bot")
@@ -61,6 +64,7 @@ class GameLoopState:
     pack_offers: list = field(default_factory=list)  # [{ante, pack_seq, ...}]
     tags_seen: list = field(default_factory=list)    # [{ante, round, tag_key, ...}]
     blind_decisions: list = field(default_factory=list)  # [{ante, blind_type, action, ...}]
+    decisions: list = field(default_factory=list)  # shop/pack choices: [{seq, kind, state, ...}]
     shop_visit_seq: int = 0          # incremented on SHOP entry; resets between games
     last_shop_signature: str | None = None  # detect post-reroll roster change
     pack_seq: int = 0                # incremented on each pack opened
@@ -253,30 +257,7 @@ def _capture_shop_offer(gs: "GameLoopState", state: dict) -> None:
         gs.shop_visit_seq += 1
     gs.last_shop_signature = sig
 
-    items = []
-    for c in shop_cards:
-        items.append({
-            "slot": "shop",
-            "set": c.get("set"),
-            "label": c.get("label"),
-            "cost": (c.get("cost") or {}).get("buy"),
-            "rarity": c.get("rarity"),
-            "edition": (c.get("edition") or None) if c.get("edition") else None,
-        })
-    for v in vouchers:
-        items.append({
-            "slot": "voucher",
-            "set": "VOUCHER",
-            "label": v.get("label"),
-            "cost": (v.get("cost") or {}).get("buy"),
-        })
-    for p in packs:
-        items.append({
-            "slot": "pack",
-            "set": "BOOSTER",
-            "label": p.get("label"),
-            "cost": (p.get("cost") or {}).get("buy"),
-        })
+    items = shop_offer_items(state)
     gs.shop_offers.append({
         "ante": state.get("ante_num"),
         "round": state.get("round_num"),
@@ -292,17 +273,7 @@ def _capture_pack_offer(gs: "GameLoopState", state: dict) -> None:
     if not pack_cards:
         return
     gs.pack_seq += 1
-    items = []
-    for c in pack_cards:
-        items.append({
-            "label": c.get("label"),
-            "set": c.get("set"),
-            "rank": (c.get("value") or {}).get("rank"),
-            "suit": (c.get("value") or {}).get("suit"),
-            "enhancement": (c.get("modifier") or {}).get("enhancement") if isinstance(c.get("modifier"), dict) else None,
-            "edition": (c.get("edition") or None) if c.get("edition") else None,
-            "seal": (c.get("modifier") or {}).get("seal") if isinstance(c.get("modifier"), dict) else None,
-        })
+    items = pack_offer_items(state)
     gs.pack_offers.append({
         "ante": state.get("ante_num"),
         "round": state.get("round_num"),
@@ -473,6 +444,11 @@ def run_bot(
             continue
 
         method, params = action.to_rpc()
+        _decision = getattr(engine.last_rule, "last_decision", None)
+        _decision_snapshot = (
+            build_decision_state(gs, state)
+            if _decision is not None and not _decision.get("continuation") else None
+        )
 
         # Rearrange hand cards so scoring order matches the bot's intended play order.
         # Balatro scores left-to-right by hand position, not by click order.
@@ -596,6 +572,9 @@ def run_bot(
                 "money_before": _pre_money,
                 "money_after": state.get("money", 0),
             })
+            if _decision is not None:
+                record_decision(gs, _decision, _decision_snapshot, game_state, method, params,
+                                 _pre_money, state.get("money", 0))
             if method == "play":
                 gs.total_hands_played += 1
                 hand_name = getattr(action, "hand_name", "") or ""
@@ -771,6 +750,9 @@ def run_bot(
                 raise
         except APIError as e:
             gs.consecutive_errors += 1
+            if _decision is not None:
+                record_decision(gs, _decision, _decision_snapshot, game_state, method, params,
+                                 _pre_money, None, error=e.name)
             log.warning("API error: %s (%s) — retry %d", e.message, e.name, gs.consecutive_errors)
 
             # If a consumable use was rejected, block that index so the
@@ -858,21 +840,7 @@ def run_bot(
 
     # Final deck composition counts of remaining draw pile
     _final_deck = state.get("cards", {}).get("cards", []) or []
-    _deck_comp = {
-        "total": len(_final_deck),
-        "ranks": {}, "suits": {}, "enhancements": {}, "seals": {},
-    }
-    for c in _final_deck:
-        v = c.get("value") or {}
-        m = c.get("modifier") if isinstance(c.get("modifier"), dict) else {}
-        rank = v.get("rank") or "STONE"
-        suit = v.get("suit") or "NONE"
-        enh = (m or {}).get("enhancement") or "NONE"
-        seal = (m or {}).get("seal") or "NONE"
-        _deck_comp["ranks"][rank] = _deck_comp["ranks"].get(rank, 0) + 1
-        _deck_comp["suits"][suit] = _deck_comp["suits"].get(suit, 0) + 1
-        _deck_comp["enhancements"][enh] = _deck_comp["enhancements"].get(enh, 0) + 1
-        _deck_comp["seals"][seal] = _deck_comp["seals"].get(seal, 0) + 1
+    _deck_comp = deck_composition(_final_deck)
 
     # Capture log text AFTER log_game_over (includes game summary lines).
     # flush_win() leaves the buffer intact, so this works for wins and losses.
@@ -934,6 +902,7 @@ def run_bot(
             "blind_decisions": gs.blind_decisions,
             "death_info": gs.death_info,
             "final_deck": _deck_comp,
+            "decisions": gs.decisions,
         })
 
     return gs.actually_won

@@ -801,3 +801,161 @@ def log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict) -> N
                 )
     except Exception as e:
         _scoring_log.warning("scoring log error: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Decision records (shop / pack choices for the dashboard)
+# ---------------------------------------------------------------------------
+
+def shop_offer_items(state: dict) -> list[dict]:
+    """Shop cards, vouchers and packs on offer, in the game_shop_offers item format."""
+    shop_cards = state.get("shop", {}).get("cards", []) or []
+    vouchers = state.get("vouchers", {}).get("cards", []) or []
+    packs = state.get("packs", {}).get("cards", []) or []
+    items = []
+    for c in shop_cards:
+        items.append({
+            "slot": "shop",
+            "set": c.get("set"),
+            "key": c.get("key"),
+            "label": c.get("label"),
+            "cost": (c.get("cost") or {}).get("buy"),
+            "rarity": c.get("rarity"),
+            "edition": (c.get("edition") or None) if c.get("edition") else None,
+        })
+    for v in vouchers:
+        items.append({
+            "slot": "voucher",
+            "set": "VOUCHER",
+            "key": v.get("key"),
+            "label": v.get("label"),
+            "cost": (v.get("cost") or {}).get("buy"),
+        })
+    for p in packs:
+        items.append({
+            "slot": "pack",
+            "set": "BOOSTER",
+            "key": p.get("key"),
+            "label": p.get("label"),
+            "cost": (p.get("cost") or {}).get("buy"),
+        })
+    return items
+
+
+def pack_offer_items(state: dict) -> list[dict]:
+    """Cards in the open pack, in the game_pack_offers item format."""
+    pack_cards = state.get("pack", {}).get("cards", []) or []
+    items = []
+    for c in pack_cards:
+        items.append({
+            "key": c.get("key"),
+            "label": c.get("label"),
+            "set": c.get("set"),
+            "rank": (c.get("value") or {}).get("rank"),
+            "suit": (c.get("value") or {}).get("suit"),
+            "enhancement": (c.get("modifier") or {}).get("enhancement") if isinstance(c.get("modifier"), dict) else None,
+            "edition": (c.get("edition") or None) if c.get("edition") else None,
+            "seal": (c.get("modifier") or {}).get("seal") if isinstance(c.get("modifier"), dict) else None,
+        })
+    return items
+
+
+def deck_composition(cards: list[dict]) -> dict:
+    """Rank / suit / enhancement / seal counts for a list of playing cards."""
+    comp: dict = {"total": len(cards), "ranks": {}, "suits": {}, "enhancements": {}, "seals": {}}
+    for c in cards:
+        v = c.get("value") or {}
+        m = c.get("modifier") if isinstance(c.get("modifier"), dict) else {}
+        rank = v.get("rank") or "STONE"
+        suit = v.get("suit") or "NONE"
+        enh = (m or {}).get("enhancement") or "NONE"
+        seal = (m or {}).get("seal") or "NONE"
+        comp["ranks"][rank] = comp["ranks"].get(rank, 0) + 1
+        comp["suits"][suit] = comp["suits"].get(suit, 0) + 1
+        comp["enhancements"][enh] = comp["enhancements"].get(enh, 0) + 1
+        comp["seals"][seal] = comp["seals"].get(seal, 0) + 1
+    return comp
+
+
+def build_decision_state(gs: "GameLoopState", state: dict) -> dict:
+    """Game state at a shop or pack decision, close to what the game shows.
+
+    Kept raw (keys, effect text, counts) rather than the bot's derived
+    features so records stay usable when valuation code changes.
+    """
+    from balatro_bot.cards import _modifier, joker_key
+    from balatro_bot.joker_effects import parse_effect_value
+
+    joker_info = state.get("jokers", {})
+    jokers = []
+    for j in joker_info.get("cards", []) or []:
+        effect = (j.get("value") or {}).get("effect", "") or ""
+        parsed = parse_effect_value(effect) if effect else {}
+        mod = _modifier(j)
+        jokers.append({
+            "key": joker_key(j),
+            "edition": mod.get("edition"),
+            "stickers": [k for k in ("eternal", "perishable", "rental") if mod.get(k)] or None,
+            "sell": (j.get("cost") or {}).get("sell"),
+            "effect": effect or None,
+            "chips": parsed.get("chips"),
+            "mult": parsed.get("mult"),
+            "xmult": parsed.get("xmult"),
+        })
+    cons_info = state.get("consumables", {})
+    used_vouchers = state.get("used_vouchers", {})
+    hand_levels = {
+        ht: d.get("level") for ht, d in (state.get("hands") or {}).items()
+        if hasattr(d, "get") and (d.get("level") or 1) > 1
+    }
+    deck_cards = (state.get("cards", {}).get("cards", []) or []) + (state.get("hand", {}).get("cards", []) or [])
+    game_state = state.get("state", "")
+    return {
+        "money": state.get("money"),
+        "ante": state.get("ante_num"),
+        "round": state.get("round_num"),
+        "shop_visit_seq": gs.shop_visit_seq if game_state == "SHOP" else None,
+        "pack_seq": gs.pack_seq if game_state != "SHOP" else None,
+        "jokers": jokers,
+        "joker_limit": joker_info.get("limit"),
+        "consumables": [c.get("key") for c in cons_info.get("cards", []) or []],
+        "consumable_limit": cons_info.get("limit"),
+        "vouchers": sorted(used_vouchers.keys()) if isinstance(used_vouchers, dict) else [],
+        "hand_levels": hand_levels,
+        "deck": deck_composition(deck_cards),
+        "blinds": [
+            {"name": b.get("name"), "status": b.get("status")}
+            for b in (state.get("blinds") or {}).values() if isinstance(b, dict)
+        ],
+        "shop": shop_offer_items(state) if game_state == "SHOP" else None,
+        "pack": pack_offer_items(state) if game_state != "SHOP" else None,
+    }
+
+
+def record_decision(
+    gs: "GameLoopState",
+    decision: dict,
+    decision_state: dict | None,
+    game_state: str,
+    method: str,
+    params: dict | None,
+    money_before: int,
+    money_after: int | None,
+    error: str | None = None,
+) -> None:
+    """Append one shop/pack decision to the game's decision log."""
+    detail = {k: v for k, v in decision.items() if k not in ("kind", "continuation", "chosen_idx")}
+    gs.decisions.append({
+        "seq": gs.actions_taken,
+        "kind": decision.get("kind"),
+        "game_state": game_state,
+        "policy": "greedy",
+        "continuation": bool(decision.get("continuation")),
+        "chosen_idx": decision.get("chosen_idx"),
+        "action": [method, params],
+        "money_before": money_before,
+        "money_after": money_after,
+        "error": error,
+        "state": decision_state,
+        "detail": detail or None,
+    })
