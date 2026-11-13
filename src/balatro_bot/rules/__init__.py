@@ -11,7 +11,7 @@ from balatro_bot.rules.shop import (
 )
 from balatro_bot.rules.round_eval import AlwaysCashOut
 from balatro_bot.rules.packs import (
-    SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
+    WaitForPackHand, SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
     PickFromBuffoonPack, PickFromSpectralPack, PickFromStandardPack,
     PickBestFromPack,
 )
@@ -24,7 +24,7 @@ __all__ = [
     "ReorderJokersForScoring",
     "UnifiedShopRule",
     "AlwaysCashOut",
-    "SkipPackForRedCard", "PickFromTarotPack", "PickFromPlanetPack",
+    "WaitForPackHand", "SkipPackForRedCard", "PickFromTarotPack", "PickFromPlanetPack",
     "PickFromBuffoonPack", "PickFromSpectralPack", "PickFromStandardPack",
     "PickBestFromPack",
     "UseConsumables",

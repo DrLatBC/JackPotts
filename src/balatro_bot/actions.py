@@ -162,10 +162,16 @@ class PackAction:
         return "pack", params
 
 
+@dataclass(frozen=True)
+class Wait:
+    """Send nothing this poll; the state isn't ready to decide on yet."""
+    reason: str = ""
+
+
 Action = (
     PlayCards | DiscardCards | SelectBlind | SkipBlind | CashOut | NextRound
     | BuyCard | BuyPack | BuyVoucher | SellJoker | SellConsumable | Reroll
-    | RearrangeJokers | RearrangeHand | UseConsumable | PackAction
+    | RearrangeJokers | RearrangeHand | UseConsumable | PackAction | Wait
 )
 
 

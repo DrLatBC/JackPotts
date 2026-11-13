@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from balatro_bot.actions import PackAction, Action
+from balatro_bot.actions import PackAction, Action, Wait
 from balatro_bot.cards import card_rank, card_suit, joker_key
 from balatro_bot.constants import (
     NO_TARGET_TAROTS, TARGETING_TAROTS, PLANET_HAND_MAP, PLANET_KEYS,
@@ -38,6 +38,32 @@ def _pack_decision(
         "reason": reason,
         **extra,
     }
+
+
+class WaitForPackHand:
+    """Hold off while a pack offering targeting cards hasn't dealt the hand.
+
+    A pack can be reported open before its hand is drawn; picking then would
+    send a targeting card with no targets. Gives up after MAX_WAITS polls so
+    a hand that never arrives can't stall the bot.
+    """
+    name = "wait_for_pack_hand"
+    MAX_WAITS = 25
+
+    def __init__(self) -> None:
+        self._waits = 0
+
+    def evaluate(self, state: dict[str, Any]) -> Action | None:
+        cards = state.get("pack", {}).get("cards", [])
+        needs_targets = any(
+            c.get("key", "") in TARGETING_TAROTS or c.get("key", "") in SPECTRAL_TARGETING
+            for c in cards
+        )
+        if not needs_targets or state.get("hand", {}).get("cards") or self._waits >= self.MAX_WAITS:
+            self._waits = 0
+            return None
+        self._waits += 1
+        return Wait(reason="pack hand not dealt yet")
 
 
 class SkipPackForRedCard:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from balatro_bot.actions import Action, Rule
+from balatro_bot.actions import Action, Rule, Wait
 from balatro_bot.rules import (
     VerdantLeafUnlock, FollowRoundPlan, MilkScalingJokers, SellLuchador, PlayWinningHand,
     PlayHighValueHand, DiscardToImprove, PlayBestAvailable,
@@ -12,7 +12,7 @@ from balatro_bot.rules import (
     ReorderJokersForScoring,
     UnifiedShopRule,
     AlwaysCashOut,
-    SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
+    WaitForPackHand, SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
     PickFromBuffoonPack, PickFromSpectralPack, PickFromStandardPack,
     PickBestFromPack,
     UseConsumables,
@@ -46,13 +46,13 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
     "ROUND_EVAL": [
         AlwaysCashOut(),
     ],
-    "TAROT_PACK": [SkipPackForRedCard(), PickFromTarotPack(), PickBestFromPack()],
+    "TAROT_PACK": [WaitForPackHand(), SkipPackForRedCard(), PickFromTarotPack(), PickBestFromPack()],
     "PLANET_PACK": [PickFromPlanetPack(), PickBestFromPack()],
-    "SPECTRAL_PACK": [SkipPackForRedCard(), PickBestFromPack()],
+    "SPECTRAL_PACK": [WaitForPackHand(), SkipPackForRedCard(), PickBestFromPack()],
     "STANDARD_PACK": [SkipPackForRedCard(), PickFromStandardPack(), PickBestFromPack()],
     "BUFFOON_PACK": [PickFromBuffoonPack(), PickBestFromPack()],
     "SMODS_BOOSTER_OPENED": [
-        SkipPackForRedCard(), PickFromTarotPack(), PickFromPlanetPack(),
+        WaitForPackHand(), SkipPackForRedCard(), PickFromTarotPack(), PickFromPlanetPack(),
         PickFromBuffoonPack(), PickFromSpectralPack(), PickBestFromPack(),
     ],
 }
@@ -83,6 +83,8 @@ class RuleEngine:
         try:
             for rule in rules:
                 action = rule.evaluate(state)
+                if isinstance(action, Wait):
+                    return None
                 if action is not None:
                     self.last_rule = rule
                     return action
