@@ -156,7 +156,9 @@ class PackAction:
             return "pack", {"skip": True}
         params: dict[str, Any] = {"card": self.card_index}
         if self.targets is not None:
-            params["cards"] = self.targets
+            # The mod's pack endpoint names hand targets "targets"; its use
+            # endpoint names them "cards".
+            params["targets"] = self.targets
         return "pack", params
 
 
