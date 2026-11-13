@@ -1,10 +1,11 @@
-"""Tests for _sort_play_order and _pad_with_junk — card ordering for scoring."""
+"""Tests for sort_play_order and pad_with_junk — card ordering for scoring."""
 
 from __future__ import annotations
 
 from dataclasses import replace as dc_replace
 
-from balatro_bot.rules._helpers import _sort_play_order, _pad_with_junk
+from balatro_bot.domain.policy.play_padding import pad_with_junk
+from balatro_bot.domain.scoring.play_order import sort_play_order
 from tests.conftest import card, joker
 
 
@@ -18,7 +19,7 @@ def test_hanging_chad_even_steven_prefers_even_card_first():
         card("4", "C"),  # 4: even — Even Steven +4 mult
     ]
     jokers = [joker("j_hanging_chad"), joker("j_even_steven")]
-    result = _sort_play_order([0, 1, 2, 3, 4], hand, jokers)
+    result = sort_play_order([0, 1, 2, 3, 4], hand, jokers)
     # First card must be even (index 3 or 4), not odd
     assert result[0] in (3, 4), f"Expected even card first, got index {result[0]}"
 
@@ -33,7 +34,7 @@ def test_hanging_chad_odd_todd_prefers_odd_card_first():
         card("4", "H"),  # 4: even
     ]
     jokers = [joker("j_hanging_chad"), joker("j_odd_todd")]
-    result = _sort_play_order([0, 1, 2, 3, 4], hand, jokers)
+    result = sort_play_order([0, 1, 2, 3, 4], hand, jokers)
     assert result[0] == 2, f"Expected odd card (7♠) first, got index {result[0]}"
 
 
@@ -47,7 +48,7 @@ def test_hanging_chad_fibonacci_prefers_fib_card_first():
         card("4", "H"),  # 4: not fibonacci
     ]
     jokers = [joker("j_hanging_chad"), joker("j_fibonacci")]
-    result = _sort_play_order([0, 1, 2, 3, 4], hand, jokers)
+    result = sort_play_order([0, 1, 2, 3, 4], hand, jokers)
     assert result[0] == 2, f"Expected Ace (fibonacci) first, got index {result[0]}"
 
 
@@ -61,7 +62,7 @@ def test_hanging_chad_smiley_face_prefers_face_first():
         card("4", "H"),  # 4: not face
     ]
     jokers = [joker("j_hanging_chad"), joker("j_smiley")]
-    result = _sort_play_order([0, 1, 2, 3, 4], hand, jokers)
+    result = sort_play_order([0, 1, 2, 3, 4], hand, jokers)
     assert result[0] == 3, f"Expected Queen (face) first, got index {result[0]}"
 
 
@@ -73,7 +74,7 @@ def test_hanging_chad_no_per_card_jokers_still_works():
         card("Q", "D"),  # 2
     ]
     jokers = [joker("j_hanging_chad")]
-    result = _sort_play_order([0, 1, 2], hand, jokers)
+    result = sort_play_order([0, 1, 2], hand, jokers)
     # All have xm=1.0, so score = 1.0 + 2*add; Ace has highest chip value
     assert result[0] == 0, f"Expected Ace first (highest chips), got index {result[0]}"
 
@@ -86,7 +87,7 @@ def test_hanging_chad_glass_xmult_beats_additive():
         card("6", "S"),  # 2: even
     ]
     jokers = [joker("j_hanging_chad"), joker("j_even_steven")]
-    result = _sort_play_order([0, 1, 2], hand, jokers)
+    result = sort_play_order([0, 1, 2], hand, jokers)
     # Glass x2: xm^3 = 8.0, plus 2*add. Should beat plain even card's 1.0 + 2*add
     assert result[0] == 1, f"Expected Glass card first, got index {result[0]}"
 
@@ -100,7 +101,7 @@ def test_hanging_chad_debuffed_card_never_first():
         card("3", "D"),   # 2: low but not debuffed
     ]
     jokers = [joker("j_hanging_chad"), joker("j_even_steven")]
-    result = _sort_play_order([0, 1, 2], hand, jokers)
+    result = sort_play_order([0, 1, 2], hand, jokers)
     assert result[0] != 0, f"Debuffed card should not be first, got index {result[0]}"
 
 
@@ -112,7 +113,7 @@ def test_hanging_chad_arrowhead_prefers_spade_first():
         card("T", "S"),  # 2: spade — Arrowhead +50 chips
     ]
     jokers = [joker("j_hanging_chad"), joker("j_arrowhead")]
-    result = _sort_play_order([0, 1, 2], hand, jokers)
+    result = sort_play_order([0, 1, 2], hand, jokers)
     assert result[0] == 2, f"Expected spade card first (Arrowhead), got index {result[0]}"
 
 
@@ -124,7 +125,7 @@ def test_hanging_chad_multiple_joker_bonuses_stack():
         card("7", "D"),  # 2: odd, diamond — no bonuses
     ]
     jokers = [joker("j_hanging_chad"), joker("j_even_steven"), joker("j_wrathful_joker")]
-    result = _sort_play_order([0, 1, 2], hand, jokers)
+    result = sort_play_order([0, 1, 2], hand, jokers)
     assert result[0] == 0, f"Expected 8♠ first (even+spade bonuses), got index {result[0]}"
 
 
@@ -136,12 +137,12 @@ def test_no_hanging_chad_glass_goes_last():
         card("Q", "D"),                        # 2: no xmult
     ]
     jokers = []  # no hanging chad
-    result = _sort_play_order([0, 1, 2], hand, jokers)
+    result = sort_play_order([0, 1, 2], hand, jokers)
     assert result[-1] == 0, f"Expected Glass card last, got index {result[-1]} last"
 
 
 def test_rearrange_needed_when_order_differs():
-    """Verify that _sort_play_order can produce non-ascending indices,
+    """Verify that sort_play_order can produce non-ascending indices,
     which signals the bot to call rearrange before playing."""
     hand = [
         card("3", "H"),  # 0: low value
@@ -149,13 +150,13 @@ def test_rearrange_needed_when_order_differs():
         card("8", "S"),  # 2: Even Steven + Wrathful — highest per-trigger
     ]
     jokers = [joker("j_hanging_chad"), joker("j_even_steven"), joker("j_wrathful_joker")]
-    result = _sort_play_order([0, 1, 2], hand, jokers)
+    result = sort_play_order([0, 1, 2], hand, jokers)
     assert result[0] == 2, "8♠ should be first"
     assert result != sorted(result), "Order should differ from ascending — triggers rearrange"
 
 
 # ---------------------------------------------------------------------------
-# _pad_with_junk — High Card junk rank filtering
+# pad_with_junk — High Card junk rank filtering
 # ---------------------------------------------------------------------------
 
 def test_pad_high_card_no_higher_rank_junk():
@@ -167,7 +168,7 @@ def test_pad_high_card_no_higher_rank_junk():
         card("2", "C"),  # 3: safe junk
         card("4", "H"),  # 4: safe junk
     ]
-    padded = _pad_with_junk([2], hand, [], intended_hand="High Card", max_cards=5)
+    padded = pad_with_junk([2], hand, [], intended_hand="High Card", max_cards=5)
     # K and Q should be excluded — they'd become the scoring card
     assert 0 not in padded, "King should not be added as junk (outranks 3)"
     assert 1 not in padded, "Queen should not be added as junk (outranks 3)"
@@ -184,7 +185,7 @@ def test_pad_high_card_allows_lower_rank():
         card("7", "C"),  # 3: safe junk
         card("9", "H"),  # 4: safe junk
     ]
-    padded = _pad_with_junk([0], hand, [], intended_hand="High Card", max_cards=5)
+    padded = pad_with_junk([0], hand, [], intended_hand="High Card", max_cards=5)
     assert len(padded) == 5, "Should pad to 5 with Ace as highest"
     assert padded[0] == 0, "Ace should stay as scoring card"
 
@@ -198,13 +199,13 @@ def test_pad_non_high_card_allows_any_rank():
         card("A", "C"),  # 3: highest rank junk
         card("2", "H"),  # 4: low rank junk
     ]
-    padded = _pad_with_junk([0, 1], hand, [], intended_hand="Pair", max_cards=5)
+    padded = pad_with_junk([0, 1], hand, [], intended_hand="Pair", max_cards=5)
     # For Pair, high-rank junk is fine
     assert len(padded) == 5, "Should pad to 5 for Pair"
 
 
 # ---------------------------------------------------------------------------
-# _pad_with_junk — Splash (ALL_SCORE_JOKERS) exploitation
+# pad_with_junk — Splash (ALL_SCORE_JOKERS) exploitation
 # ---------------------------------------------------------------------------
 
 def test_pad_with_splash_pads_high_card_to_five():
@@ -218,7 +219,7 @@ def test_pad_with_splash_pads_high_card_to_five():
         card("7", "H"),  # 4: junk
     ]
     splash = joker("j_splash", "Splash")
-    padded = _pad_with_junk([0], hand, [splash], intended_hand="High Card", max_cards=5)
+    padded = pad_with_junk([0], hand, [splash], intended_hand="High Card", max_cards=5)
     assert len(padded) == 5, f"Splash should pad High Card to 5 (got {padded})"
     assert 0 in padded, "Original scoring card must remain"
 
@@ -234,7 +235,7 @@ def test_pad_with_splash_preserves_pair_classification():
         card("7", "H"),  # 4: safe junk
     ]
     splash = joker("j_splash", "Splash")
-    padded = _pad_with_junk([0, 1], hand, [splash], intended_hand="Pair", max_cards=5)
+    padded = pad_with_junk([0, 1], hand, [splash], intended_hand="Pair", max_cards=5)
     # Two Pair would break the decided hand type — block at most one K.
     assert not (2 in padded and 3 in padded), (
         f"Splash padding must not upgrade Pair → Two Pair (got {padded})"
@@ -248,5 +249,5 @@ def test_pad_without_splash_still_respects_high_card_rank_cap():
         card("K", "H"),  # 1: outranks scoring card
         card("2", "C"),  # 2: safe junk
     ]
-    padded = _pad_with_junk([0], hand, [], intended_hand="High Card", max_cards=5)
+    padded = pad_with_junk([0], hand, [], intended_hand="High Card", max_cards=5)
     assert 1 not in padded, "Without Splash, K should still be rejected as junk"

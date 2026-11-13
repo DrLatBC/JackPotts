@@ -17,6 +17,7 @@ from balatro_bot.constants import HAND_INFO
 from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
 from balatro_bot.domain.scoring.chase import generate_chases
 from balatro_bot.domain.scoring.estimate import score_hand
+from balatro_bot.domain.scoring.play_order import sort_play_order
 
 
 class ChaseCandidate(NamedTuple):
@@ -98,8 +99,6 @@ def enumerate_hands(
     shortcut     = "j_shortcut" in joker_keys
     smeared      = "j_smeared" in joker_keys
 
-    from balatro_bot.rules._helpers import _sort_play_order
-
     # The Ox: use the game's locked hand directly from API
     _ox_mp = ox_most_played if blind_name == "The Ox" else None
 
@@ -114,7 +113,7 @@ def enumerate_hands(
             )
 
             if jokers:
-                play_order = _sort_play_order(
+                play_order = sort_play_order(
                     list(indices), hand_cards, jokers,
                     idol_rank=idol_rank, idol_suit=idol_suit,
                     ancient_suit=ancient_suit,

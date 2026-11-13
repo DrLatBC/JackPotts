@@ -22,6 +22,7 @@ from balatro_bot.constants import (
     SPECTRAL_TARGETING, TARGETING_TAROTS,
 )
 from balatro_bot.domain.models.deck_profile import DeckProfile
+from balatro_bot.domain.policy.consumable_policy import score_consumable, evaluate_hex
 from balatro_bot.domain.policy.shop_valuation import (
     _KEY_TO_CATEGORY, _copy_target_score, evaluate_joker_value,
 )
@@ -30,7 +31,6 @@ from balatro_bot.joker_effects.scoring_phase import (
     get_joker_phase, get_joker_edition_phase,
     PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
 )
-from balatro_bot.rules._helpers import score_consumable, evaluate_hex
 from balatro_bot.scaling import SELL_PROTECTED, check_anti_synergy
 from balatro_bot.strategy import compute_strategy
 

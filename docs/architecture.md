@@ -64,6 +64,8 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | `scaling_projection.py` | Future-value projections for scaling xmult / additive jokers |
 | `boss_adjustment.py` | Per-joker boss-blind multipliers + shop-phase blended multiplier |
 | `consumable_policy.py` | Consumable use decisions |
+| `targeting.py` | Which hand cards a tarot / spectral / seal targets (`find_*_targets`) |
+| `play_padding.py` | `pad_with_junk` — fills a play with junk cards to cycle the deck |
 | `pack_policy.py` | Pack pick decisions (tarot, planet, buffoon, spectral) |
 | `blind_policy.py` | Blind skip/select policy |
 
@@ -72,6 +74,7 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | File | Role |
 |------|------|
 | `search.py` | `enumerate_hands`, `best_hand`, `discard_candidates` |
+| `play_order.py` | `sort_play_order` — left-to-right order (additive before xmult, Hanging Chad / Photograph / DNA first slot) |
 | `classify.py` | Hand classification + scoring-card extraction |
 | `estimate.py` | Full scoring simulation |
 | `draws.py` | Flush/straight draw probability |
@@ -101,7 +104,6 @@ Thin rule classes per game state. Each has `match(state, ctx)` and `action(state
 | `packs.py` | `*_PACK` rules (tarot / planet / buffoon / spectral pick) |
 | `consumables.py` | Consumable use rules (including Hex selldown) |
 | `round_eval.py` | `ROUND_EVAL` rules (cash out) |
-| `_helpers.py` | Shared rule helpers (`_pad_with_junk`, `_sort_play_order`) |
 
 ### Data models (`domain/models/`)
 

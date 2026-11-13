@@ -14,6 +14,7 @@ from balatro_bot.constants import (
     NO_TARGET_TAROTS, TARGETING_TAROTS, PLANET_HAND_MAP, PLANET_KEYS,
     SCALING_JOKERS, SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
 )
+from balatro_bot.domain.policy.targeting import find_tarot_targets
 
 if TYPE_CHECKING:
     from typing import Any
@@ -309,7 +310,6 @@ def choose_from_spectral_pack(
 
     Returns (best_index_or_None, best_score, reason_string, targets_or_None).
     """
-    from balatro_bot.rules._helpers import _find_tarot_targets
     from balatro_bot.strategy import compute_strategy
 
     best_idx = None
@@ -337,7 +337,7 @@ def choose_from_spectral_pack(
     if key in SPECTRAL_TARGETING:
         pack_strat = compute_strategy(jokers, hand_levels)
         max_count, effect_type, extra = SPECTRAL_TARGETING[key]
-        targets, _ = _find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, pack_strat)
+        targets, _ = find_tarot_targets(effect_type, extra, max_count, hand_cards, jokers, pack_strat)
         if not targets:
             return (None, 0.0, f"skip spectral pack ({label} needs target, none available)", None)
         return (best_idx, best_score, f"spectral pick: {label} (score={best_score:.1f}) -> targets {targets}", targets)
@@ -362,7 +362,6 @@ def choose_from_tarot_pack(
     Returns (best_index_or_None, best_score, reason_string, targets_or_None).
     """
     from balatro_bot.domain.policy.consumable_policy import score_consumable
-    from balatro_bot.rules._helpers import _find_tarot_targets
 
     best_idx = None
     best_score = 0.0
@@ -384,7 +383,7 @@ def choose_from_tarot_pack(
         targets = None
         if key in TARGETING_TAROTS and hand_cards:
             max_count, effect_type, extra = TARGETING_TAROTS[key]
-            found_targets, _ = _find_tarot_targets(
+            found_targets, _ = find_tarot_targets(
                 effect_type, extra, max_count, hand_cards, jokers, strat,
             )
             if not found_targets:

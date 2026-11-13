@@ -1346,7 +1346,7 @@ def _scoring_delta_legacy(
 
         # Half Joker fires when played_cards <= 3. Live bot doesn't pad past
         # the scoring subset when Half is in the roster (FEWER_CARDS_JOKERS
-        # in rules/_helpers.py). Mirror that here so Half actually fires in
+        # in play_padding.py). Mirror that here so Half actually fires in
         # the sim on hands where scoring ≤ 3 (High Card, Pair, 3-of-a-Kind).
         if "j_half" in candidate_keys and len(scoring_cards) <= 3:
             played_cards = list(scoring_cards)

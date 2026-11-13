@@ -18,6 +18,10 @@ from balatro_bot.constants import (
 from balatro_bot.domain.scoring.draws import flush_draw
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.domain.scoring.search import best_hand
+from balatro_bot.domain.policy.targeting import (
+    find_tarot_targets, find_gold_targets, find_enhancement_targets,
+    find_clone_targets,
+)
 
 if TYPE_CHECKING:
     from typing import Any
@@ -134,7 +138,7 @@ _GENERIC_ENHANCE_MULTIPLIER = 1.2   # other enhancements score estimate
 
 
 # ---------------------------------------------------------------------------
-# Dynamic consumable value scoring (moved from _helpers.py)
+# Dynamic consumable value scoring
 # ---------------------------------------------------------------------------
 
 
@@ -318,7 +322,7 @@ def _score_targeting_tarot(
 
 
 # ---------------------------------------------------------------------------
-# Hex evaluation (moved from _helpers.py)
+# Hex evaluation
 # ---------------------------------------------------------------------------
 
 
@@ -399,11 +403,6 @@ def score_use_now(
       ("use_target", idx, targets, reason)     — UseConsumable(idx, target_cards=targets, reason=...)
       ("rearrange", order, reason)             — RearrangeHand(order=order, reason=...)
     """
-    from balatro_bot.rules._helpers import (
-        _find_tarot_targets, _find_gold_targets, _find_enhancement_targets,
-        _find_clone_targets,
-    )
-
     joker_slots = state.get("jokers", {})
 
     # --- Planet cards: always use immediately ---
@@ -499,7 +498,7 @@ def score_use_now(
     # Check Spectral targeting
     if key in SPECTRAL_TARGETING:
         max_count, effect_type, extra = SPECTRAL_TARGETING[key]
-        targets, score = _find_tarot_targets(
+        targets, score = find_tarot_targets(
             effect_type, extra, max_count, hand_cards, jokers, strat,
             current_best=current_best,
         )
@@ -520,16 +519,11 @@ def _score_targeting_use(
     joker_limit: int, ante: int,
 ) -> tuple[float, tuple | None]:
     """Score and return action args for a targeting tarot."""
-    from balatro_bot.rules._helpers import (
-        _find_tarot_targets, _find_gold_targets, _find_enhancement_targets,
-        _find_clone_targets,
-    )
-
     # --- Immediate-use targeting (destroy, clone, stone, rank_up) ---
     if effect_type in IMMEDIATE_TARGETING:
         # Death tarot: rearrange hand if needed
         if effect_type == "clone":
-            result = _find_clone_targets(hand_cards, strat)
+            result = find_clone_targets(hand_cards, strat)
             if result is None:
                 return (0.0, None)
             best_idx, worst_idx = result
@@ -543,7 +537,7 @@ def _score_targeting_use(
             return (4.0, ("use_target", idx, [best_idx, worst_idx],
                 f"Death: clone {hand_cards[best_idx].get('label','?')} onto {hand_cards[worst_idx].get('label','?')}"))
 
-        targets, score = _find_tarot_targets(
+        targets, score = find_tarot_targets(
             effect_type, extra, max_count, hand_cards, jokers, strat,
             current_best=current_best,
         )
@@ -557,7 +551,7 @@ def _score_targeting_use(
     # Gold enhancement: fire when round already won
     if effect_type == "gold":
         if can_win_now:
-            targets = _find_gold_targets(hand_cards, max_count, current_best)
+            targets = find_gold_targets(hand_cards, max_count, current_best)
             if targets:
                 return (4.0, ("use_target", idx, targets,
                     f"gold junk: {label} on held card (round already won)"))
@@ -760,8 +754,6 @@ def eval_enhancement(
     (Vampire) want to eat enhancements, suppress the estimate so the bot
     prefers not to build enhancements it'll immediately consume.
     """
-    from balatro_bot.rules._helpers import _find_enhancement_targets
-
     if not current_best:
         return None
 
@@ -805,7 +797,7 @@ def eval_enhancement(
         return None
 
     # Other enhancements: apply to highest-value scoring card, prefer affinity ranks
-    targets = _find_enhancement_targets(hand_cards, max_count, rank_affinity=rank_aff)
+    targets = find_enhancement_targets(hand_cards, max_count, rank_affinity=rank_aff)
     if targets:
         scoring_set = set(current_best.card_indices)
         relevant = [t for t in targets if t in scoring_set]

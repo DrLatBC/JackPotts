@@ -5,7 +5,7 @@ Idol, Bloodstone, etc.) inside a per-scored-card loop — each joker checks the
 card and returns chips/mult/xmult contributions for that card alone.
 
 Both the scoring simulator (domain.scoring.estimate) and the play-order
-sequencer (rules._helpers._sort_play_order) need to reason about these
+sequencer (domain.scoring.play_order) need to reason about these
 contributions. This module is the single source of truth: the builder turns a
 joker list into a flat effects list, and the contribution helper reports what
 one card would earn per trigger under that list.

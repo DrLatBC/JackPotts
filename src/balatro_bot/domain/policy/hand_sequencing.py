@@ -25,7 +25,8 @@ from balatro_bot.domain.policy.play_policy import (
     milk_discard, milk_play_action,
     _MILK_MARGIN_WALL, _MILK_MARGIN_MANY, _MILK_MARGIN_FEW,
 )
-from balatro_bot.rules._helpers import _pad_with_junk, _sort_play_order
+from balatro_bot.domain.policy.play_padding import pad_with_junk
+from balatro_bot.domain.scoring.play_order import sort_play_order
 from balatro_bot.scaling import (
     SCALING_REGISTRY, FINAL_HAND_JOKERS, SEQUENCE_JOKERS,
     PLAY_SCALERS, DISCARD_SCALERS, ANTI_DISCARD, ANTI_MILK,
@@ -378,11 +379,11 @@ def _execute_finisher(ctx: RoundContext) -> Action | None:
     if not candidate:
         return None
 
-    indices = _pad_with_junk(
+    indices = pad_with_junk(
         candidate.card_indices, ctx.hand_cards, ctx.jokers,
         candidate.hand_name, protection=ctx.card_protection,
     )
-    indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+    indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
 
     effective = candidate.total * ctx.score_discount
     return PlayCards(
@@ -409,11 +410,11 @@ def _execute_setup(ctx: RoundContext, target_type: str | None) -> Action | None:
     match = next((c for c in candidates if c.hand_name == target_type), None)
 
     if match:
-        indices = _pad_with_junk(
+        indices = pad_with_junk(
             match.card_indices, ctx.hand_cards, ctx.jokers,
             match.hand_name, protection=ctx.card_protection,
         )
-        indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+        indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         return PlayCards(
             indices,
             reason=f"setup: {target_type} for Card Sharp (next same-type gets x3)",
@@ -457,11 +458,11 @@ def _execute_score(ctx: RoundContext, target_type: str | None = None) -> Action 
         if type_match:
             candidate = type_match
 
-    indices = _pad_with_junk(
+    indices = pad_with_junk(
         candidate.card_indices, ctx.hand_cards, ctx.jokers,
         candidate.hand_name, protection=ctx.card_protection,
     )
-    indices = _sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+    indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
 
     effective = candidate.total * ctx.score_discount
     if target_type and ctx.blind_name == "The Eye":
@@ -586,7 +587,7 @@ def _play_junk(ctx: RoundContext) -> Action | None:
             # All subsets produce used types — skip junk play
             return None
 
-    indices = _sort_play_order(
+    indices = sort_play_order(
         indices, ctx.hand_cards, ctx.jokers,
         ctx.strategy if hasattr(ctx, 'strategy') else None,
         idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit,
@@ -630,7 +631,7 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
                 indices = [i for i, _ in combo]
                 cards = [c for _, c in combo]
                 if classify_hand(cards) == target:
-                    indices = _sort_play_order(
+                    indices = sort_play_order(
                         indices, ctx.hand_cards, ctx.jokers,
                         ctx.strategy if hasattr(ctx, 'strategy') else None,
                         idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit,
@@ -652,7 +653,7 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
     )
     match = next((c for c in candidates if c.hand_name == target), None)
     if match:
-        indices = _sort_play_order(
+        indices = sort_play_order(
             list(match.card_indices), ctx.hand_cards, ctx.jokers,
             ctx.strategy if hasattr(ctx, 'strategy') else None,
             idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit,
