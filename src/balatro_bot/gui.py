@@ -28,7 +28,10 @@ from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
-from balatro_bot.supervisor import BASE_DIR, BASE_PORT, LOG_DIR, PYTHON, STATUS_FILE, STOP_FILE
+from balatro_bot.supervisor import (
+    BASE_DIR, BASE_PORT, COMMANDS_DIR, LOG_DIR, MAX_INSTANCES, PAUSE_FILE, PORT_SPAN, PYTHON,
+    STATUS_FILE, STOP_FILE,
+)
 
 ICON_FILE = Path(__file__).parent / "assets" / "jackpotts.ico"
 # Without its own app ID, Windows groups the window under pythonw.exe and shows Python's icon.
@@ -68,7 +71,8 @@ STATE_COLOURS = {
     "running": GREEN, "starting": BLUE, "restarting": YELLOW,
     "cooldown": RED, "dead": RED, "done": MUTED, "stopped": DIM,
 }
-PHASE_COLOURS = {"running": GREEN, "stopping": YELLOW, "starting": BLUE, "outside": PURPLE, "idle": BORDER}
+PHASE_COLOURS = {"running": GREEN, "stopping": YELLOW, "pausing": YELLOW, "paused": GOLD, "starting": BLUE,
+                 "outside": PURPLE, "idle": BORDER}
 
 FONT = "Segoe UI"
 
@@ -124,7 +128,7 @@ def listening_ports(netstat_output: str) -> set[int]:
     return ports
 
 
-def ports_in_use(count: int = 8) -> bool:
+def ports_in_use(count: int = PORT_SPAN) -> bool:
     """True when any instance port is taken, e.g. by a batch started from a terminal.
 
     Starting a batch kills whatever holds those ports, so Start stays off.
@@ -146,6 +150,22 @@ def set_explore_rate(port: int, rate: float) -> None:
     os.replace(tmp, path)
 
 
+def send_command(command: dict) -> None:
+    """Queue an add/remove request; the running supervisor carries it out on its next tick."""
+    COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
+    path = COMMANDS_DIR / f"{time.time_ns()}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(command), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def paused_status(status_file: dict | None) -> dict | None:
+    """The status file when it holds a paused batch waiting to resume."""
+    if status_file and status_file.get("phase") == "paused" and "resume" in status_file:
+        return status_file
+    return None
+
+
 def load_settings() -> dict:
     try:
         saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -160,9 +180,20 @@ def launch_batch(settings: dict) -> None:
     SETTINGS_FILE.write_text(json.dumps(settings), encoding="utf-8")
     STOP_FILE.unlink(missing_ok=True)
     STATUS_FILE.unlink(missing_ok=True)
+    _spawn_supervisor(supervisor_command(settings))
+
+
+def resume_paused_batch(finish: bool = False) -> None:
+    """Carry on the paused batch, or with finish, end it (post its finish and run stats)."""
+    STOP_FILE.unlink(missing_ok=True)
+    _spawn_supervisor([PYTHON, "-m", "balatro_bot.supervisor", "--finish-paused" if finish else "--resume"])
+
+
+def _spawn_supervisor(cmd: list[str]) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONSOLE_LOG, "w", encoding="utf-8") as out:
         subprocess.Popen(
-            supervisor_command(settings),
+            cmd,
             cwd=str(BASE_DIR),
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -171,8 +202,8 @@ def launch_batch(settings: dict) -> None:
 
 
 def start_saved_batch() -> bool:
-    """Start a batch with the saved settings unless one is already running; True if started."""
-    if read_status() is not None or ports_in_use():
+    """Start a batch with the saved settings unless one is running or paused; True if started."""
+    if read_status() is not None or paused_status(read_status_file()) or ports_in_use():
         return False
     launch_batch(load_settings())
     return True
@@ -375,18 +406,19 @@ class Tooltip:
 class InstanceTable(tk.Canvas):
     """One row per instance, drawn so each cell can carry its own colour and bar."""
 
-    # key, heading, width at 96 dpi (the last column takes what's left)
+    # key, heading, width at 96 dpi (the 0-width column takes what's left)
     COLUMNS = [
-        ("dot", "", 24), ("name", "NAME", 86), ("deck", "DECK", 70), ("explore", "EXPLORE", 80),
-        ("progress", "PROGRESS", 146), ("wins", "WINS", 80), ("game", "NOW", 140),
-        ("idle", "IDLE", 46), ("issue", "LAST ISSUE", 0),
+        ("dot", "", 24), ("name", "NAME", 86), ("deck", "DECK", 112), ("explore", "EXPLORE", 80),
+        ("progress", "PROGRESS", 146), ("wins", "WINS", 80), ("game", "NOW", 124),
+        ("idle", "IDLE", 46), ("issue", "LAST ISSUE", 0), ("remove", "", 28),
     ]
 
-    def __init__(self, master: tk.Misc, tooltip: Tooltip, on_explore, **kw) -> None:
+    def __init__(self, master: tk.Misc, tooltip: Tooltip, on_explore, on_remove, **kw) -> None:
         super().__init__(master, bg=CARD, highlightthickness=0, bd=0, **kw)
         self.head_h, self.row_h = px(26), px(32)
         self.tooltip = tooltip
         self.on_explore = on_explore
+        self.on_remove = on_remove
         self.status: dict | None = None
         self.empty_text = "No batch running"
         self.hover_row: int | None = None
@@ -405,7 +437,8 @@ class InstanceTable(tk.Canvas):
 
     @property
     def slots(self) -> list[dict]:
-        return self.status["slots"] if self.status else []
+        """Rows to show: removed instances drop out, their games stay in the batch totals."""
+        return [s for s in self.status["slots"] if s["state"] != "removed"] if self.status else []
 
     def _spans(self) -> dict[str, tuple[int, int]]:
         x, spans = px(8), {}
@@ -432,6 +465,12 @@ class InstanceTable(tk.Canvas):
         return bool(self.status and self.status.get("phase") == "running"
                     and self.slots and "explore_active" in self.slots[0])
 
+    def removable(self, slot: dict) -> bool:
+        """Any instance still playing can go, except the last one: that is what Stop is for."""
+        live = [s for s in self.slots if s["state"] != "done"]
+        return bool(self.status and self.status.get("phase") == "running"
+                    and slot["state"] != "done" and len(live) > 1)
+
     # ── Events ──
 
     def _tip_for(self, slot: dict, key: str | None) -> str:
@@ -446,6 +485,8 @@ class InstanceTable(tk.Canvas):
             return f"{slot['restarts']} restarts · last: {slot['last_reason']}"
         if key == "name" and slot.get("log"):
             return "Double-click to open the game log"
+        if key == "remove" and self.removable(slot):
+            return "Remove this instance"
         return ""
 
     def _motion(self, e: tk.Event) -> None:
@@ -453,7 +494,9 @@ class InstanceTable(tk.Canvas):
         if row != self.hover_row:
             self.hover_row = row
             self.redraw()
-        self.configure(cursor="hand2" if key == "explore" and self.explore_toggleable() else "")
+        clickable = row is not None and (key == "explore" and self.explore_toggleable()
+                                         or key == "remove" and self.removable(self.slots[row]))
+        self.configure(cursor="hand2" if clickable else "")
         tip = self._tip_for(self.slots[row], key) if row is not None else ""
         self.tooltip.show(tip, e.x_root, e.y_root)
 
@@ -466,10 +509,12 @@ class InstanceTable(tk.Canvas):
         row, key = self._hit(e.x, e.y)
         if row is not None and key == "explore" and self.explore_toggleable():
             self.on_explore(self.slots[row])
+        elif row is not None and key == "remove" and self.removable(self.slots[row]):
+            self.on_remove(self.slots[row])
 
     def _double(self, e: tk.Event) -> None:
         row, key = self._hit(e.x, e.y)
-        if row is None or key == "explore":
+        if row is None or key in ("explore", "remove"):
             return
         log_path = self.slots[row].get("log")
         if log_path and Path(log_path).exists():
@@ -520,6 +565,9 @@ class InstanceTable(tk.Canvas):
         self.create_text(x["name"], mid, text=self._fit(s["name"], w["name"], self.bold), anchor="w",
                          fill=PURPLE if active else TEXT, font=self.bold)
         self.create_text(x["deck"], mid, text=s["deck"], anchor="w", fill=MUTED, font=self.small)
+        if s.get("stake"):
+            self.create_text(x["deck"] + self.small.measure(s["deck"]) + px(6), mid, text=s["stake"],
+                             anchor="w", fill=DIM, font=self.small)
 
         self._draw_explore(x["explore"], mid, s["explore_rate"], active)
 
@@ -565,6 +613,10 @@ class InstanceTable(tk.Canvas):
             room = spans["issue"][1] - ix - px(4)
             self.create_text(ix, mid, text=self._fit(s["last_reason"], room, self.small), anchor="w",
                              fill=MUTED, font=self.small)
+
+        if self.removable(s):
+            self.create_text(x["remove"] + px(8), mid, text="✕", anchor="w",
+                             fill=RED if i == self.hover_row else DIM, font=self.small)
 
     def _draw_explore(self, x: int, mid: int, rate: float, active: float) -> None:
         """Filled pill: exploring now. Dashed: switching at the next game. Plain: greedy."""
@@ -642,14 +694,18 @@ class ControlPanel:
         _scale = root.winfo_fpixels("1i") / 96
         self.root = root
         self.stop_requested = False
+        self.pause_requested = False
         self.launched_at = 0.0
+        # What a just-launched supervisor is doing ("starting" or "stopping") until its status shows.
+        self.pending = "starting"
         self.running = False
+        self.paused: dict | None = None
         self.compact = False
         self.full_geometry = f"{px(1180)}x{px(600)}"
         self.watched_session: int | None = None
         root.title("JackPotts")
         root.configure(bg=BG)
-        root.minsize(px(1000), px(520))
+        root.minsize(px(1060), px(520))
         root.geometry(self.full_geometry)
         self._style()
         self.tooltip = Tooltip(root)
@@ -702,6 +758,8 @@ class ControlPanel:
         style.configure("Stop.TButton", foreground=RED, bordercolor=RED, font=(FONT, 10, "bold"))
         style.map("Stop.TButton", bordercolor=[("disabled", BORDER)])
         style.configure("Icon.TButton", padding=(px(8), px(6)), font=(FONT, 11))
+        style.configure("IconStart.TButton", padding=(px(8), px(6)), font=(FONT, 11), foreground=GREEN)
+        style.configure("IconStop.TButton", padding=(px(8), px(6)), font=(FONT, 11), foreground=RED)
         self.root.option_add("*TCombobox*Listbox.background", CARD)
         self.root.option_add("*TCombobox*Listbox.foreground", TEXT)
         self.root.option_add("*TCombobox*Listbox.selectBackground", BORDER)
@@ -757,8 +815,11 @@ class ControlPanel:
 
         buttons = ttk.Frame(top)
         buttons.pack(side="left", fill="y", padx=(px(12), 0))
-        self.start_btn = ttk.Button(buttons, text="▶  Start", style="Start.TButton", command=self.start)
+        self.start_btn = ttk.Button(buttons, text="▶  Start", style="Start.TButton", width=9, command=self.start)
         self.start_btn.pack(side="left", fill="y")
+        self.pause_btn = ttk.Button(buttons, text="❚❚  Pause", command=self.pause)
+        self.pause_btn.pack(side="left", fill="y", padx=(px(8), 0))
+        self._tip(self.pause_btn, "Close the games and keep the counts; Resume carries on")
         self.stop_btn = ttk.Button(buttons, text="■  Stop", style="Stop.TButton", command=self.stop)
         self.stop_btn.pack(side="left", fill="y", padx=(px(8), 0))
 
@@ -796,15 +857,29 @@ class ControlPanel:
                 self.games_bar.pack(fill="x", pady=(px(4), px(2)))
             tk.Label(card, text=name, bg=CARD, fg=MUTED, font=(FONT, 8, "bold")).pack(anchor="w")
 
+        tools = ttk.Frame(parent)
+        tools.pack(fill="x", padx=px(12), pady=(px(10), 0))
+        self.add_btn = ttk.Button(tools, text="+", style="Icon.TButton", width=2, command=self.add_instance)
+        self.add_btn.pack(side="right")
+        self._tip(self.add_btn, "Add an instance")
+        self.add_vars = {"deck": tk.StringVar(value=s["deck"]), "stake": tk.StringVar(value=s["stake"])}
+        self.add_inputs = [
+            ttk.Combobox(tools, values=STAKES, state="readonly", width=8, textvariable=self.add_vars["stake"]),
+            ttk.Combobox(tools, values=DECKS, state="readonly", width=11, textvariable=self.add_vars["deck"]),
+        ]
+        for w in self.add_inputs:
+            w.pack(side="right", padx=(0, px(6)))
+        ttk.Label(tools, text="INSTANCES", style="Hint.TLabel").pack(side="left")
+
         self.footer = tk.StringVar()
         ttk.Label(parent, textvariable=self.footer, style="Hint.TLabel").pack(
             side="bottom", fill="x", padx=px(12), pady=(0, px(8)))
 
         body = ttk.Frame(parent)
-        body.pack(fill="both", expand=True, padx=px(12), pady=px(10))
+        body.pack(fill="both", expand=True, padx=px(12), pady=(px(6), px(10)))
         self.feed = RecentGames(body, self.tooltip, width=px(210))
         self.feed.pack(side="right", fill="y", padx=(px(8), 0))
-        self.table = InstanceTable(body, self.tooltip, self.toggle_explore)
+        self.table = InstanceTable(body, self.tooltip, self.toggle_explore, self.remove_instance)
         self.table.pack(side="left", fill="both", expand=True)
         self._sync_inputs()
 
@@ -817,6 +892,13 @@ class ControlPanel:
         expand = ttk.Button(head, text="⤢", style="Icon.TButton", width=2, command=self.toggle_compact)
         expand.pack(side="right")
         self._tip(expand, "Full view")
+        self.mini_stop = ttk.Button(head, text="■", style="IconStop.TButton", width=2, command=self.stop)
+        self.mini_pause = ttk.Button(head, text="‖", style="Icon.TButton", width=2, command=self.pause)
+        self.mini_start = ttk.Button(head, text="▶", style="IconStart.TButton", width=2, command=self.start)
+        for b, tip in ((self.mini_stop, "Stop"), (self.mini_pause, "Pause"),
+                       (self.mini_start, lambda: "Resume" if self.paused else "Start")):
+            b.pack(side="right", padx=(0, px(6)))
+            self._tip(b, tip)
         self.mini_bar = tk.Canvas(parent, bg=BG, height=px(4), highlightthickness=0, bd=0)
         self.mini_bar.pack(fill="x", padx=px(10), pady=(px(6), px(4)))
         self.mini_line = tk.StringVar()
@@ -825,8 +907,10 @@ class ControlPanel:
         self.mini_dots = tk.Canvas(parent, bg=BG, height=px(20), highlightthickness=0, bd=0)
         self.mini_dots.pack(fill="x", padx=px(10), pady=(px(4), px(8)))
 
-    def _tip(self, widget: tk.Widget, text: str) -> None:
-        widget.bind("<Enter>", lambda e: self.tooltip.show(text, e.x_root, e.y_root))
+    def _tip(self, widget: tk.Widget, text) -> None:
+        """Hover text for a widget; text may be a function, for tips that follow the panel's state."""
+        widget.bind("<Enter>", lambda e: self.tooltip.show(text() if callable(text) else text,
+                                                           e.x_root, e.y_root))
         widget.bind("<Leave>", lambda e: self.tooltip.hide())
 
     def _sync_inputs(self) -> None:
@@ -846,14 +930,14 @@ class ControlPanel:
             self.full_geometry = self.root.geometry()
             self.full.pack_forget()
             self.mini.pack(fill="both", expand=True)
-            self.root.minsize(px(300), px(110))
-            self.root.geometry(f"{px(340)}x{px(118)}")
+            self.root.minsize(px(360), px(110))
+            self.root.geometry(f"{px(400)}x{px(118)}")
             self.root.attributes("-topmost", True)
         else:
             self.mini.pack_forget()
             self.full.pack(fill="both", expand=True)
             self.root.attributes("-topmost", False)
-            self.root.minsize(px(1000), px(520))
+            self.root.minsize(px(1060), px(520))
             self.root.geometry(self.full_geometry)
         self.refresh(reschedule=False)
 
@@ -882,8 +966,19 @@ class ControlPanel:
             raise ValueError("Explore rate must be above 0 and at most 1.")
         return settings
 
+    def _launched(self, pending: str) -> None:
+        self.stop_requested = self.pause_requested = False
+        self.pending = pending
+        self.launched_at = time.time()
+        self.refresh(reschedule=False)
+
     def start(self) -> None:
+        """Start a batch, or resume the paused one."""
         if read_status() is not None or ports_in_use():
+            return
+        if paused_status(read_status_file()):
+            resume_paused_batch()
+            self._launched("starting")
             return
         try:
             settings = self._settings()
@@ -891,12 +986,16 @@ class ControlPanel:
             messagebox.showerror("JackPotts", str(e), parent=self.root)
             return
         launch_batch(settings)
-        self.stop_requested = False
-        self.launched_at = time.time()
-        self.refresh(reschedule=False)
+        self._launched("starting")
 
     def stop(self) -> None:
+        """Stop the running batch, or end the paused one."""
         if read_status() is None:
+            if paused_status(read_status_file()) and messagebox.askyesno(
+                    "JackPotts", "End the paused batch? It is marked finished and stats run.",
+                    parent=self.root):
+                resume_paused_batch(finish=True)
+                self._launched("stopping")
             return
         if not messagebox.askyesno("JackPotts", "Stop the batch? Games in progress are dropped.",
                                    parent=self.root):
@@ -904,6 +1003,24 @@ class ControlPanel:
         STOP_FILE.touch()
         self.stop_requested = True
         self.refresh(reschedule=False)
+
+    def pause(self) -> None:
+        """Close every game but keep the batch open, so Resume picks up the same counts."""
+        if read_status() is None:
+            return
+        PAUSE_FILE.touch()
+        self.pause_requested = True
+        self.refresh(reschedule=False)
+
+    def add_instance(self) -> None:
+        send_command({"op": "add", "deck": self.add_vars["deck"].get(), "stake": self.add_vars["stake"].get()})
+        self.add_btn.state(["disabled"])
+
+    def remove_instance(self, slot: dict) -> None:
+        if not messagebox.askyesno("JackPotts", f"Remove {slot['name']}? Its game in progress is dropped.",
+                                   parent=self.root):
+            return
+        send_command({"op": "remove", "port": slot["port"]})
 
     def toggle_explore(self, slot: dict) -> None:
         """Flip an instance between greedy and exploring, from its next game on."""
@@ -921,48 +1038,75 @@ class ControlPanel:
 
     # ── Refresh ──
 
-    def _watch_for_finish(self, status: dict | None) -> None:
-        """Notify once when the batch this window was watching ends."""
+    def _watch_for_finish(self, status: dict | None, final: dict | None) -> None:
+        """Notify once when the batch this window was watching ends or pauses."""
         if status is not None:
             self.watched_session = status.get("session")
             return
         if self.watched_session is None:
             return
-        final = read_status_file()
         if final and final.get("session") == self.watched_session:
-            self.tray.notify(f"Batch #{self.watched_session} ended", batch_summary(final))
+            verb = "paused" if paused_status(final) else "ended"
+            self.tray.notify(f"Batch #{self.watched_session} {verb}", batch_summary(final))
         self.watched_session = None
+
+    def _phase(self, status: dict | None, launching: bool, outside: bool) -> str:
+        if status is not None:
+            if status["phase"] == "stopping" or self.stop_requested:
+                return "stopping"
+            if status["phase"] == "pausing" or self.pause_requested:
+                return "pausing"
+            return "starting" if status["phase"] == "starting" else "running"
+        if launching:
+            return self.pending
+        return "paused" if self.paused else "outside" if outside else "idle"
 
     def refresh(self, reschedule: bool = True) -> None:
         status = read_status()
-        starting = status is None and time.time() - self.launched_at < 60
-        outside = status is None and not starting and ports_in_use()
-        self.running = status is not None or starting or outside
-        self._watch_for_finish(status)
+        last = status or read_status_file()
+        # A just-launched supervisor gets a minute to write its first status.
+        launching = (status is None and time.time() - self.launched_at < 60
+                     and (last or {}).get("updated", 0) < self.launched_at)
+        self.paused = paused_status(last) if status is None and not launching else None
+        outside = status is None and not launching and not self.paused and ports_in_use()
+        self.running = status is not None or launching or outside or self.paused is not None
+        self._watch_for_finish(status, last)
 
-        if status is not None:
-            phase = ("stopping" if status["phase"] == "stopping" or self.stop_requested
-                     else "starting" if status["phase"] == "starting" else "running")
-        else:
-            phase = "starting" if starting else "outside" if outside else "idle"
+        phase = self._phase(status, launching, outside)
         self.strip.configure(bg=PHASE_COLOURS[phase])
 
-        self.start_btn.state(["disabled"] if self.running else ["!disabled"])
-        self.stop_btn.state(["!disabled"] if status is not None and phase != "stopping" else ["disabled"])
+        can_start = phase in ("idle", "paused")
+        can_pause = phase in ("running", "starting")
+        can_stop = phase in ("running", "starting", "paused")
+        for btn, on in ((self.start_btn, can_start), (self.mini_start, can_start),
+                        (self.pause_btn, can_pause), (self.mini_pause, can_pause),
+                        (self.stop_btn, can_stop), (self.mini_stop, can_stop)):
+            btn.state(["!disabled"] if on else ["disabled"])
+        self.start_btn.configure(text="▶  Resume" if phase == "paused" else "▶  Start")
+        slots = status["slots"] if status else []
+        live = [sl for sl in slots if sl["state"] not in ("done", "removed")]
+        can_add = phase == "running" and len(live) < MAX_INSTANCES and len(slots) < PORT_SPAN
+        for w in (self.add_btn, *self.add_inputs):
+            w.state(["!disabled"] if can_add else ["disabled"])
         self._sync_inputs()
         if not self.running:
             self.stop_requested = False
+        if status is None:
+            self.pause_requested = False
 
-        self.table.empty_text = {"starting": "Starting…", "outside": "Running outside this panel"}.get(
-            phase, "No batch running")
-        self.table.update_status(status)
-        self.feed.update_games(status.get("recent_games", []) if status else [])
-        self._fill_stats(status)
-        self._fill_mini(status, phase)
+        shown = status or self.paused
+        self.table.empty_text = {"starting": "Starting…", "stopping": "Stopping…",
+                                 "outside": "Running outside this panel"}.get(phase, "No batch running")
+        self.table.update_status(shown)
+        self.feed.update_games(shown.get("recent_games", []) if shown else [])
+        self._fill_stats(shown)
+        self._fill_mini(shown, phase)
         self.footer.set({
             "starting": "Starting the supervisor…",
             "outside": "A batch started outside this panel holds the instance ports. Stop it there first.",
             "stopping": "Stopping: closing games, uploading results and running stats…",
+            "pausing": "Pausing: closing games. Counts are kept.",
+            "paused": "Paused. Resume carries on with the same counts; Stop ends the batch.",
         }.get(phase, "Closing hides the panel to the tray. Batches keep running."))
 
         if reschedule:
@@ -1002,7 +1146,8 @@ class ControlPanel:
         if not self.compact:
             return
         if status is None:
-            self.mini_title.set({"starting": "Starting…", "outside": "Outside batch"}.get(phase, "Idle"))
+            self.mini_title.set({"starting": "Starting…", "stopping": "Stopping…",
+                                 "outside": "Outside batch"}.get(phase, "Idle"))
             self.mini_line.set("")
             self._bar(self.mini_bar, 0)
             return
@@ -1012,7 +1157,7 @@ class ControlPanel:
                            f"   ·   {_fmt_eta(status['eta_secs'])}")
         self._bar(self.mini_bar, completed / expected if expected else 0)
         step, d = px(18), px(12)
-        for i, s in enumerate(status["slots"]):
+        for i, s in enumerate(sl for sl in status["slots"] if sl["state"] != "removed"):
             x = i * step + px(2)
             fill = STATE_COLOURS.get(s["state"], MUTED)
             outline = PURPLE if s.get("explore_active", s["explore_rate"]) else fill

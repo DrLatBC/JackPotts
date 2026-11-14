@@ -59,10 +59,18 @@ SERVER_STARTUP_WAIT = cfg.server_startup_wait
 SERVER_STAGGER = cfg.server_stagger
 BOT_STAGGER = cfg.bot_stagger
 POLL_INTERVAL = cfg.poll_interval
-# The GUI reads STATUS_FILE to show the batch, and creates STOP_FILE to ask
-# for a clean shutdown; the terminal supervisor honours both too.
+# The GUI reads STATUS_FILE to show the batch, creates STOP_FILE to ask for a
+# clean shutdown and PAUSE_FILE to pause, and drops add/remove requests into
+# COMMANDS_DIR; the terminal supervisor honours all of them too. A paused
+# batch lives on in STATUS_FILE (phase "paused") until --resume or --finish-paused.
 STATUS_FILE = LOG_DIR / "supervisor_status.json"
 STOP_FILE = LOG_DIR / "supervisor.stop"
+PAUSE_FILE = LOG_DIR / "supervisor.pause"
+COMMANDS_DIR = LOG_DIR / "supervisor_commands"
+MAX_INSTANCES = 8
+# Removed slots keep their port so their logs and counts stay theirs; a batch
+# hands out at most this many ports from its base port.
+PORT_SPAN = 16
 DEEP_RECOVERY_THRESHOLD = 5
 
 # ---------------------------------------------------------------------------
@@ -285,6 +293,8 @@ def _has_repeating_cycle(lines: list[str]) -> bool:
 class Slot:
     port: int
     name: str = ""
+    deck: str = "RED"
+    stake: str = "WHITE"
     server_proc: subprocess.Popen | None = None
     bot_proc: subprocess.Popen | None = None
     state: str = "stopped"
@@ -549,26 +559,70 @@ class Supervisor:
             taken.add(name)
             # The first explore_instances slots explore; the rest play greedy as the baseline.
             rate = explore_rate if i < explore_instances else 0.0
-            slots.append(Slot(port=base_port + i, name=name, explore_rate=rate))
+            slots.append(Slot(port=base_port + i, name=name, deck=decks[i % len(decks)], stake=stake,
+                              explore_rate=rate))
         self.slots = slots
         self.games = games
         self.decks = decks  # rotated across slots
         self.stake = stake
+        self.base_port = base_port
         self.seed = seed
         self.verbose = verbose
         self.stream = stream
         self.explore_rate = explore_rate
         self.sim_python = sim_python
         self.running = True
+        self.paused = False
+        self.resumed = False
         self.session_num = 0
         self.session_start: float = 0.0
         self._shutdown_done = False
         self._finish_posted = False
         self.dashboard_batch_id: int | None = None
 
+    def pause_state(self) -> dict:
+        """Everything --resume needs to carry this batch on where it stopped."""
+        return {
+            "games": self.games, "decks": self.decks, "stake": self.stake, "seed": self.seed,
+            "verbose": self.verbose, "explore_rate": self.explore_rate, "base_port": self.base_port,
+            "sim": bool(self.sim_python), "session_num": self.session_num,
+            "dashboard_batch_id": self.dashboard_batch_id,
+            "elapsed": time.time() - self.session_start if self.session_start else 0.0,
+            "slots": [{
+                "port": s.port, "name": s.name, "deck": s.deck, "stake": s.stake,
+                "explore_rate": s.explore_rate, "restarts": s.restarts, "last_reason": s.last_reason,
+                "state": s.state if s.state in ("done", "removed") else "stopped",
+                "finished_games": list(s.finished_games),
+            } for s in self.slots],
+        }
+
+    @classmethod
+    def from_pause_state(cls, state: dict, sim_python: str | None) -> Supervisor:
+        sup = cls(n=0, games=state["games"], decks=state["decks"], stake=state["stake"],
+                  seed=state["seed"], verbose=state["verbose"], explore_rate=state["explore_rate"],
+                  base_port=state["base_port"], sim_python=sim_python)
+        for s in state["slots"]:
+            slot = Slot(port=s["port"], name=s["name"], deck=s["deck"], stake=s["stake"],
+                        explore_rate=s["explore_rate"], restarts=s["restarts"],
+                        last_reason=s["last_reason"], state=s["state"])
+            slot.finished_games.extend(s["finished_games"])
+            sup.slots.append(slot)
+        sup.session_num = state["session_num"]
+        sup.dashboard_batch_id = state["dashboard_batch_id"]
+        sup.session_start = time.time() - state["elapsed"]
+        sup.resumed = True
+        return sup
+
+    def live_slots(self) -> list[Slot]:
+        """Slots still playing or due to, i.e. not finished and not removed."""
+        return [s for s in self.slots if s.state not in ("done", "removed")]
+
     def setup(self) -> None:
         WINS_DIR.mkdir(parents=True, exist_ok=True)
         STOP_FILE.unlink(missing_ok=True)
+        PAUSE_FILE.unlink(missing_ok=True)
+        shutil.rmtree(COMMANDS_DIR, ignore_errors=True)
+        COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
         for slot in self.slots:
             (LOG_DIR / str(slot.port)).mkdir(parents=True, exist_ok=True)
 
@@ -577,6 +631,15 @@ class Supervisor:
         if killed:
             print(f"Cleaned up {killed} orphan processes")
             time.sleep(2)
+
+        if self.resumed:
+            # Progress files carry each slot's count across the pause.
+            if self.dashboard_batch_id is not None:
+                atexit.register(self._atexit_abandon)
+            (LOG_DIR / "next_num.txt").write_text(str(self.session_num))
+            for slot in self.slots:
+                slot.write_explore_rate()
+            return
 
         # Session number comes from the dashboard (MAX(batch_number)+1).
         # Fall back to scanning local log files only when the dashboard is
@@ -714,21 +777,17 @@ class Supervisor:
             pass
         return self.games
 
-    def _deck_for_slot(self, slot: Slot) -> str:
-        idx = self.slots.index(slot)
-        return self.decks[idx % len(self.decks)]
-
     def launch_bot(self, slot: Slot) -> None:
         games = self._remaining_games(slot)
         completed = self.games - games
-        deck = self._deck_for_slot(slot)
+        deck = slot.deck
         cmd = [
             PYTHON, "-m", BOT_MODULE,
             "--start", "--port", str(slot.port),
             "--games", str(games),
             "--games-offset", str(completed),
             "--deck", deck,
-            "--stake", self.stake,
+            "--stake", slot.stake,
         ]
         if self.seed:
             cmd.extend(["--seed", self.seed])
@@ -825,8 +884,48 @@ class Supervisor:
             time.sleep(2)
         self.start_slot(slot)
 
+    def add_slot(self, deck: str, stake: str) -> Slot | None:
+        """Start one more instance on the next unused port; None when the batch is full."""
+        port = self.base_port + len(self.slots)
+        if len(self.live_slots()) >= MAX_INSTANCES or len(self.slots) >= PORT_SPAN:
+            log.warning("Add instance ignored: batch is full")
+            return None
+        slot = Slot(port=port, name=_pick_princess_name({s.name for s in self.slots}), deck=deck, stake=stake)
+        port_dir = LOG_DIR / str(port)
+        port_dir.mkdir(parents=True, exist_ok=True)
+        (port_dir / "progress.txt").unlink(missing_ok=True)
+        kill_port_processes([port])
+        slot.write_explore_rate()
+        self.slots.append(slot)
+        log.info("%s (port %d): added [%s deck, %s stake]", slot.name, port, deck, stake)
+        self.start_slot(slot)
+        return slot
+
+    def remove_slot(self, port: int) -> None:
+        """Stop one instance for the rest of the batch; the games it finished stay counted."""
+        slot = next((s for s in self.live_slots() if s.port == port), None)
+        if slot is None:
+            return
+        slot.kill_pair()
+        slot.state = "removed"
+        slot.ante, slot.blind = 0, ""
+        log.info("%s (port %d): removed", slot.name, slot.port)
+
+    def apply_commands(self) -> None:
+        """Carry out add/remove requests the control panel dropped in COMMANDS_DIR, oldest first."""
+        for path in sorted(COMMANDS_DIR.glob("*.json")):
+            try:
+                cmd = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                cmd = {}
+            path.unlink(missing_ok=True)
+            if cmd.get("op") == "add":
+                self.add_slot(cmd["deck"], cmd["stake"])
+            elif cmd.get("op") == "remove":
+                self.remove_slot(int(cmd["port"]))
+
     def check_slot(self, slot: Slot) -> None:
-        if slot.state == "done" or slot.state == "stopped":
+        if slot.state in ("done", "stopped", "removed"):
             return
 
         if slot.state == "cooldown":
@@ -879,7 +978,8 @@ class Supervisor:
             slots.append({
                 "port": slot.port,
                 "name": slot.name,
-                "deck": self._deck_for_slot(slot),
+                "deck": slot.deck,
+                "stake": slot.stake,
                 "explore_rate": slot.explore_rate,
                 "explore_active": slot.explore_active,
                 "ante": slot.ante,
@@ -894,7 +994,8 @@ class Supervisor:
                 "last_reason": slot.last_reason,
             })
         completed = sum(s["games_completed"] for s in slots)
-        total_expected = len(self.slots) * self.games
+        # A removed slot's batch share ends at the games it finished.
+        total_expected = sum(s["games_completed"] if s["state"] == "removed" else self.games for s in slots)
         elapsed = time.time() - self.session_start if self.session_start else 0
         rate = completed / (elapsed / 3600) if elapsed > 30 and completed > 0 else 0.0
         eta_secs = int((total_expected - completed) / (rate / 3600)) if rate > 0 else None
@@ -974,21 +1075,23 @@ class Supervisor:
     def run(self) -> None:
         setup_supervisor_logging()
         self.setup()
-        self.session_start = time.time()
-        log.info("=== Mother Gothel started: %d princesses, %d games each ===",
-                 len(self.slots), self.games)
-        names = ", ".join(s.name for s in self.slots)
-        print(f"  Mother Gothel is sending {len(self.slots)} princesses to play Balatro")
+        if not self.resumed:
+            self.session_start = time.time()
+        to_start = self.live_slots()
+        log.info("=== Mother Gothel %s: %d princesses, %d games each ===",
+                 "resumed" if self.resumed else "started", len(to_start), self.games)
+        names = ", ".join(s.name for s in to_start)
+        print(f"  Mother Gothel is sending {len(to_start)} princesses to play Balatro")
         print(f"  ({names})\n")
         print(f"  Session {self.session_num}, {self.games} games each\n")
 
         self._write_status(self._status("starting"))
-        for i, slot in enumerate(self.slots):
-            if not self.running or STOP_FILE.exists():
+        for i, slot in enumerate(to_start):
+            if not self.running or STOP_FILE.exists() or PAUSE_FILE.exists():
                 break
             self.start_slot(slot)
             self._write_status(self._status("starting"))
-            if i < len(self.slots) - 1:
+            if i < len(to_start) - 1:
                 time.sleep(SERVER_STAGGER)
 
         last_status = 0.0
@@ -997,7 +1100,13 @@ class Supervisor:
                 log.info("Stop file found, shutting down")
                 STOP_FILE.unlink(missing_ok=True)
                 break
+            if PAUSE_FILE.exists():
+                log.info("Pause file found, pausing")
+                PAUSE_FILE.unlink(missing_ok=True)
+                self.paused = True
+                break
 
+            self.apply_commands()
             for slot in self.slots:
                 self.check_slot(slot)
 
@@ -1019,9 +1128,9 @@ class Supervisor:
             return
         self._shutdown_done = True
         self.running = False
-        log.info("Shutdown requested")
-        print("\n  Shutting down...")
-        self._write_status(self._status("stopping"))
+        log.info("Pause requested" if self.paused else "Shutdown requested")
+        print("\n  Pausing..." if self.paused else "\n  Shutting down...")
+        self._write_status(self._status("pausing" if self.paused else "stopping"))
         for slot in self.slots:
             slot.kill_pair()
         # Sweep ports for any orphans that escaped process tree kill
@@ -1029,6 +1138,13 @@ class Supervisor:
         kill_port_processes(ports)
         total_restarts = sum(s.restarts for s in self.slots)
         log.info("Shutdown complete. Total restarts: %d", total_restarts)
+        if self.paused:
+            # Counts, logs and the dashboard batch stay open for --resume.
+            for slot in self.live_slots():
+                slot.state, slot.ante, slot.blind = "stopped", 0, ""
+            self._write_status({**self._status("paused"), "resume": self.pause_state()})
+            print("  Batch paused.")
+            return
         if self.session_num > 0:
             self.post_run()
         self._write_status(self._status("stopped"))
@@ -1037,9 +1153,9 @@ class Supervisor:
     def _atexit_abandon(self) -> None:
         """Last-resort fallback if the process dies before post_run runs.
 
-        No-op once a clean finish has been posted.
+        No-op once a clean finish has been posted, or while the batch is paused.
         """
-        if self._finish_posted or self.dashboard_batch_id is None:
+        if self._finish_posted or self.paused or self.dashboard_batch_id is None:
             return
         try:
             dashboard_client.post_batch_finish(self.dashboard_batch_id, status="abandoned")
@@ -1168,7 +1284,22 @@ def main() -> None:
                         help=f"First instance's port (default: {BASE_PORT})")
     parser.add_argument("--sim", action="store_true",
                         help="Play on the Jackdaw simulator instead of Balatro")
+    parser.add_argument("--resume", action="store_true",
+                        help="Carry on the paused batch (other batch flags are ignored)")
+    parser.add_argument("--finish-paused", action="store_true",
+                        help="End the paused batch: post its finish, run stats, rotate logs")
     args = parser.parse_args()
+
+    pause_state = None
+    if args.resume or args.finish_paused:
+        try:
+            saved = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved = {}
+        if saved.get("phase") != "paused" or "resume" not in saved:
+            parser.error("no paused batch to resume or finish")
+        pause_state = saved["resume"]
+        args.sim = pause_state["sim"]
 
     sim_python = None
     if args.sim:
@@ -1187,24 +1318,33 @@ def main() -> None:
         print(f"Killed {killed} processes")
         return
 
+    if args.finish_paused:
+        setup_supervisor_logging()
+        sup = Supervisor.from_pause_state(pause_state, sim_python)
+        sup.shutdown()
+        return
+
     decks = [d.strip() for d in args.deck.split(",")]
     if args.explore_instances > 0 and len(decks) > 1:
         # Explore and baseline instances must differ only in exploration;
         # rotate decks between batches instead.
         parser.error("--explore-instances needs a single --deck")
-    sup = Supervisor(
-        n=args.instances,
-        games=args.games,
-        decks=decks,
-        stake=args.stake,
-        seed=args.seed,
-        verbose=args.verbose,
-        stream=args.stream,
-        explore_instances=args.explore_instances,
-        explore_rate=args.explore_rate,
-        base_port=args.base_port,
-        sim_python=sim_python,
-    )
+    if pause_state is not None:
+        sup = Supervisor.from_pause_state(pause_state, sim_python)
+    else:
+        sup = Supervisor(
+            n=args.instances,
+            games=args.games,
+            decks=decks,
+            stake=args.stake,
+            seed=args.seed,
+            verbose=args.verbose,
+            stream=args.stream,
+            explore_instances=args.explore_instances,
+            explore_rate=args.explore_rate,
+            base_port=args.base_port,
+            sim_python=sim_python,
+        )
 
     def on_sigint(sig, frame):
         sup.shutdown()

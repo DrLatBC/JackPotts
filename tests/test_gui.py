@@ -174,17 +174,20 @@ def test_bot_switches_rate_from_the_file_before_a_game(tmp_path, monkeypatch):
 def test_panel_notifies_once_when_its_batch_ends(monkeypatch):
     sent = []
     final = {"phase": "stopped", "session": 178, "completed": 120, "total_expected": 120, "wins": 6}
-    monkeypatch.setattr(gui, "read_status_file", lambda: final)
     tray = type("T", (), {"notify": lambda self, title, msg: sent.append((title, msg))})()
     panel = type("P", (), {"watched_session": None, "tray": tray})()
     watch = gui.ControlPanel._watch_for_finish
 
-    watch(panel, None)
+    watch(panel, None, final)
     assert not sent
-    watch(panel, {"session": 178})
-    watch(panel, None)
-    watch(panel, None)
+    watch(panel, {"session": 178}, None)
+    watch(panel, None, final)
+    watch(panel, None, final)
     assert sent == [("Batch #178 ended", "120 / 120 games  ·  6 wins  5.0%")]
+
+    watch(panel, {"session": 178}, None)
+    watch(panel, None, {**final, "phase": "paused", "resume": {}})
+    assert sent[-1][0] == "Batch #178 paused"
 
 
 def test_tray_clicks_and_second_launch_open_the_panel():
@@ -249,3 +252,69 @@ def test_start_saved_batch_leaves_a_running_batch_alone(no_launch, monkeypatch, 
     monkeypatch.setattr(gui, "ports_in_use", lambda: busy)
     assert not gui.start_saved_batch()
     assert no_launch == []
+
+
+def test_start_saved_batch_leaves_a_paused_batch_alone(no_launch, monkeypatch):
+    monkeypatch.setattr(gui, "read_status", lambda: None)
+    monkeypatch.setattr(gui, "ports_in_use", lambda: False)
+    gui.STATUS_FILE.write_text(json.dumps({"phase": "paused", "resume": {}}))
+    assert not gui.start_saved_batch()
+    assert no_launch == []
+
+
+@pytest.fixture
+def sup_files(sup, tmp_path, monkeypatch):
+    """A supervisor whose pause, stop and command files live in tmp_path and whose games never launch."""
+    monkeypatch.setattr(supervisor, "WINS_DIR", tmp_path / "wins")
+    monkeypatch.setattr(supervisor, "PAUSE_FILE", tmp_path / "supervisor.pause")
+    monkeypatch.setattr(supervisor, "STOP_FILE", tmp_path / "supervisor.stop")
+    monkeypatch.setattr(supervisor, "COMMANDS_DIR", tmp_path / "commands")
+    monkeypatch.setattr(gui, "COMMANDS_DIR", tmp_path / "commands")
+    monkeypatch.setattr(supervisor, "kill_port_processes", lambda ports: 0)
+    monkeypatch.setattr(supervisor.Supervisor, "start_slot", lambda self, slot: setattr(slot, "state", "running"))
+    (tmp_path / "commands").mkdir()
+    return sup
+
+
+def test_panel_adds_and_removes_instances_mid_batch(sup_files, tmp_path):
+    sup = sup_files
+    first = sup.slots[0]
+    gui.send_command({"op": "add", "deck": "RED", "stake": "GOLD"})
+    sup.apply_commands()
+    added = sup.slots[1]
+    assert (added.port, added.deck, added.stake, added.state) == (first.port + 1, "RED", "GOLD", "running")
+    assert added.name != first.name
+
+    (tmp_path / str(added.port) / "progress.txt").write_text("3/10")
+    gui.send_command({"op": "remove", "port": added.port})
+    sup.apply_commands()
+    status = sup._status("running")
+    assert status["slots"][1]["state"] == "removed"
+    # The removed slot's share of the batch ends at the 3 games it played.
+    assert status["total_expected"] == 10 + 3
+    assert not list((tmp_path / "commands").iterdir())
+
+
+def test_paused_batch_resumes_with_its_counts(sup_files, tmp_path):
+    sup = sup_files
+    sup.session_num, sup.dashboard_batch_id = 42, 7
+    sup.session_start = 1000.0
+    sup.slots[0].state = "running"
+    sup.add_slot("RED", "GOLD")
+    sup.remove_slot(sup.slots[1].port)
+    sup.paused = True
+    sup.shutdown()
+    saved = json.loads(supervisor.STATUS_FILE.read_text(encoding="utf-8"))
+    assert saved["phase"] == "paused" and gui.paused_status(saved)
+
+    resumed = supervisor.Supervisor.from_pause_state(saved["resume"], sim_python=None)
+    assert (resumed.session_num, resumed.dashboard_batch_id) == (42, 7)
+    assert [(s.port, s.deck, s.stake, s.state) for s in resumed.slots] == [
+        (sup.slots[0].port, "BLUE", "WHITE", "stopped"), (sup.slots[1].port, "RED", "GOLD", "removed")]
+    assert resumed.slots[0].explore_rate == 0.15
+    assert [s.port for s in resumed.live_slots()] == [sup.slots[0].port]
+
+    # A resumed batch keeps its progress files, so each bot carries on from its count.
+    (tmp_path / str(sup.slots[0].port) / "progress.txt").write_text("4/10")
+    resumed.setup()
+    assert resumed._remaining_games(resumed.slots[0]) == 6
