@@ -16,17 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from balatro_bot.cards import (
-    card_rank,
-    card_suits,
-    is_debuffed,
-    is_joker_debuffed,
-    joker_key,
-)
+from balatro_bot.cards import card_rank, card_suits, is_debuffed
 from balatro_bot.constants import EVEN_RANKS, FACE_RANKS, FIBONACCI_RANKS, ODD_RANKS
-from balatro_bot.domain.models.joker import Joker
 from balatro_bot.joker_effects.parsers import _ability
-from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE
+from balatro_bot.joker_effects.roster import Roster, cached_for_roster, roster
 
 
 @dataclass(frozen=True)
@@ -40,38 +33,24 @@ class PerCardCtx:
 
 PerCardEffect = tuple  # ("<kind>", *args)
 
-# Hand search builds effects for the same roster once per candidate hand. Joker
-# objects are frozen, so a roster of them (by identity, in order) plus the ctx
-# always yields the same effects. Each entry keeps its jokers alive so their ids
-# can't be reused by other objects while the entry exists.
-_EFFECTS_CACHE: dict[tuple, tuple[tuple, tuple[PerCardEffect, ...]]] = {}
-_EFFECTS_CACHE_MAX = 64
+_EFFECTS_CACHE: dict = {}
 
 
 def build_per_card_effects(
     jokers: list[dict] | None,
     ctx: PerCardCtx,
+    lineup: Roster | None = None,
 ) -> tuple[PerCardEffect, ...]:
     """Walk the joker roster and emit per-card effect tuples.
 
     Blueprint / Brainstorm are resolved to their copy targets. Debuffed jokers
-    (and debuffed copy targets) are skipped.
+    (and debuffed copy targets) are skipped. *lineup* is ``roster(jokers)`` when
+    the caller already has it.
     """
-    joker_list = jokers or []
-    if all(isinstance(j, Joker) for j in joker_list):
-        key = (tuple(map(id, joker_list)), ctx)
-        hit = _EFFECTS_CACHE.get(key)
-        if hit is not None:
-            return hit[1]
-        effects = _build(joker_list, ctx)
-        if len(_EFFECTS_CACHE) >= _EFFECTS_CACHE_MAX:
-            _EFFECTS_CACHE.clear()
-        _EFFECTS_CACHE[key] = (tuple(joker_list), effects)
-        return effects
-    return _build(joker_list, ctx)
+    return cached_for_roster(_EFFECTS_CACHE, jokers, ctx, lambda js: _build(lineup or roster(js), ctx))
 
 
-def _build(joker_list: list, ctx: PerCardCtx) -> tuple[PerCardEffect, ...]:
+def _build(lineup: Roster, ctx: PerCardCtx) -> tuple[PerCardEffect, ...]:
     effects: list[PerCardEffect] = []
 
     def _add(key: str, joker: dict) -> None:
@@ -118,24 +97,8 @@ def _build(joker_list: list, ctx: PerCardCtx) -> tuple[PerCardEffect, ...]:
         elif key == "j_hiker":
             effects.append(("all_chips", ab.get("extra", 5)))
 
-    for i, j in enumerate(joker_list):
-        if is_joker_debuffed(j):
-            continue
-        k = joker_key(j)
-        if k == "j_blueprint":
-            if i + 1 < len(joker_list):
-                target = joker_list[i + 1]
-                tkey = joker_key(target)
-                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
-                    _add(tkey, target)
-        elif k == "j_brainstorm":
-            if joker_list and joker_list[0] is not j:
-                target = joker_list[0]
-                tkey = joker_key(target)
-                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
-                    _add(tkey, target)
-        else:
-            _add(k, j)
+    for k, j in lineup.resolved:
+        _add(k, j)
     return tuple(effects)
 
 

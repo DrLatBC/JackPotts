@@ -24,27 +24,10 @@ if TYPE_CHECKING:
 def _modifier(card: CardLike) -> dict[str, Any]:
     """Return the modifier as a dict, handling Card, Joker, and raw dicts.
 
-    For typed objects, converts CardModifier to a dict for
-    callers that use .get() on the result.
+    For typed objects this is the modifier's cached dict: callers must not mutate it.
     """
     if isinstance(card, (Card, Joker)):
-        mod = card.modifier
-        d: dict[str, Any] = {}
-        if mod.enhancement is not None:
-            d["enhancement"] = mod.enhancement
-        if mod.edition is not None:
-            d["edition"] = mod.edition
-        if mod.seal is not None:
-            d["seal"] = mod.seal
-        if mod.edition_chips:
-            d["edition_chips"] = mod.edition_chips
-        if mod.edition_mult:
-            d["edition_mult"] = mod.edition_mult
-        if mod.edition_x_mult:
-            d["edition_x_mult"] = mod.edition_x_mult
-        if mod.enhancement_x_mult:
-            d["enhancement_x_mult"] = mod.enhancement_x_mult
-        return d
+        return card.modifier.as_dict
     m = card.get("modifier", {})
     return m if isinstance(m, dict) else {}
 

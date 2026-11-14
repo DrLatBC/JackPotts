@@ -9,6 +9,7 @@ nested objects.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,18 @@ class CardModifier:
     edition_mult: float = 0
     edition_x_mult: float = 0
     enhancement_x_mult: float = 0
+
+    @cached_property
+    def as_dict(self) -> dict:
+        """The set fields as a dict, built once per instance. Callers must not mutate it."""
+        d: dict = {}
+        for name in ("enhancement", "edition", "seal"):
+            if (v := getattr(self, name)) is not None:
+                d[name] = v
+        for name in ("edition_chips", "edition_mult", "edition_x_mult", "enhancement_x_mult"):
+            if v := getattr(self, name):
+                d[name] = v
+        return d
 
 
 @dataclass(frozen=True)

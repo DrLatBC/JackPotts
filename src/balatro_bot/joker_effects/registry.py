@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, TYPE_CHECKING
 
-from balatro_bot.cards import _modifier, is_joker_debuffed, joker_key
+from balatro_bot.cards import _modifier
 from balatro_bot.domain.models.joker import Joker
 from balatro_bot.joker_effects.context import ScoreContext, _noop
 from balatro_bot.joker_effects.simple import SIMPLE_EFFECTS
@@ -101,28 +101,16 @@ def _is_uncommon(joker: JokerLike) -> bool:
     return rarity in (2, "Uncommon")
 
 
-def _get_baseball_xmult(ctx: ScoreContext) -> float:
-    """Return Baseball Card's xmult if owned, else 0."""
-    for j in ctx.jokers:
-        if joker_key(j) == "j_baseball":
-            from balatro_bot.joker_effects.parsers import _ability
-            return _ability(j).get("extra", 1.5)
-    return 0.0
-
-
 def apply_joker_effects(ctx: ScoreContext) -> None:
     """Apply all owned joker effects to the scoring context, in order.
 
     Per joker, the game applies: pre-edition -> joker effect -> post-edition.
     Baseball Card: after each Uncommon joker fires, apply an additional xMult.
     """
-    baseball_xm = _get_baseball_xmult(ctx)
+    baseball_xm = ctx.roster.baseball_xmult
 
-    for joker in ctx.jokers:
-        if is_joker_debuffed(joker):
-            continue
+    for key, joker in ctx.roster.active:
         _apply_joker_edition_pre(ctx, joker)
-        key = joker_key(joker)
         effect = JOKER_EFFECTS.get(key)
         if effect is not None:
             effect(ctx, joker)
@@ -138,12 +126,9 @@ def apply_joker_effects_detailed(ctx: ScoreContext) -> list[tuple[str, float, fl
     xmult_factor is the multiplicative ratio (e.g. 2.0 means mult was doubled).
     A value of 1.0 means no xmult was applied (change was additive only).
     """
-    baseball_xm = _get_baseball_xmult(ctx)
+    baseball_xm = ctx.roster.baseball_xmult
     contributions: list[tuple[str, float, float, float]] = []
-    for joker in ctx.jokers:
-        if is_joker_debuffed(joker):
-            continue
-        key = joker_key(joker)
+    for key, joker in ctx.roster.active:
         label = joker.label if isinstance(joker, Joker) else joker.get("label", key)
         pre_chips, pre_mult = ctx.chips, ctx.mult
         _apply_joker_edition_pre(ctx, joker)

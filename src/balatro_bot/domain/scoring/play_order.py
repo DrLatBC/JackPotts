@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suit, card_xmult_value, card_chip_value, card_mult_value, joker_key, is_debuffed
+from balatro_bot.cards import card_rank, card_suit, card_xmult_value, card_chip_value, card_mult_value, is_debuffed
 from balatro_bot.constants import FACE_RANKS
+from balatro_bot.joker_effects.roster import roster
 from balatro_bot.joker_effects.per_card import (
     PerCardCtx,
     build_per_card_effects,
@@ -48,7 +49,8 @@ def sort_play_order(
     if len(indices) <= 1:
         return indices
 
-    joker_keys = {joker_key(j) for j in jokers}
+    lineup = roster(jokers)
+    joker_keys = lineup.keys
     pc_ctx = PerCardCtx(
         smeared="j_smeared" in joker_keys,
         pareidolia="j_pareidolia" in joker_keys,
@@ -56,7 +58,7 @@ def sort_play_order(
         idol_suit=idol_suit,
         ancient_suit=ancient_suit,
     )
-    effects = build_per_card_effects(jokers, pc_ctx)
+    effects = build_per_card_effects(jokers, pc_ctx, lineup)
     has_hanging_chad = "j_hanging_chad" in joker_keys
     has_photograph = any(e[0] == "first_face_xmult" for e in effects)
     has_dna = "j_dna" in joker_keys

@@ -17,21 +17,19 @@ from balatro_bot.cards import (
     card_suits,
     card_xmult_value,
     is_debuffed,
-    is_joker_debuffed,
     is_stone,
-    joker_key,
     rank_value,
 )
 from balatro_bot.constants import HAND_INFO, RANK_CHIPS
 from balatro_bot.domain.models.card import Card
 from balatro_bot.joker_effects.parsers import _ability
-from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE
+from balatro_bot.joker_effects.roster import roster
 
 if TYPE_CHECKING:
     from typing import Any
 
 
-def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
+def _apply_before_phase(scoring_cards, played_cards, lineup, pareidolia=False):
     """Simulate the game's 'before' phase — jokers that fire before card scoring.
 
     In the Lua source (state_events.lua:637), context.before iterates jokers
@@ -53,13 +51,7 @@ def _apply_before_phase(scoring_cards, played_cards, jokers, pareidolia=False):
     from balatro_bot.joker_effects.parsers import _ability, _ab_xmult
     from balatro_bot.constants import FACE_RANKS
 
-    before_jokers = []
-    for j in (jokers or []):
-        if is_joker_debuffed(j):
-            continue
-        key = joker_key(j)
-        if key in ("j_midas_mask", "j_vampire"):
-            before_jokers.append((key, j))
+    before_jokers = [(k, j) for k, j in lineup.active if k in ("j_midas_mask", "j_vampire")]
 
     if not before_jokers:
         return scoring_cards, played_cards, None
@@ -155,8 +147,8 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
             idol_suit=ctx.idol_suit,
             ancient_suit=ancient_suit,
         ),
+        ctx.roster,
     )
-    joker_list = jokers or []
 
     for card in scored_in_play_order:
         triggers = retrigger_count(card, ctx)
@@ -249,24 +241,8 @@ def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
         elif hk == "j_raised_fist":
             _raised_fist_count += 1
 
-    for i, j in enumerate(joker_list):
-        if is_joker_debuffed(j):
-            continue
-        k = joker_key(j)
-        if k == "j_blueprint":
-            if i + 1 < len(joker_list):
-                target = joker_list[i + 1]
-                tkey = joker_key(target)
-                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
-                    _count_held_phase(tkey, target)
-        elif k == "j_brainstorm":
-            if joker_list and joker_list[0] is not j:
-                target = joker_list[0]
-                tkey = joker_key(target)
-                if not is_joker_debuffed(target) and tkey not in BLUEPRINT_INCOMPATIBLE:
-                    _count_held_phase(tkey, target)
-        else:
-            _count_held_phase(k, j)
+    for k, j in ctx.roster.resolved:
+        _count_held_phase(k, j)
 
     # Raised Fist: find the lowest-ranked held card (by chip value, matching game logic)
     # The game considers ALL held cards (including debuffed ones) when picking
@@ -375,7 +351,8 @@ def score_hand(
         if _ox_locked and hand_name == _ox_locked:
             money = 0
 
-    joker_keys_set = {joker_key(j) for j in jokers if not is_joker_debuffed(j)}
+    lineup = roster(jokers)
+    joker_keys_set = lineup.active_keys
     ctx = ScoreContext(
         chips=base_chips,
         mult=float(base_mult),
@@ -398,11 +375,12 @@ def score_hand(
         idol_rank=idol_rank,
         idol_suit=idol_suit,
         oops="j_oops" in joker_keys_set,
+        roster=lineup,
         rng=rng,
     )
 
     effective_scoring, effective_played, vampire_xmult = _apply_before_phase(
-        scoring_cards, played_cards, jokers, pareidolia=ctx.pareidolia)
+        scoring_cards, played_cards, lineup, pareidolia=ctx.pareidolia)
     ctx.vampire_xmult = vampire_xmult
     ctx.scoring_cards = effective_scoring
     ctx.played_cards = effective_played or ctx.played_cards
@@ -498,7 +476,8 @@ def score_hand_detailed(
             "total": math.floor(total_chips * total_mult),
         }
 
-    joker_keys_set = {joker_key(j) for j in jokers if not is_joker_debuffed(j)}
+    lineup = roster(jokers)
+    joker_keys_set = lineup.active_keys
     ctx = ScoreContext(
         chips=base_chips,
         mult=float(base_mult),
@@ -521,10 +500,11 @@ def score_hand_detailed(
         idol_rank=idol_rank,
         idol_suit=idol_suit,
         oops="j_oops" in joker_keys_set,
+        roster=lineup,
     )
 
     effective_scoring, effective_played, vampire_xmult = _apply_before_phase(
-        scoring_cards, played_cards, jokers, pareidolia=ctx.pareidolia)
+        scoring_cards, played_cards, lineup, pareidolia=ctx.pareidolia)
     ctx.vampire_xmult = vampire_xmult
     ctx.scoring_cards = effective_scoring
     ctx.played_cards = effective_played or ctx.played_cards

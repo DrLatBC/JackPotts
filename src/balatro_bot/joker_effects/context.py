@@ -6,10 +6,11 @@ import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suits, is_debuffed, joker_key, _modifier
+from balatro_bot.cards import card_rank, card_suits, is_debuffed, _modifier
 from balatro_bot.constants import FACE_RANKS
 from balatro_bot.domain.models.card import Card
 from balatro_bot.domain.models.joker import Joker
+from balatro_bot.joker_effects.roster import Roster, roster
 
 if TYPE_CHECKING:
     from typing import Any
@@ -46,6 +47,11 @@ class ScoreContext:
     # Monte Carlo RNG — when present, stochastic jokers (Misprint, Lucky Cat,
     # Bloodstone) draw actual outcomes instead of using expected-value shortcuts.
     rng: random.Random | None = None
+    roster: Roster | None = None  # filled from jokers when not passed
+
+    def __post_init__(self) -> None:
+        if self.roster is None:
+            self.roster = roster(self.jokers)
 
 
 def _count_suit_in_scoring(ctx: ScoreContext, suit: str) -> int:
@@ -131,7 +137,7 @@ def retrigger_count(card: Card | dict, ctx: ScoreContext) -> int:
         return 1
     count = 1
     rank = card_rank(card)
-    joker_keys = {joker_key(j) for j in ctx.jokers}
+    joker_keys = ctx.roster.keys
 
     if "j_hack" in joker_keys and rank in ("2", "3", "4", "5"):
         count += 1
