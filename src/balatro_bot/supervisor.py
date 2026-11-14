@@ -584,16 +584,19 @@ class Supervisor:
 
         prune_balatrobot_logs()
 
-    def _child_console_flags(self) -> int:
+    def _child_flags(self) -> int:
         """Stream mode keeps visible consoles to watch; batches give each child a hidden one.
 
         Children still get their own console (CREATE_NO_WINDOW), so their
         output has somewhere to go and they never share the supervisor's.
         Everything they log already lands in bot_log/ and logs/.
+
+        Batch children run below normal priority so the desktop stays
+        responsive; Balatro inherits it through the serve process.
         """
         if self.stream:
             return subprocess.CREATE_NEW_CONSOLE
-        return subprocess.CREATE_NO_WINDOW
+        return subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
 
     def launch_server(self, slot: Slot) -> None:
         cmd = [
@@ -614,7 +617,7 @@ class Supervisor:
         slot.server_proc = subprocess.Popen(
             cmd,
             env=env,
-            creationflags=self._child_console_flags(),
+            creationflags=self._child_flags(),
         )
         slot.state = "starting"
         slot.last_health = time.time()
@@ -668,7 +671,7 @@ class Supervisor:
         slot.ante, slot.blind = 0, ""
         slot.bot_proc = subprocess.Popen(
             cmd,
-            creationflags=self._child_console_flags(),
+            creationflags=self._child_flags(),
         )
         slot.state = "running"
         slot.log_file = LOG_DIR / str(slot.port) / f"game_{self.session_num:03d}.log"

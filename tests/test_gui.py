@@ -189,13 +189,22 @@ def test_tray_clicks_and_second_launch_open_the_panel():
     root.withdraw()
     events = []
     tray = gui.TrayIcon(on_open=lambda: events.append("open"), on_quit=lambda: events.append("quit"))
+    # Messages go to this tray's own window: show_running_panel() would find a real open panel first.
     try:
         gui._user32.PostMessageW(tray.hwnd, gui.WM_TRAY, 0, 0x202)  # left click
-        assert gui.show_running_panel()
+        gui._user32.PostMessageW(tray.hwnd, gui.WM_SHOW_PANEL, 0, 0)
         for _ in range(20):
             root.update()
         assert events == ["open", "open"]
     finally:
         tray.close()
         root.destroy()
-    assert not gui.show_running_panel()
+
+
+def test_batch_children_run_below_normal_priority_but_stream_does_not(sup):
+    import subprocess
+
+    assert sup._child_flags() & subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    assert sup._child_flags() & subprocess.CREATE_NO_WINDOW
+    sup.stream = True
+    assert not sup._child_flags() & subprocess.BELOW_NORMAL_PRIORITY_CLASS
