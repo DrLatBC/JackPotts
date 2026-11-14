@@ -7,7 +7,10 @@ shutdown through the supervisor's stop file. Exploration is switched per
 instance by rewriting the rate file its bot re-reads before each game.
 
 Launch with the repo's .venv pythonw (no console):
-    .venv\\Scripts\\pythonw.exe -m balatro_bot.gui
+    .venv\\Scripts\\pythonw.exe -m balatro_bot.gui [--start]
+--start also starts a batch with the saved settings, as the Start button
+would. scripts\\start_batch.vbs runs that with no window at all, for
+launching from another program such as a Claude session.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import ctypes
 import json
 import os
 import subprocess
+import sys
 import time
 import tkinter as tk
 import webbrowser
@@ -148,6 +152,30 @@ def load_settings() -> dict:
     except (OSError, ValueError):
         saved = {}
     return {**DEFAULTS, **{k: v for k, v in saved.items() if k in DEFAULTS}}
+
+
+def launch_batch(settings: dict) -> None:
+    """Start the supervisor windowless with these settings and remember them for the panel."""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(settings), encoding="utf-8")
+    STOP_FILE.unlink(missing_ok=True)
+    STATUS_FILE.unlink(missing_ok=True)
+    with open(CONSOLE_LOG, "w", encoding="utf-8") as out:
+        subprocess.Popen(
+            supervisor_command(settings),
+            cwd=str(BASE_DIR),
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+
+
+def start_saved_batch() -> bool:
+    """Start a batch with the saved settings unless one is already running; True if started."""
+    if read_status() is not None or ports_in_use():
+        return False
+    launch_batch(load_settings())
+    return True
 
 
 def supervisor_command(settings: dict) -> list[str]:
@@ -862,18 +890,7 @@ class ControlPanel:
         except ValueError as e:
             messagebox.showerror("JackPotts", str(e), parent=self.root)
             return
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        SETTINGS_FILE.write_text(json.dumps(settings), encoding="utf-8")
-        STOP_FILE.unlink(missing_ok=True)
-        STATUS_FILE.unlink(missing_ok=True)
-        with open(CONSOLE_LOG, "w", encoding="utf-8") as out:
-            subprocess.Popen(
-                supervisor_command(settings),
-                cwd=str(BASE_DIR),
-                stdout=out,
-                stderr=subprocess.STDOUT,
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
-            )
+        launch_batch(settings)
         self.stop_requested = False
         self.launched_at = time.time()
         self.refresh(reschedule=False)
@@ -1007,6 +1024,8 @@ def main() -> None:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
         pass
+    if "--start" in sys.argv[1:]:
+        start_saved_batch()
     if show_running_panel():
         return
     try:

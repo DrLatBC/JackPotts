@@ -213,3 +213,39 @@ def test_batch_children_run_below_normal_priority_but_stream_does_not(sup):
     assert sup._child_flags() & subprocess.CREATE_NO_WINDOW
     sup.stream = True
     assert not sup._child_flags() & subprocess.BELOW_NORMAL_PRIORITY_CLASS
+
+
+@pytest.fixture
+def no_launch(tmp_path, monkeypatch):
+    """Point the panel's files at tmp_path and record supervisor launches instead of running them."""
+    launches = []
+    monkeypatch.setattr(gui, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(gui, "SETTINGS_FILE", tmp_path / "gui_settings.json")
+    monkeypatch.setattr(gui, "STOP_FILE", tmp_path / "supervisor.stop")
+    monkeypatch.setattr(gui, "STATUS_FILE", tmp_path / "supervisor_status.json")
+    monkeypatch.setattr(gui, "CONSOLE_LOG", tmp_path / "supervisor_console.log")
+    monkeypatch.setattr(gui.subprocess, "Popen", lambda cmd, **kw: launches.append((cmd, kw)))
+    return launches
+
+
+def test_launched_batch_has_no_window(no_launch):
+    gui.launch_batch({**gui.DEFAULTS, "sim": True})
+    cmd, kw = no_launch[0]
+    assert kw["creationflags"] & gui.subprocess.CREATE_NO_WINDOW
+    assert cmd[-1] == "--sim"
+
+
+def test_start_saved_batch_uses_saved_settings(no_launch, monkeypatch):
+    monkeypatch.setattr(gui, "read_status", lambda: None)
+    monkeypatch.setattr(gui, "ports_in_use", lambda: False)
+    gui.SETTINGS_FILE.write_text(json.dumps({**gui.DEFAULTS, "instances": 3}))
+    assert gui.start_saved_batch()
+    assert no_launch[0][0][no_launch[0][0].index("-n") + 1] == "3"
+
+
+@pytest.mark.parametrize("status, busy", [({"phase": "running"}, False), (None, True)])
+def test_start_saved_batch_leaves_a_running_batch_alone(no_launch, monkeypatch, status, busy):
+    monkeypatch.setattr(gui, "read_status", lambda: status)
+    monkeypatch.setattr(gui, "ports_in_use", lambda: busy)
+    assert not gui.start_saved_batch()
+    assert no_launch == []
