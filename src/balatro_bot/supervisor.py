@@ -42,7 +42,12 @@ WINS_DIR = cfg.wins_dir
 LOVE_PATH = cfg.love_path
 LOVELY_PATH = cfg.lovely_path
 BALATROBOT = cfg.balatrobot_path
-PYTHON = cfg.python_path or str(BASE_DIR / ".venv" / "Scripts" / "python.exe")
+_VENV_PYTHON = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+# A worktree checkout has no .venv of its own; its bots run on the supervisor's interpreter.
+PYTHON = cfg.python_path or str(_VENV_PYTHON if _VENV_PYTHON.exists() else Path(sys.executable))
+# Sim mode serves each slot from the Jackdaw simulator through this adapter, run by
+# $JACKDAW_PYTHON (a Python 3.12+ environment with the jackdaw package).
+JACKDAW_ADAPTER = BASE_DIR / "sim" / "jackdaw_adapter" / "serve.py"
 
 HEALTH_TIMEOUT = cfg.health_timeout
 RESTART_COOLDOWN = cfg.restart_cooldown
@@ -481,7 +486,8 @@ class Supervisor:
     def __init__(self, n: int, games: int, decks: list[str], stake: str,
                  seed: str | None, verbose: bool = False,
                  stream: bool = False, explore_instances: int = 0,
-                 explore_rate: float = 0.0):
+                 explore_rate: float = 0.0, base_port: int = BASE_PORT,
+                 sim_python: str | None = None):
         taken: set[str] = set()
         slots = []
         for i in range(n):
@@ -489,7 +495,7 @@ class Supervisor:
             taken.add(name)
             # The first explore_instances slots explore; the rest play greedy as the baseline.
             rate = explore_rate if i < explore_instances else 0.0
-            slots.append(Slot(port=BASE_PORT + i, name=name, explore_rate=rate))
+            slots.append(Slot(port=base_port + i, name=name, explore_rate=rate))
         self.slots = slots
         self.games = games
         self.decks = decks  # rotated across slots
@@ -498,6 +504,7 @@ class Supervisor:
         self.verbose = verbose
         self.stream = stream
         self.explore_rate = explore_rate
+        self.sim_python = sim_python
         self.running = True
         self.session_num = 0
         self.session_start: float = 0.0
@@ -526,7 +533,7 @@ class Supervisor:
             games_per_inst=self.games,
             decks=",".join(self.decks),
             stake=self.stake,
-            code_version=_code_version(),
+            code_version=self._code_version(),
         )
         if result is not None:
             self.dashboard_batch_id, self.session_num = result
@@ -598,7 +605,22 @@ class Supervisor:
             return subprocess.CREATE_NEW_CONSOLE
         return subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
 
+    def _code_version(self) -> str | None:
+        """The checkout's version, marked +jackdaw for simulator batches."""
+        version = _code_version()
+        if self.sim_python and version:
+            return f"{version}+jackdaw"
+        return version
+
     def launch_server(self, slot: Slot) -> None:
+        if self.sim_python:
+            slot.server_proc = subprocess.Popen(
+                [self.sim_python, "-I", str(JACKDAW_ADAPTER), "--port", str(slot.port)],
+                creationflags=self._child_flags(),
+            )
+            slot.state = "starting"
+            slot.last_health = time.time()
+            return
         cmd = [
             BALATROBOT, "serve",
             "--port", str(slot.port),
@@ -1088,14 +1110,24 @@ def main() -> None:
                         help="How many instances explore; the rest are the greedy baseline (default: 0)")
     parser.add_argument("--explore-rate", type=float, default=0.15,
                         help="Fraction of shop and pack decisions an exploring instance explores (default: 0.15)")
+    parser.add_argument("--base-port", type=int, default=BASE_PORT,
+                        help=f"First instance's port (default: {BASE_PORT})")
+    parser.add_argument("--sim", action="store_true",
+                        help="Play on the Jackdaw simulator instead of Balatro (needs $JACKDAW_PYTHON)")
     args = parser.parse_args()
+
+    sim_python = None
+    if args.sim:
+        sim_python = os.environ.get("JACKDAW_PYTHON", "")
+        if not sim_python or not os.path.exists(sim_python):
+            parser.error("--sim needs $JACKDAW_PYTHON: a Python 3.12+ interpreter with jackdaw installed")
 
     if args.stream:
         args.instances = 1
         os.system("mode con: cols=74 lines=13")
 
     if args.kill:
-        ports = list(range(BASE_PORT, BASE_PORT + args.instances))
+        ports = list(range(args.base_port, args.base_port + args.instances))
         killed = kill_port_processes(ports)
         print(f"Killed {killed} processes")
         return
@@ -1115,6 +1147,8 @@ def main() -> None:
         stream=args.stream,
         explore_instances=args.explore_instances,
         explore_rate=args.explore_rate,
+        base_port=args.base_port,
+        sim_python=sim_python,
     )
 
     def on_sigint(sig, frame):
