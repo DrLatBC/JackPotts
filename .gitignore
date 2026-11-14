@@ -28,3 +28,7 @@ CLAUDE.md
 .env.local
 vm.json
 vm_dump.html
+
+# Headless sim spike: game source snapshot (not committed)
+sim/lua_src/
+sim/runtime/
