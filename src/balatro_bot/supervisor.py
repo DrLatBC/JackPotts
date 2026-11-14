@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import ctypes
 import json
 import logging
 import os
@@ -468,6 +469,58 @@ def kill_port_processes(ports: list[int]) -> int:
     except Exception:
         pass
     return killed
+
+
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.c_uint32), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32)]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", ctypes.c_uint64 * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_job_handle = None  # held open for the supervisor's lifetime; Windows closes it at exit
+
+
+def tie_children_to_supervisor() -> bool:
+    """Put the supervisor in a Windows job that ends every process in it when the supervisor exits.
+
+    Children (game servers, Balatro, bots, simulator adapters) join the job when
+    they start, so a supervisor that dies without its shutdown (killed, crashed,
+    its console closed) takes them with it instead of leaving them running.
+    """
+    global _job_handle
+    if os.name != "nt":
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        log.warning("could not create a job object (error %d); children may outlive the supervisor",
+                    ctypes.get_last_error())
+        return False
+    info = _ExtendedLimits()
+    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not (kernel32.SetInformationJobObject(job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                                             ctypes.byref(info), ctypes.sizeof(info))
+            and kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess())):
+        log.warning("could not join a kill-on-exit job (error %d); children may outlive the supervisor",
+                    ctypes.get_last_error())
+        kernel32.CloseHandle(ctypes.c_void_p(job))
+        return False
+    _job_handle = job
+    return True
 
 
 def compute_session_number() -> int:
@@ -1159,6 +1212,7 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, on_sigint)
     signal.signal(signal.SIGTERM, on_sigint)
+    tie_children_to_supervisor()
 
     try:
         sup.run()
