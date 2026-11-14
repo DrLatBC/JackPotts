@@ -11,7 +11,6 @@ with full joker effects via best_hand(), and average.
 from __future__ import annotations
 
 import logging
-import random
 
 _stream_log = logging.getLogger("balatro_stream")
 from typing import TYPE_CHECKING
@@ -22,6 +21,7 @@ from dataclasses import replace as dc_replace
 from balatro_bot.actions import DiscardCards, Action
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.joker import Joker
+from balatro_bot.domain.scoring.draws import sample_draws
 from balatro_bot.domain.scoring.search import (
     best_hand, cards_not_in, discard_candidates, ChaseCandidate,
 )
@@ -204,11 +204,9 @@ def _expected_play_value(keep_indices: list[int], ctx: RoundContext) -> float:
     sim_jokers = _adjust_jokers_for_discard(ctx.jokers, discard_count)
 
     total = 0.0
-    for _ in range(N_SAMPLES):
-        drawn = random.sample(draw_pile, discard_count)
-        new_hand = keep_cards + drawn
+    for drawn in sample_draws(draw_pile, discard_count, N_SAMPLES):
         result = best_hand(
-            new_hand,
+            keep_cards + drawn,
             hand_levels=ctx.hand_levels,
             jokers=sim_jokers,
             money=ctx.money,

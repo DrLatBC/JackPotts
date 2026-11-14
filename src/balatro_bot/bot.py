@@ -17,6 +17,7 @@ from balatro_bot.bot_logging import (
     build_decision_state, deck_composition, pack_offer_items, record_decision, shop_offer_items,
 )
 from balatro_bot.domain.policy.exploration import explorer
+from balatro_bot.domain.scoring.draws import seed_draws
 from balatro_bot.engine import RuleEngine
 from balatro_bot.infrastructure.client import BalatroClient
 
@@ -364,6 +365,7 @@ def run_bot(
         log.info("Joined existing game: state=%s", state.get("state"))
 
     explorer().reseed(state.get("seed"))
+    seed_draws(state.get("seed"))
     gs = GameLoopState()
 
     while state.get("state") != "GAME_OVER":

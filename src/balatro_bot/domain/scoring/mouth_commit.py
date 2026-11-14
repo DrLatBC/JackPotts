@@ -25,7 +25,6 @@ beats no commit at all, since greedy play would lock Mouth to a junk type).
 from __future__ import annotations
 
 import logging
-import random
 from math import comb
 
 from balatro_bot.cards import joker_key
@@ -34,7 +33,7 @@ from balatro_bot.domain.scoring.draws import (
     four_kind_draw_quality, five_kind_draw_quality,
     flush_five_draw_quality, flush_house_draw_quality,
     full_house_draw_quality,
-    pair_draw_quality, straight_draw_quality, straight_flush_draw_quality,
+    pair_draw_quality, sample_draws, straight_draw_quality, straight_flush_draw_quality,
     three_kind_draw_quality, two_pair_draw_quality,
 )
 from balatro_bot.domain.scoring.search import best_hand, enumerate_hands
@@ -287,8 +286,7 @@ def _mc_chase_rt(
     score_on_hit_sum = 0.0
     rt_on_miss_sum = 0.0
 
-    for _ in range(_N_SAMPLES):
-        drawn = random.sample(draw_pile, discard_count)
+    for drawn in sample_draws(draw_pile, discard_count, _N_SAMPLES):
         new_hand = keep_cards + drawn
 
         hit_result = best_hand(

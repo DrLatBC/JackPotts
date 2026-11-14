@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import random
+from balatro_bot.domain.scoring.draws import seed_draws
 
 import pytest
 
@@ -57,9 +57,9 @@ def _draw_pile_excluding(hand) -> list:
     return [c for c in _full_deck() if (c.value.rank, c.value.suit) not in used]
 
 
-def _commit(**overrides):
+def _commit(seed=42, **overrides):
     """Helper to call choose_mouth_commit with sensible defaults + seeded RNG."""
-    random.seed(42)  # deterministic MC for test stability
+    seed_draws(seed)  # deterministic MC for test stability
     hand = overrides.get("hand_cards", [])
     default_deck = _draw_pile_excluding(hand)
     params = dict(
@@ -208,10 +208,12 @@ class TestChaseCommits:
         deck += [card(r, "D") for r in "23456789TJQKA" if r not in {"5"}]
         deck += [card(r, "C") for r in "23456789TJQKA" if r not in {"3","9"}]
         deck += [card(r, "S") for r in "23456789TJQKA" if r not in {"7"}]
-        result = _commit(hand_cards=hand, deck_cards=deck, deck_profile=dp)
         # Straight Flush / Royal Flush also possible via a smaller straight window,
-        # but the dominant chase is Flush (4-suited + 1 more heart).
-        assert result in ("Flush", "Straight Flush", "Royal Flush")
+        # but the dominant chase is Flush (4-suited + 1 more heart). The Straight
+        # chase (AKQJ + a ten) is close enough that one 30-draw sample can pick it.
+        results = [_commit(seed=s, hand_cards=hand, deck_cards=deck, deck_profile=dp) for s in range(20)]
+        flush_wins = sum(r in ("Flush", "Straight Flush", "Royal Flush") for r in results)
+        assert flush_wins > len(results) / 2, results
 
     def test_chase_upgrade_from_pair_with_many_copies_in_deck(self):
         """Pair formable + extra copies of pair rank in deck → upgrade to Three of a Kind / Two Pair."""

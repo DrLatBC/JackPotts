@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import random
+from balatro_bot.domain.scoring.draws import seed_draws
 
 from balatro_bot.actions import PlayCards, DiscardCards
 from balatro_bot.context import RoundContext
@@ -221,7 +221,7 @@ class TestChooseDiscard:
         Decay jokers are handled by per-joker sim adjustment, so whether to
         chase is purely an EV comparison.
         """
-        random.seed(42)
+        seed_draws(42)
         hand = [card("2", "H"), card("3", "D"), card("5", "C"), card("7", "S"), card("9", "H")]
         deck = [card(r, s) for s in "HDCS" for r in "23456789TJQKA"]
         # Hopeless outlook — should produce a discard regardless of decay jokers

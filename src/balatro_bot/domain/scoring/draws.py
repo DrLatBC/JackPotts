@@ -1,11 +1,25 @@
-"""Draw detection, probability helpers, and draw-quality evaluation.
+"""Draw detection, probability helpers, draw-quality evaluation, and Monte Carlo draws.
 """
 
 from __future__ import annotations
 
+import random
 from math import comb
 
 from balatro_bot.cards import card_rank, card_suits, is_debuffed, rank_value
+
+
+_draw_rng = random.Random()
+
+
+def seed_draws(seed: object) -> None:
+    """Start a run: seed the Monte Carlo draws from the game seed so a replay draws the same cards."""
+    _draw_rng.seed(f"draws:{seed}")
+
+
+def sample_draws(pile: list, count: int, n: int) -> list[list]:
+    """*n* random draws of *count* cards from *pile*."""
+    return [_draw_rng.sample(pile, count) for _ in range(n)]
 
 
 # ---------------------------------------------------------------------------

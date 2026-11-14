@@ -273,7 +273,7 @@ class TestGenerateChases:
 class TestMCEvUsesHandLevels:
     def test_leveled_pair_beats_base_flush_chase_via_mc(self):
         """MC EV of keeping a leveled Pair should beat the EV of chasing a base Flush."""
-        import random
+        from balatro_bot.domain.scoring.draws import seed_draws
         from balatro_bot.context import RoundContext
         from balatro_bot.strategy import compute_strategy
         from balatro_bot.domain.scoring.search import best_hand
@@ -310,9 +310,9 @@ class TestMCEvUsesHandLevels:
             strategy=compute_strategy(jokers_list, hand_levels),
             deck_cards=deck,
         )
-        random.seed(42)
+        seed_draws(42)
         pair_ev = _expected_play_value([0, 1], ctx)             # keep leveled Pair
-        random.seed(42)
+        seed_draws(42)
         flush_ev = _expected_play_value([2, 3, 4], ctx)         # chase Flush
 
         assert pair_ev > flush_ev, (

@@ -4,7 +4,7 @@ Chase EV reflects joker effects (Bloodstone probabilistic hearts,
 Triboulet K/Q xmult, Steel Joker enhancements, The Idol's round target card).
 """
 
-import random
+from balatro_bot.domain.scoring.draws import seed_draws
 
 from balatro_bot.context import RoundContext
 from balatro_bot.strategy import compute_strategy
@@ -46,9 +46,9 @@ class TestIdolAwareChase:
         # Idol target = Ace of Spades — A♠ scoring should give X2 mult
         ctx = _ctx(hand, [idol_joker], idol_rank="A", idol_suit="S")
 
-        random.seed(42)
+        seed_draws(42)
         keep_as = _expected_play_value([0, 1], ctx)   # keep both Aces including A♠
-        random.seed(42)
+        seed_draws(42)
         drop_as = _expected_play_value([1, 2, 3, 4], ctx)   # discard A♠, keep A♦
 
         assert keep_as > drop_as, (
@@ -67,9 +67,9 @@ class TestBloodstoneAwareChase:
         bloodstone = joker("j_bloodstone")
         ctx = _ctx(hand, [bloodstone])
 
-        random.seed(42)
+        seed_draws(42)
         hearts_ev = _expected_play_value([0, 1, 2, 3], ctx)   # keep hearts
-        random.seed(42)
+        seed_draws(42)
         spades_ev = _expected_play_value([4, 5, 6, 7], ctx)   # keep spades
 
         assert hearts_ev > spades_ev, (
@@ -89,9 +89,9 @@ class TestTribouletAwareChase:
         triboulet = joker("j_triboulet")
         ctx = _ctx(hand, [triboulet])
 
-        random.seed(42)
+        seed_draws(42)
         keep_kings = _expected_play_value([0, 1], ctx)        # keep Kings
-        random.seed(42)
+        seed_draws(42)
         keep_threes = _expected_play_value([2, 3], ctx)       # keep 3s
 
         assert keep_kings > keep_threes, (

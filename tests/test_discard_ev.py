@@ -5,7 +5,7 @@ samples from the deck and scores best_hand() with full joker effects. Ranking,
 acceptance, and miss simulation all fall out of this one function.
 """
 
-import random
+from balatro_bot.domain.scoring.draws import seed_draws
 
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.domain.scoring.search import (
@@ -111,7 +111,7 @@ class TestChaseCandidateStructure:
 class TestOnAffinityChase:
     def test_flush_chase_with_flush_jokers(self):
         """Flush jokers make a flush chase dominate a Pair play — MC sees the upgrade."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("K", "H"), card("K", "D"), card("9", "H"), card("5", "H"), card("3", "H")]
         jokers_list = [joker("j_tribe"), joker("j_droll")]
         ctx = _ctx_for(hand, jokers_list)
@@ -122,7 +122,7 @@ class TestOnAffinityChase:
 
     def test_straight_chase_with_straight_jokers(self):
         """Straight jokers make a straight chase worth it."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("5", "H"), card("6", "D"), card("7", "C"), card("8", "S"), card("2", "H")]
         jokers_list = [joker("j_order"), joker("j_crazy")]
         ctx = _ctx_for(hand, jokers_list)
@@ -132,7 +132,7 @@ class TestOnAffinityChase:
 
     def test_three_kind_chase_with_trio_joker(self):
         """Trio joker (x3.0 on Three of a Kind) makes the chase worthwhile."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("8", "H"), card("8", "D"), card("3", "C"), card("5", "S"), card("7", "H")]
         jokers_list = [joker("j_trio")]
         ctx = _ctx_for(hand, jokers_list)
@@ -149,7 +149,7 @@ class TestOnAffinityChase:
 class TestOffAffinityChase:
     def test_flush_chase_rejected_with_pair_jokers(self):
         """Stacked pair jokers boost the Pair enough that a Flush chase loses in MC."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("K", "H"), card("K", "D"), card("9", "H"), card("5", "H"), card("3", "H")]
         jokers_list = [joker("j_duo"), joker("j_jolly"), joker("j_sly")]
         ctx = _ctx_for(hand, jokers_list)
@@ -161,7 +161,7 @@ class TestOffAffinityChase:
 
     def test_flush_chase_loses_in_junk_deck(self):
         """Discarding Pair of Aces into a junk deck: MC sees miss outcomes honestly."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("A", "H"), card("A", "D"), card("9", "H"), card("5", "H"), card("3", "H")]
         jokers_list = [joker("j_duo"), joker("j_jolly")]
         junk_deck = [card(r, s) for r in "234" for s in "CS"]
@@ -178,7 +178,7 @@ class TestOffAffinityChase:
 class TestExpectedPlayValue:
     def test_returns_reasonable_value(self):
         """EV sample is positive and below an optimistic ceiling."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("K", "H"), card("9", "H"), card("5", "H"), card("3", "H"), card("2", "D")]
         ctx = _ctx_for(hand)
 
@@ -199,15 +199,15 @@ class TestExpectedPlayValue:
         hand = [card("K", "H"), card("9", "H"), card("5", "H"), card("3", "H"), card("2", "D")]
         ctx = _ctx_for(hand)
 
-        random.seed(123)
+        seed_draws(123)
         ev1 = _expected_play_value([0, 1, 2, 3], ctx)
-        random.seed(123)
+        seed_draws(123)
         ev2 = _expected_play_value([0, 1, 2, 3], ctx)
         assert ev1 == ev2
 
     def test_hearts_deck_favors_flush(self):
         """Deck full of Hearts → EV is high (flush draws land reliably)."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("K", "H"), card("9", "H"), card("5", "H"), card("3", "H"), card("2", "D")]
         jokers_list = [joker("j_tribe")]
         hearts_deck = [card(r, "H") for r in "2345678TJQA"]
@@ -219,7 +219,7 @@ class TestExpectedPlayValue:
 
     def test_junk_deck_is_modest(self):
         """Low-card off-suit deck → EV close to the kept Pair's baseline."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("K", "H"), card("K", "D"), card("9", "H"), card("5", "H"), card("3", "H")]
         junk_deck = [card(r, s) for r in "234" for s in "CS"]
         ctx = _ctx_for(hand, deck=junk_deck)
@@ -236,7 +236,7 @@ class TestExpectedPlayValue:
 class TestBestChase:
     def test_best_chase_picks_highest_ev(self):
         """Given multiple candidates, picks the one with highest MC EV."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("K", "H"), card("9", "H"), card("5", "H"), card("3", "H"), card("2", "D")]
         jokers_list = [joker("j_tribe"), joker("j_droll")]
         ctx = _ctx_for(hand, jokers_list)
@@ -264,7 +264,7 @@ class TestEdgeCases:
 
     def test_ev_with_no_jokers(self):
         """EV comparison works with pure base scoring (no jokers)."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("K", "H"), card("9", "H"), card("5", "H"), card("3", "H"), card("2", "D")]
         ctx = _ctx_for(hand)
 
@@ -280,7 +280,7 @@ class TestEdgeCases:
 class TestIntegration:
     def test_ev_integration_flush_chase_fires(self):
         """Full evaluate() returns a chase with EV annotation when flush jokers present."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("K", "H"), card("9", "H"), card("5", "H"), card("3", "H"), card("2", "D")]
         jokers_list = [joker("j_tribe"), joker("j_droll")]
         deck = _make_deck(exclude={("K", "H"), ("9", "H"), ("5", "H"), ("3", "H"), ("2", "D")})
@@ -293,7 +293,7 @@ class TestIntegration:
 
     def test_mc_blocks_marginal_chase(self):
         """With strong pair jokers and a rich deck, marginal flush chases get rejected."""
-        random.seed(42)
+        seed_draws(42)
         hand = [card("K", "H"), card("K", "D"), card("9", "H"), card("5", "H"), card("3", "H")]
         jokers_list = [joker("j_duo"), joker("j_jolly")]
         rich_deck = [card(r, s) for r in "TJQKA" for s in "HDCS"]
