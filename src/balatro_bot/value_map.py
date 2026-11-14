@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+from balatro_bot.joker_effects.parsers import parse_effect_value
 from balatro_bot.joker_registry import JOKERS, RARITY_LABEL
 from balatro_bot.scaling import ALL_SCALING
 from balatro_bot.strategy import compute_strategy
@@ -40,10 +41,15 @@ _HAND_LEVELS = {h: {"level": 1, "chips": c, "mult": m} for h, c, m in [
 
 
 def _mk(key: str, effect: str = "", rarity: int = 1, cost: int = 5) -> dict:
-    """Build a minimal joker dict shaped like a real shop card."""
+    """Build a minimal joker dict shaped like a real shop card.
+
+    The scenario jokers have no game ability data, so their ``current``
+    values come from the hint text written here.
+    """
+    current = {k: v for k, v in parse_effect_value(effect).items() if v is not None}
     return {
         "key": key, "label": key,
-        "value": {"effect": effect, "rarity": rarity},
+        "value": {"effect": effect, "rarity": rarity, "current": current},
         "cost": {"buy": cost, "sell": max(1, cost // 2)},
     }
 
@@ -118,18 +124,17 @@ _SCALING_START_XMULT: dict[str, float] = {
     "j_cavendish": 3.0,
     # Card Sharp isn't scaling in the "(Currently X…)" sense — it's in
     # SCALING_REGISTRY as a sequence-sensitive joker. Its effect function
-    # reads X via _ab_xmult which falls through to text parsing. Anchor at
-    # its native X3 so the parser returns the real value.
+    # reads X via _ab_xmult; anchor at its native X3.
     "j_card_sharp": 3.0,
 }
 
 
 def _synthesize_effect(key: str, effect_hint: str) -> str:
-    """Produce plausible effect text for parse_effect_value().
+    """Produce the hint text ``_mk`` reads a candidate's current values from.
 
-    Scaling jokers need a ``(Currently …)`` anchor so the parser reads them
-    at their baseline. Non-scaling jokers fall through to the scoring sim
-    via the registry dispatch, so empty text is fine.
+    Scaling jokers get a ``(Currently …)`` anchor at their baseline.
+    Non-scaling jokers fall through to the scoring sim via the registry
+    dispatch, so the plain hint is fine.
     """
     if key in ALL_SCALING:
         start = _SCALING_START_XMULT.get(key, 1.0)

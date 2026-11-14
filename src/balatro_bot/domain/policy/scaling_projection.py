@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from balatro_bot.joker_effects.parsers import parse_effect_value
+from balatro_bot.joker_effects.parsers import current_value
 from balatro_bot.scaling import SCALING_REGISTRY
 
 if TYPE_CHECKING:
@@ -231,12 +231,12 @@ _ADDITIVE_PROJECTORS: dict[str, callable] = {
 }
 
 
-def project_additive_total(key: str, ctx: "SimContext", effect_text: str) -> tuple[float, float]:
+def project_additive_total(key: str, ctx: "SimContext", joker: dict) -> tuple[float, float]:
     """Return (chips_total, mult_total) = live anchor + projected future gain.
 
-    Live anchor for additive scalers comes from ``effect_text`` (parsed
-    "Currently +N Chips/Mult"); projection adds expected future gain from
-    rounds remaining × trigger rate.
+    Live anchor for additive scalers is the joker's current chips/mult
+    (live_values); projection adds expected future gain from rounds
+    remaining × trigger rate.
 
     Only produces non-zero output for scalers with gain_type ∈
     {"chips", "mult", "perma_chips"}. xmult scalers use ``project_total_xmult``.
@@ -245,11 +245,8 @@ def project_additive_total(key: str, ctx: "SimContext", effect_text: str) -> tup
     if profile is None or profile.gain_type not in ("chips", "mult", "perma_chips"):
         return (0.0, 0.0)
 
-    # Live anchor from effect text (may be the per-trigger increment for
-    # never-scaled jokers — parse_effect_value already prefers "Currently").
-    parsed = parse_effect_value(effect_text) if effect_text else {}
-    live_chips = parsed.get("chips") or 0.0
-    live_mult = parsed.get("mult") or 0.0
+    live_chips = current_value(joker, "chips", 0.0)
+    live_mult = current_value(joker, "mult", 0.0)
 
     lt = ctx.lifetime
     gain = 0.0

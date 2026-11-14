@@ -1,4 +1,8 @@
-"""Effect text parsing functions — extract chips/mult/xmult from joker descriptions."""
+"""Joker value accessors, and the description-text parser kept for log output.
+
+Decisions read structured values: ``value.current`` (see live_values), then
+``value.ability``. ``parse_effect_value`` only feeds logs and live-game diagnostics.
+"""
 
 from __future__ import annotations
 
@@ -25,8 +29,6 @@ _CURRENTLY_MULT_PATTERN = re.compile(r'Currently\s+\+(\d+(?:\.\d+)?)\s+Mult')
 _CURRENTLY_BARE_PATTERN = re.compile(r'Currently\s+\+(\d+(?:\.\d+)?)\b')
 # Scaling chip jokers show "gains +5 Chips... (Currently +37 Chips)"
 _CURRENTLY_CHIPS_PATTERN = re.compile(r'Currently\s+\+(\d+(?:\.\d+)?)\s+Chips')
-# Bracketed counter at end of effect text, e.g. Yorick's "[13]" remaining discards
-_BRACKET_COUNTER_PATTERN = re.compile(r'\[(\d+)\]')
 
 
 def parse_effect_value(effect_text: str) -> dict[str, float | None]:
@@ -88,34 +90,25 @@ def parse_effect_value(effect_text: str) -> dict[str, float | None]:
     return result
 
 
-def _joker_effect_text(joker: JokerLike) -> str:
-    """Extract effect text from a joker, handling both Joker and dict."""
+def _current(joker: JokerLike) -> dict:
+    """The joker's ``value.current`` (live_values.enrich_state), or {}."""
     if isinstance(joker, Joker):
-        return joker.value.effect
-    return joker.get("value", {}).get("effect", "")
+        return joker.value.current
+    value = joker.get("value")
+    current = value.get("current") if isinstance(value, dict) else None
+    return current if isinstance(current, dict) else {}
 
 
-def _get_parsed_value(joker: JokerLike, key: str, fallback: float) -> float:
-    """Get a parsed value from joker effect text, falling back to estimate.
-
-    key: one of 'chips', 'mult', 'xmult'
-    fallback: the hardcoded estimate to use if parsing fails
-    """
-    effect_text = _joker_effect_text(joker)
-    if not effect_text:
-        return fallback
-    parsed = parse_effect_value(effect_text)
-    value = parsed.get(key)
-    return value if value is not None else fallback
+def current_value(joker: JokerLike, key: str, fallback: float) -> float:
+    """One of the joker's current values ('chips', 'mult', 'xmult', 'dollars'), else fallback."""
+    v = _current(joker).get(key)
+    return float(v) if v is not None else fallback
 
 
-def _parse_bracket_counter(joker: JokerLike) -> int | None:
-    """Extract a bracketed counter [N] from effect text (e.g. Yorick's remaining discards)."""
-    effect_text = _joker_effect_text(joker)
-    if not effect_text:
-        return None
-    m = _BRACKET_COUNTER_PATTERN.search(effect_text)
-    return int(m.group(1)) if m else None
+def current_counter(joker: JokerLike) -> int | None:
+    """The countdown the joker's description shows (Yorick's discards, Loyalty's hands)."""
+    v = _current(joker).get("counter")
+    return int(v) if v is not None else None
 
 
 def _ability(joker: JokerLike) -> dict:
@@ -128,31 +121,30 @@ def _ability(joker: JokerLike) -> dict:
 
 
 def _ab_chips(joker: JokerLike, fallback: float = 0) -> float:
-    """Get chip value from ability data, then text parsing, then fallback."""
-    ab = _ability(joker)
-    v = ab.get("chips")
-    if v is not None:
-        return float(v)
-    return _get_parsed_value(joker, "chips", fallback)
+    """Chip value: the joker's current value, then ability data, then fallback."""
+    v = _current(joker).get("chips")
+    if v is None:
+        v = _ability(joker).get("chips")
+    return float(v) if v is not None else fallback
 
 
 def _ab_mult(joker: JokerLike, fallback: float = 0) -> float:
-    """Get mult value from ability data, then text parsing, then fallback."""
-    ab = _ability(joker)
-    v = ab.get("mult")
+    """Mult value: the joker's current value, then ability data, then fallback."""
+    v = _current(joker).get("mult")
     if v is None:
-        v = ab.get("t_mult")
-    if v is not None:
-        return float(v)
-    return _get_parsed_value(joker, "mult", fallback)
+        ab = _ability(joker)
+        v = ab.get("mult")
+        if v is None:
+            v = ab.get("t_mult")
+    return float(v) if v is not None else fallback
 
 
 def _ab_xmult(joker: JokerLike, fallback: float = 1.0) -> float:
-    """Get xmult value from ability data, then text parsing, then fallback."""
-    ab = _ability(joker)
-    v = ab.get("Xmult")
+    """Xmult value: the joker's current value, then ability data, then fallback."""
+    v = _current(joker).get("xmult")
     if v is None:
-        v = ab.get("x_mult")
-    if v is not None:
-        return float(v)
-    return _get_parsed_value(joker, "xmult", fallback)
+        ab = _ability(joker)
+        v = ab.get("Xmult")
+        if v is None:
+            v = ab.get("x_mult")
+    return float(v) if v is not None else fallback

@@ -64,19 +64,10 @@ def is_debuffed(card: CardLike) -> bool:
 
 
 def is_joker_debuffed(joker: JokerLike) -> bool:
-    """True if a joker is debuffed (e.g. by Crimson Heart).
-
-    The API signals this via the effect text becoming
-    ``"All abilities are disabled"`` and/or a state.debuff flag.
-    """
+    """True if a joker is debuffed (e.g. by Crimson Heart): its state.debuff flag."""
     if isinstance(joker, Joker):
-        if joker.state.debuff:
-            return True
-        return joker.value.effect == "All abilities are disabled"
-    if _state(joker).get("debuff", False) is True:
-        return True
-    effect = joker.get("value", {}).get("effect", "")
-    return isinstance(effect, str) and effect == "All abilities are disabled"
+        return joker.state.debuff
+    return _state(joker).get("debuff", False) is True
 
 
 def joker_key(joker: JokerLike) -> str:

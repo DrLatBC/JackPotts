@@ -40,6 +40,8 @@ class JokerValue:
     effect: str = ""
     rarity: int | str | None = None
     ability: JokerAbility = field(default_factory=JokerAbility)
+    # Displayed values from joker_effects.live_values (chips/mult/xmult/dollars/counter).
+    current: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ def joker_from_dict(d: dict | Joker) -> Joker:
         value=JokerValue(
             effect=val.get("effect", "") or "",
             rarity=val.get("rarity"),
+            current=_safe_dict(val.get("current", {})),
             ability=JokerAbility(
                 chips=ab.get("chips"),
                 mult=ab.get("mult"),

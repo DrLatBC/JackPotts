@@ -64,26 +64,28 @@ def _adjust_jokers_for_discard(jokers: list, discard_count: int) -> list:
             out.append(j)
             continue
 
+        # The decayed value goes to both ability and current, since readers prefer current.
+        if key == "j_green_joker":
+            field, current_key = "mult", "mult"
+            new = max(0.0, _ab_mult(j, fallback=0) - 1.0)
+        else:  # j_ramen
+            field, current_key = "x_mult", "xmult"
+            new = max(1.0, _ab_xmult(j, fallback=1.85) - 0.01 * discard_count)
+
         if isinstance(j, Joker):
-            if key == "j_green_joker":
-                cur = _ab_mult(j, fallback=0)
-                new_ability = dc_replace(j.value.ability, mult=max(0.0, cur - 1.0))
-            else:  # j_ramen
-                cur = _ab_xmult(j, fallback=1.85)
-                new_ability = dc_replace(
-                    j.value.ability, x_mult=max(1.0, cur - 0.01 * discard_count)
-                )
-            new_value = dc_replace(j.value, ability=new_ability)
+            new_value = dc_replace(
+                j.value,
+                ability=dc_replace(j.value.ability, **{field: new}),
+                current={**j.value.current, current_key: new},
+            )
             out.append(dc_replace(j, value=new_value))
         else:
             new_j = copy.deepcopy(j)
-            ability = new_j.setdefault("value", {}).setdefault("ability", {})
-            if key == "j_green_joker":
-                cur = _ab_mult(new_j, fallback=0)
-                ability["mult"] = max(0.0, cur - 1.0)
-            else:
-                cur = _ab_xmult(new_j, fallback=1.85)
-                ability["x_mult"] = max(1.0, cur - 0.01 * discard_count)
+            value = new_j.setdefault("value", {})
+            value.setdefault("ability", {})[field] = new
+            if not isinstance(value.get("current"), dict):
+                value["current"] = {}
+            value["current"][current_key] = new
             out.append(new_j)
     return out
 

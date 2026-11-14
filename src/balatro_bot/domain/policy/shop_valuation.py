@@ -31,7 +31,7 @@ from balatro_bot.domain.policy.boss_adjustment import (
 from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
-from balatro_bot.joker_effects.parsers import _get_parsed_value
+from balatro_bot.joker_effects.parsers import _ab_mult, _ab_xmult
 from balatro_bot.joker_effects.scoring_phase import (
     PHASE_MULT, PHASE_XMULT, get_joker_phase, reorder_for_scoring,
 )
@@ -1057,7 +1057,7 @@ def _synthetic_held_cards(ctx: SimContext) -> list[Card]:
     return []
 
 
-# Deck-density xmult scalers — their parsed effect text is X1.0 at buy-time so
+# Deck-density xmult scalers — their current xmult is X1.0 at buy-time so
 # the raw sim sees zero delta. Project a forward xmult from deck composition
 # and feed it to the sim via a rewritten candidate copy.
 _DECK_DENSITY_XMULT_EXTRA: dict[str, tuple[str, float]] = {
@@ -1076,9 +1076,9 @@ _DECK_DENSITY_REALIZATION: dict[str, float] = {
 
 
 def _project_deck_density_candidate(ctx: SimContext) -> dict:
-    """If the candidate is a deck-density xmult scaler, return a dict-copy with
-    its effect text rewritten to project its xmult from the current deck's
-    enhancement count. Otherwise return the candidate unchanged.
+    """If the candidate is a deck-density xmult scaler, return a dict-copy whose
+    current xmult is projected from the current deck's enhancement count.
+    Otherwise return the candidate unchanged.
     """
     key = ctx.candidate_key
     spec = _DECK_DENSITY_XMULT_EXTRA.get(key)
@@ -1094,7 +1094,7 @@ def _project_deck_density_candidate(ctx: SimContext) -> dict:
         return ctx.candidate
     new = dict(ctx.candidate)
     val = dict(ctx.candidate.get("value", {}))
-    val["effect"] = f"X{projected:.2f} Mult"
+    val["current"] = {**(val.get("current") or {}), "xmult": projected}
     new["value"] = val
     return new
 
@@ -1445,7 +1445,7 @@ def _copy_target_score(j: dict) -> float:
     Constellation X5.5 beating Cavendish X3.0), discounted for conditional
     triggers that may not fire at scoring time.
 
-    Reads ``self.ability`` via the effect-text parser, so scaling jokers
+    Reads the joker's current value (live_values), so scaling jokers
     contribute their *live* accumulated value, not a base estimate.
     """
     key = joker_key(j)
@@ -1453,14 +1453,14 @@ def _copy_target_score(j: dict) -> float:
         return -1.0
     phase = get_joker_phase(key)
     if phase == PHASE_XMULT:
-        xm = _get_parsed_value(j, "xmult", 1.5)
+        xm = _ab_xmult(j, fallback=1.5)
         if key in CONDITIONAL_XMULT:
             xm *= _CONDITIONAL_XMULT_DISCOUNT
         # Scale into a tier above PHASE_MULT scoring; +100 keeps any xmult
         # target ranked above even huge flat-mult jokers.
         return 100.0 + xm
     if phase == PHASE_MULT:
-        return _get_parsed_value(j, "mult", 0.0)
+        return _ab_mult(j, fallback=0.0)
     return 0.0
 
 
@@ -1970,12 +1970,11 @@ def evaluate_joker_value(
     # ScalingProfile, predict end-of-run state as (live_anchor + projected
     # gain) and floor the sim with the same xmult × 5 / mult / 5 / chips / 50
     # conversion used for the live anchor alone. Live anchor comes from
-    # ``ctx.lifetime`` (parsed from owned effect text); projection uses
+    # ``ctx.lifetime`` (owned jokers' current values); projection uses
     # per-joker trigger-rate models in ``scaling_projection``.
     if key in SCALING_REGISTRY:
-        effect_text = candidate.get("value", {}).get("effect", "") or ""
         total_xmult = project_total_xmult(key, ctx)
-        total_chips, total_mult = project_additive_total(key, ctx, effect_text)
+        total_chips, total_mult = project_additive_total(key, ctx, candidate)
         projected_end = {
             "xmult": total_xmult if total_xmult > 1.0 else None,
             "chips": total_chips if total_chips > 0 else None,

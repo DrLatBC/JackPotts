@@ -8,6 +8,7 @@ from balatro_bot.domain.policy.sim_context import (
     LiveRunStats,
     SimContext,
 )
+from tests.conftest import live_joker
 
 
 def _levels() -> dict:
@@ -17,14 +18,10 @@ def _levels() -> dict:
         "Flush":     {"chips": 35, "mult": 4, "level": 1},
     }
 
-
-def _joker(key: str, effect: str = "") -> dict:
-    return {
-        "key": key,
-        "label": key,
-        "value": {"effect": effect},
-        "cost": {"sell": 3},
-    }
+def _joker(key: str, ability: dict) -> dict:
+    j = live_joker(key, ability)
+    j["cost"] = {"sell": 3}
+    return j
 
 
 class TestLifetimeStateOverrides:
@@ -39,9 +36,9 @@ class TestLifetimeStateOverrides:
         assert lt.avg_discards_per_round == 3.2
         assert lt.avg_sells_per_ante == 0.4
 
-    def test_live_stats_does_not_break_xmult_parse(self):
-        # Live anchor parsing must still work alongside run-rate overrides.
-        m = _joker("j_madness", "Currently X4.5 Mult")
+    def test_live_stats_does_not_break_xmult_anchor(self):
+        # The live xmult anchor must still work alongside run-rate overrides.
+        m = _joker("j_madness", {"extra": 0.5, "x_mult": 4.5})
         live = LiveRunStats(avg_discards_per_round=2.0, avg_sells_per_ante=0.5)
         lt = LifetimeState.from_owned([m], live_stats=live)
         assert lt.madness_xmult == 4.5
@@ -52,7 +49,7 @@ class TestSimContextBuild:
     def test_build_threads_live_stats(self):
         live = LiveRunStats(avg_discards_per_round=4.0, avg_sells_per_ante=0.2)
         ctx = SimContext.build(
-            candidate=_joker("j_joker"), owned_jokers=[], hand_levels=_levels(),
+            candidate=_joker("j_joker", {"mult": 4, "x_mult": 1}), owned_jokers=[], hand_levels=_levels(),
             strategy=None, ante=1, live_stats=live,
         )
         assert ctx.lifetime is not None
@@ -63,10 +60,7 @@ class TestSimContextBuild:
 class TestEvaluateJokerValueThreading:
     def test_yorick_high_discard_rate_beats_low(self):
         """Yorick procs per 23 discards — higher discard rate → higher projection."""
-        cand = _joker(
-            "j_yorick",
-            "Gains X1.0 Mult per 23 cards discarded, requires 23 more (Currently X1.0 Mult)",
-        )
+        cand = _joker("j_yorick", {"xmult": 1, "discards": 23, "x_mult": 1, "yorick_discards": 23})
         low = LiveRunStats(avg_discards_per_round=0.5, avg_sells_per_ante=0.5)
         high = LiveRunStats(avg_discards_per_round=3.5, avg_sells_per_ante=0.5)
         v_low = evaluate_joker_value(cand, [], _levels(), ante=2, live_stats=low)
@@ -75,10 +69,7 @@ class TestEvaluateJokerValueThreading:
 
     def test_campfire_high_sell_rate_beats_low(self):
         """Campfire scales with sells — higher sell rate → higher projection."""
-        cand = _joker(
-            "j_campfire",
-            "This Joker gains X0.25 Mult when a card is sold (Currently X1.0 Mult)",
-        )
+        cand = _joker("j_campfire", {"extra": 0.25, "x_mult": 1.0})
         low = LiveRunStats(avg_discards_per_round=1.5, avg_sells_per_ante=0.1)
         high = LiveRunStats(avg_discards_per_round=1.5, avg_sells_per_ante=3.0)
         v_low = evaluate_joker_value(cand, [], _levels(), ante=3, live_stats=low)

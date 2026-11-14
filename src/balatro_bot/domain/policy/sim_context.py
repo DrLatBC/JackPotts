@@ -6,12 +6,11 @@ One frozen dataclass threaded through ``evaluate_joker_value`` →
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import joker_key
-from balatro_bot.joker_effects.parsers import parse_effect_value
+from balatro_bot.joker_effects.parsers import current_counter, current_value
 
 if TYPE_CHECKING:
     from balatro_bot.domain.models.deck_profile import DeckProfile
@@ -19,7 +18,7 @@ if TYPE_CHECKING:
 
 
 # Maps a scaling-xmult joker key to the ``LifetimeState`` field holding its
-# live "Currently X…" anchor. Jokers absent here have no live anchor (either
+# live xmult anchor (its current xmult). Jokers absent here have no live anchor (either
 # because they don't scale xmult, or because their anchor lives in a different
 # field like Yorick's remaining-to-proc counter).
 _XMULT_ANCHOR_FIELD: dict[str, str] = {
@@ -36,11 +35,6 @@ _XMULT_ANCHOR_FIELD: dict[str, str] = {
     "j_lucky_cat": "lucky_cat_xmult",
     "j_glass": "glass_xmult",
 }
-
-# Yorick's effect text includes "requires N more" where N ∈ [1, 23]; parse it
-# to know how close to the next X1.0 Mult proc we are.
-_YORICK_REMAINING_PATTERN = re.compile(r"requires\s+(\d+)\s+more", re.IGNORECASE)
-
 
 @dataclass(frozen=True)
 class LiveRunStats:
@@ -69,7 +63,7 @@ class LifetimeState:
     when the bot passes its observed averages.
     """
 
-    # Live xmult anchors — "Currently X…" parsed from owned jokers.
+    # Live xmult anchors — owned jokers' current xmult.
     madness_xmult: float = 1.0
     hologram_xmult: float = 1.0
     caino_xmult: float = 1.0
@@ -100,7 +94,7 @@ class LifetimeState:
         unique_planets_used: int = 0,
         live_stats: "LiveRunStats | None" = None,
     ) -> "LifetimeState":
-        """Build from owned jokers by parsing their effect text.
+        """Build from owned jokers' current values (live_values).
 
         When ``live_stats`` is provided, override the conservative defaults for
         ``avg_discards_per_round`` / ``avg_sells_per_ante`` with the bot's
@@ -112,19 +106,15 @@ class LifetimeState:
             kwargs["avg_sells_per_ante"] = live_stats.avg_sells_per_ante
         for joker in owned_jokers:
             k = joker_key(joker)
-            text = joker.get("value", {}).get("effect", "") if isinstance(joker, dict) else ""
-            if not text:
-                continue
             anchor_field = _XMULT_ANCHOR_FIELD.get(k)
             if anchor_field:
-                parsed = parse_effect_value(text)
-                xm = parsed.get("xmult")
-                if xm is not None and xm > 0:
+                xm = current_value(joker, "xmult", 0.0)
+                if xm > 0:
                     kwargs[anchor_field] = xm
             if k == "j_yorick":
-                m = _YORICK_REMAINING_PATTERN.search(text)
-                if m:
-                    kwargs["yorick_cards_to_proc"] = max(1, int(m.group(1)))
+                remaining = current_counter(joker)
+                if remaining is not None:
+                    kwargs["yorick_cards_to_proc"] = max(1, remaining)
         return cls(**kwargs)
 
 

@@ -26,7 +26,7 @@ from balatro_bot.domain.policy.exploration import Choice, explorer
 from balatro_bot.domain.policy.shop_valuation import (
     _KEY_TO_CATEGORY, _copy_target_score, evaluate_joker_value,
 )
-from balatro_bot.joker_effects.parsers import parse_effect_value
+from balatro_bot.joker_effects.parsers import _ab_chips, _ab_mult, _ab_xmult
 from balatro_bot.joker_effects.scoring_phase import (
     get_joker_phase, get_joker_edition_phase,
     PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
@@ -1148,19 +1148,20 @@ class ShopEvaluator:
         for r in roster:
             if r.ev_delta <= 0.1 and r.key not in ("j_ceremonial", "j_invisible"):
                 # This joker is essentially dead — sell proactively for cash
-                effect = owned[r.index].get("value", {}).get("effect", "")
-                parsed = parse_effect_value(effect) if effect else {}
+                j = owned[r.index]
 
                 should_sell = False
                 reason = ""
 
-                if r.key == "j_popcorn" and (parsed.get("mult") or 0) <= 4:
+                # Fallbacks are the game's starting values (game.lua configs), so a
+                # missing value never reads as decayed.
+                if r.key == "j_popcorn" and (popcorn := _ab_mult(j, fallback=20)) <= 4:
                     should_sell = True
-                    reason = f"Popcorn decayed to +{parsed.get('mult', 0)} mult"
-                elif r.key == "j_ramen" and (parsed.get("xmult") or 1.0) < 1.0:
+                    reason = f"Popcorn decayed to +{popcorn:g} mult"
+                elif r.key == "j_ramen" and _ab_xmult(j, fallback=2.0) < 1.0:
                     should_sell = True
                     reason = f"Ramen decayed below X1"
-                elif r.key == "j_ice_cream" and (parsed.get("chips") or 0) <= 0:
+                elif r.key == "j_ice_cream" and _ab_chips(j, fallback=100) <= 0:
                     should_sell = True
                     reason = "Ice Cream at 0 chips"
                 elif r.key == "j_riff_raff" and joker_count >= joker_limit:

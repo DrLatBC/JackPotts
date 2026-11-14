@@ -6,6 +6,7 @@ import math
 from balatro_bot.domain.scoring.estimate import score_hand, score_hand_detailed
 from balatro_bot.domain.scoring.base import arm_reduce_hand_levels, flint_halve_hand_levels
 from balatro_bot.cards import card_chip_value
+from balatro_bot.joker_effects.live_values import enrich_state
 from dataclasses import replace as dc_replace
 from tests.conftest import card, wild_card, stone_card, debuffed_card, joker
 
@@ -195,33 +196,31 @@ class TestRideTheBusPareidolia:
 # ---------------------------------------------------------------------------
 
 class TestSteelJokerScoring:
-    def _steel_joker(self, xmult: float = 1.0):
-        """Build Steel Joker with effect text showing the game's current xmult.
+    def _steel_joker(self, steel_tally: int = 0):
+        """Steel Joker as the gamestate sends it: X(1 + 0.2 * steel_tally).
 
-        The real API sends "Currently X1.6 Mult" etc. in the effect text.
-        The bot parses this directly rather than counting Steel cards.
+        steel_tally is the game's count of Steel cards across the full deck
+        (draw pile, hand, played, discard), which the bot can't count itself.
         """
-        effect = f"X{xmult} Mult" if xmult > 1.0 else ""
-        j = _joker_with_ability("j_steel_joker", {"extra": 0.2})
-        j["value"]["effect"] = effect
-        return j
+        j = _joker_with_ability("j_steel_joker", {"extra": 0.2, "steel_tally": steel_tally})
+        return enrich_state({"jokers": {"cards": [j]}})["jokers"]["cards"][0]
 
     def test_steel_joker_no_steel_cards(self):
         """Steel Joker with 0 Steel cards → xmult = 1.0 (no effect)."""
         cards = [card("K", "H"), card("K", "D")]
-        _, _, total_with = score_hand("Pair", cards, jokers=[self._steel_joker(1.0)])
+        _, _, total_with = score_hand("Pair", cards, jokers=[self._steel_joker(0)])
         _, _, total_without = score_hand("Pair", cards)
         assert total_with == total_without
 
     def test_steel_joker_with_steel_in_hand(self):
-        """Steel Joker with 2 Steel cards → xmult = 1.4 (from parsed text)."""
+        """Steel Joker with 2 Steel cards → xmult = 1.4."""
         scoring = [card("K", "H"), card("K", "D")]
         held = [card("5", "S", enhancement="STEEL"), card("3", "H", enhancement="STEEL")]
         _, mult, _ = score_hand(
-            "Pair", scoring, jokers=[self._steel_joker(xmult=1.4)],
+            "Pair", scoring, jokers=[self._steel_joker(steel_tally=2)],
             held_cards=held,
         )
-        # Parsed xmult = 1.4 (game says "Currently X1.4 Mult")
+        # Current xmult = 1 + 0.2 * 2 = 1.4
         # Base mult: 2 (pair). Held Steel cards each add x1.5 mult.
         # Per-card Steel: mult = 2 * 1.5 * 1.5 = 4.5
         # Steel Joker: 4.5 * 1.4 = 6.3
@@ -231,20 +230,20 @@ class TestSteelJokerScoring:
         """Steel Joker with 3 Steel cards in deck → xmult = 1.6."""
         scoring = [card("K", "H"), card("K", "D")]
         _, mult, _ = score_hand(
-            "Pair", scoring, jokers=[self._steel_joker(xmult=1.6)],
+            "Pair", scoring, jokers=[self._steel_joker(steel_tally=3)],
         )
-        # Parsed xmult = 1.6. Base mult: 2, no held Steel → mult = 2 * 1.6 = 3.2
+        # Current xmult = 1.6. Base mult: 2, no held Steel → mult = 2 * 1.6 = 3.2
         assert abs(mult - 3.2) < 0.01
 
     def test_steel_joker_counts_all_sources(self):
-        """Steel Joker xmult comes from parsed text covering the full deck."""
+        """Steel Joker xmult comes from the game's full-deck steel_tally."""
         scoring = [card("K", "H", enhancement="STEEL"), card("K", "D")]
         held = [card("5", "S", enhancement="STEEL")]
         _, mult, _ = score_hand(
-            "Pair", scoring, jokers=[self._steel_joker(xmult=1.6)],
+            "Pair", scoring, jokers=[self._steel_joker(steel_tally=3)],
             held_cards=held,
         )
-        # Parsed xmult = 1.6 (game counted 3 Steel across full deck)
+        # Current xmult = 1.6 (game counted 3 Steel across full deck)
         # Held 5♠ Steel: x1.5 → mult = 2 * 1.5 = 3.0
         # Steel Joker: 3.0 * 1.6 = 4.8
         assert abs(mult - 4.8) < 0.01

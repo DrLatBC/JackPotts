@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-from balatrobot import BalatroClient
+from balatro_bot.infrastructure.client import BalatroClient
 
 from balatro_bot.bot import run_bot, setup_logging, wait_for_server
 from balatro_bot.domain.policy import exploration

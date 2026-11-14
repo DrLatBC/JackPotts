@@ -32,7 +32,8 @@ _venv_sp = os.path.join(os.path.dirname(__file__), "..", "..", ".venv", "Lib", "
 if os.path.isdir(_venv_sp) and _venv_sp not in sys.path:
     sys.path.insert(0, os.path.abspath(_venv_sp))
 
-from balatrobot.cli.client import BalatroClient, APIError
+from balatrobot.cli.client import APIError
+from balatro_bot.infrastructure.client import BalatroClient
 from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
 from balatro_bot.domain.scoring.estimate import score_hand_detailed
 from balatro_bot.domain.scoring.base import flint_halve_hand_levels

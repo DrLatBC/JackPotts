@@ -231,7 +231,7 @@ class TestJokerScoring:
 
 
 # ---------------------------------------------------------------------------
-# Effect text parser tests
+# Effect text parser (logs) and current-value accessor tests
 # ---------------------------------------------------------------------------
 
 class TestParseEffectValue:
@@ -289,32 +289,34 @@ class TestParseEffectValue:
         assert result["mult"] is None
         assert result["xmult"] is None
 
-    def test_get_parsed_value_with_effect(self):
-        from balatro_bot.joker_effects import _get_parsed_value
-        j = {"key": "j_green_joker", "value": {"effect": "+12 Mult"}}
-        assert _get_parsed_value(j, "mult", fallback=5) == 12.0
+    def test_current_value_reads_current(self):
+        from balatro_bot.joker_effects import current_value
+        j = {"key": "j_green_joker", "value": {"current": {"mult": 12}}}
+        assert current_value(j, "mult", fallback=5) == 12.0
 
-    def test_get_parsed_value_fallback(self):
-        from balatro_bot.joker_effects import _get_parsed_value
+    def test_current_value_fallback(self):
+        from balatro_bot.joker_effects import current_value
         j = {"key": "j_green_joker", "value": {}}
-        assert _get_parsed_value(j, "mult", fallback=5) == 5
+        assert current_value(j, "mult", fallback=5) == 5
 
-    def test_get_parsed_value_empty_effect(self):
-        from balatro_bot.joker_effects import _get_parsed_value
-        j = {"key": "j_green_joker", "value": {"effect": ""}}
-        assert _get_parsed_value(j, "mult", fallback=5) == 5
+    def test_current_value_ignores_effect_text(self):
+        from balatro_bot.joker_effects import current_value
+        j = {"key": "j_green_joker", "value": {"effect": "+12 Mult"}}
+        assert current_value(j, "mult", fallback=5) == 5
 
-    def test_scoring_uses_parsed_value(self):
+    def test_scoring_uses_current_value(self):
+        from balatro_bot.joker_effects.live_values import enrich_state
         cards = [card("K", "H"), card("K", "D")]
-        j_parsed = {"key": "j_green_joker", "set": "JOKER", "cost": {"sell": 3},
-                     "value": {"effect": "+12 Mult"}}
-        j_no_effect = {"key": "j_green_joker", "set": "JOKER", "cost": {"sell": 3},
-                        "value": {}}
-        _, _, total_parsed = score_hand("Pair", cards, jokers=[j_parsed])
-        _, _, total_fallback = score_hand("Pair", cards, jokers=[j_no_effect])
-        assert total_parsed > total_fallback
-        # Green Joker adds _ab_mult + hand_add(1): 12 + 1 = 13 mult
-        assert total_parsed == 450  # 30 chips * (2 base + 12 parsed + 1 hand_add) = 450
+        state = {"jokers": {"cards": [
+            {"key": "j_green_joker", "set": "JOKER", "cost": {"sell": 3},
+             "value": {"ability": {"mult": 12, "hand_add": 1, "discard_sub": 1}}},
+        ]}}
+        j_live = enrich_state(state)["jokers"]["cards"][0]
+        j_no_value = {"key": "j_green_joker", "set": "JOKER", "cost": {"sell": 3}, "value": {}}
+        _, _, total_live = score_hand("Pair", cards, jokers=[j_live])
+        _, _, total_fallback = score_hand("Pair", cards, jokers=[j_no_value])
+        # Green Joker adds current mult + hand_add(1): 12 + 1 = 13 mult
+        assert total_live == 450  # 30 chips * (2 base + 12 current + 1 hand_add) = 450
         assert total_fallback == 90  # 30 chips * (2 base + 0 fallback + 1 hand_add) = 90
 
 

@@ -10,7 +10,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 import httpx
-from balatrobot import APIError, BalatroClient
+from balatrobot import APIError
 
 from balatro_bot.bot_format import fmt_card, format_card_detail
 from balatro_bot.bot_logging import (
@@ -18,8 +18,9 @@ from balatro_bot.bot_logging import (
 )
 from balatro_bot.domain.policy.exploration import explorer
 from balatro_bot.engine import RuleEngine
+from balatro_bot.infrastructure.client import BalatroClient
 
-log = logging.getLogger("balatro_bot")
+log =logging.getLogger("balatro_bot")
 _stream_log = logging.getLogger("balatro_stream")
 _scoring_log = logging.getLogger("balatro_scoring")
 

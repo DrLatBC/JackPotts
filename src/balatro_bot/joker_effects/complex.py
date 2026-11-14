@@ -8,7 +8,7 @@ from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, _mo
 from balatro_bot.domain.models.joker import Joker
 from balatro_bot.constants import FACE_RANKS
 from balatro_bot.domain.models.card import Card
-from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult, _get_parsed_value, _parse_bracket_counter
+from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult, current_counter
 from balatro_bot.joker_effects.context import ScoreContext, _hand_contains, retrigger_count
 
 if TYPE_CHECKING:
@@ -31,8 +31,7 @@ def _stencil(ctx: ScoreContext, j: dict) -> None:
     ctx.mult *= max(1, value)
 
 def _blue_joker(ctx: ScoreContext, j: dict) -> None:
-    # Use parsed "Currently +N Chips" from API text — more reliable than
-    # computing from deck_count, which may disagree with what the game sees.
+    # Current chips are extra × #G.deck.cards (live_values); deck_count is the fallback.
     ctx.chips += _ab_chips(j, fallback=2 * ctx.deck_count)
 
 def _banner(ctx: ScoreContext, j: dict) -> None:
@@ -335,14 +334,11 @@ def _obelisk(ctx: ScoreContext, j: dict) -> None:
 def _steel_joker(ctx: ScoreContext, j: dict) -> None:
     """Steel Joker: X Mult = 1 + extra * (Steel cards in full deck).
 
-    The game dynamically counts Steel-enhanced cards across G.playing_cards
-    (all cards in the deck: draw pile + hand + played + discard pile) at
-    scoring time.  The API's ability.x_mult stays at the default 1.0, but
-    the effect text shows the real value via "Currently X1.6 Mult" etc.
-    Use the parsed text value directly — manual counting from the bot's
-    partial card data (draw pile + hand + played) misses the discard pile.
+    The game counts Steel cards across G.playing_cards (draw pile, hand, played
+    and discard pile), which the bot's own card lists don't cover; the current
+    value comes from the gamestate's steel_tally (live_values).
     """
-    xmult = _get_parsed_value(j, "xmult", 1.0)
+    xmult = _ab_xmult(j, fallback=1.0)
     if xmult > 1:
         ctx.mult *= xmult
 
@@ -363,15 +359,15 @@ def _ramen(ctx: ScoreContext, j: dict) -> None:
 def _yorick(ctx: ScoreContext, j: dict) -> None:
     """Yorick: X1 Mult, gains X1 per 23 cards discarded.
 
-    The remaining discard counter shows in effect text as [N].
-    ability.discards is the threshold constant (23), NOT the counter.
+    The remaining-discards counter is ability.yorick_discards (current
+    ``counter``); ability.discards is the threshold constant (23).
     The Hook's boss effect discards 2 cards before scoring, advancing
     the counter by 2.  If remaining <= 2, the threshold is crossed
     and xmult ticks up.
     """
     xmult = _ab_xmult(j, fallback=2.0)
     if ctx.blind_name == "The Hook":
-        remaining = _parse_bracket_counter(j)
+        remaining = current_counter(j)
         if remaining is not None and remaining <= 2:
             xmult += 1
     ctx.mult *= xmult

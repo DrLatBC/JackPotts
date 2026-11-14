@@ -61,7 +61,7 @@ A joker whose value grows from a repeatable trigger (playing, discarding, sellin
 _Avoid_: Growth joker, stacking joker
 
 **Anchor**:
-A scaling joker's current value, read from its "Currently X" text, which values project forward from.
+A scaling joker's current value (what the game shows as "Currently X"), which values project forward from.
 
 **Fodder**:
 A joker bought or kept so another joker can consume it, chiefly Ceremonial Dagger eating the joker to its right.

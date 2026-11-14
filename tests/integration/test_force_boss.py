@@ -13,7 +13,8 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from balatrobot.cli.client import BalatroClient, APIError
+from balatrobot.cli.client import APIError
+from balatro_bot.infrastructure.client import BalatroClient
 
 from harness import (
     TEST_PORT, BOSS_KEYS, BOSS_MIN_ANTE,

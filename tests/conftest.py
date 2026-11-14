@@ -58,3 +58,18 @@ def joker(key: str, label: str = "", rarity: int | str | None = None) -> dict:
     if rarity is not None:
         j.setdefault("value", {})["rarity"] = rarity
     return j
+
+
+def live_joker(key: str, ability: dict, label: str = "", rarity: int | str | None = None,
+               state: dict | None = None) -> dict:
+    """A joker as the bot sees it live: gamestate ``ability`` plus its enriched ``current``.
+
+    ``state`` supplies the rest of the gamestate the joker's current value reads
+    (``money``, ``counters``, ``cards``).
+    """
+    from balatro_bot.joker_effects.live_values import enrich_state
+
+    j = joker(key, label, rarity)
+    j.setdefault("value", {})["ability"] = dict(ability)
+    enrich_state({**(state or {}), "jokers": {"cards": [j]}})
+    return j

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.conftest import card, joker
+from tests.conftest import card, joker, live_joker
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.shop_valuation import (
     _make_card,
@@ -251,10 +251,8 @@ class TestEvaluateJokerValue:
 
     def test_xmult_joker_high_value(self):
         """xMult jokers should score high, especially late game."""
-        duo = joker("j_duo", "Duo")
-        duo["value"] = {"effect": "X2 Mult if played hand contains a Pair"}
-        jolly = joker("j_jolly", "Jolly Joker")
-        jolly["value"] = {"effect": "+8 Mult if played hand contains a Pair"}
+        duo = live_joker("j_duo", {"x_mult": 2}, "Duo")
+        jolly = live_joker("j_jolly", {"t_mult": 8, "x_mult": 1}, "Jolly Joker")
         hand_levels = {"Pair": {"chips": 10, "mult": 10, "level": 1}}
 
         duo_val = evaluate_joker_value(duo, [], hand_levels, ante=5)
@@ -264,10 +262,7 @@ class TestEvaluateJokerValue:
 
     def test_scaling_joker_uses_accumulated_value(self):
         """A scaling joker with accumulated X3.0 should be very valuable."""
-        madness = joker("j_madness", "Madness")
-        madness["value"] = {
-            "effect": "This Joker gains X0.5 Mult when blind is selected (Currently X3.0 Mult)"
-        }
+        madness = live_joker("j_madness", {"extra": 0.5, "x_mult": 3.0}, "Madness")
         val = evaluate_joker_value(madness, [], {}, ante=5)
         # X3.0 * 5.0 = 15.0 dynamic power, should be high
         assert val >= 10.0
@@ -432,7 +427,10 @@ class TestPhase3DensityAwareSim:
     # --- Rank density: Wee, Scholar ---
 
     def test_wee_scales_with_twos_in_deck(self):
-        cand = self._cand("j_wee", "+8 Chips, +1 Chip if scored 2", rarity=1)
+        # A Wee Joker that has grown to +8 (one scored 2); a fresh one (chips 0)
+        # sits on the scaling-projection floor whatever the deck.
+        cand = live_joker("j_wee", {"chips": 8, "chip_mod": 8, "x_mult": 1}, rarity=1)
+        cand["cost"] = {"buy": 8, "sell": 4}
         baseline = evaluate_joker_value(cand, [], self._HL, ante=2,
                                          deck_profile=self._vanilla())  # 4 twos
         heavy = {r: 4 for r in "3456789TJQKA"}
@@ -591,25 +589,21 @@ class TestPhase4LifetimeProjection:
         "High Card": {"chips": 5, "mult": 1, "level": 1, "played": 0, "played_this_round": 0},
     }
 
-    def _cand(self, key, effect, rarity=2):
-        return {"key": key, "label": key,
-                "value": {"effect": effect, "rarity": rarity},
-                "cost": {"buy": 8, "sell": 4}}
+    def _cand(self, key, ability, rarity=2):
+        j = live_joker(key, ability, rarity=rarity)
+        j["cost"] = {"buy": 8, "sell": 4}
+        return j
 
     def test_madness_live_anchor_drives_value(self):
-        """Owned Madness at X3.0 Currently should reflect the live anchor."""
-        madness = joker("j_madness", "Madness")
-        madness["value"] = {
-            "effect": "This Joker gains X0.5 Mult when Blind is selected (Currently X3.0 Mult)"
-        }
+        """Owned Madness at current X3.0 should reflect the live anchor."""
+        madness = live_joker("j_madness", {"extra": 0.5, "x_mult": 3.0}, "Madness")
         val = evaluate_joker_value(madness, [], self._HL, ante=3)
         # X3.0 × 5 = 15 via _dynamic_power; projection adds ~X0.75 more
         assert val >= 12.0, f"Madness @ X3.0 should read ≥12, got {val}"
 
     def test_madness_fresh_candidate_projects_forward(self):
         """Fresh Madness (X1.0) should still get a runway floor from projection."""
-        cand = self._cand("j_madness",
-                          "This Joker gains X0.5 Mult when Blind is selected (Currently X1.0 Mult)")
+        cand = self._cand("j_madness", {"extra": 0.5, "x_mult": 1.0})
         v = evaluate_joker_value(cand, [], self._HL, ante=2)
         # Projection: 0.5 × ~21 blinds × 0.5 = ~5.25 gain → ~X6.25 total → ~31 power
         # Generous bound: far more than sim baseline (~0) thanks to projection.
@@ -619,30 +613,23 @@ class TestPhase4LifetimeProjection:
         """Owned Yorick with 3 cards to proc > fresh Yorick (23 cards to proc).
 
         Models the roster-scoring path where ``score_roster`` passes each owned
-        joker as both candidate and owned, so LifetimeState reads its live text.
+        joker as both candidate and owned, so LifetimeState reads its live counter.
         """
-        fresh = self._cand("j_yorick",
-            "This Joker gains X1.0 Mult per 23 cards discarded, requires 23 more (Currently X1.0 Mult)")
-        near = self._cand("j_yorick",
-            "This Joker gains X1.0 Mult per 23 cards discarded, requires 3 more (Currently X1.0 Mult)")
+        fresh = self._cand("j_yorick", {"xmult": 1, "discards": 23, "x_mult": 1, "yorick_discards": 23})
+        near = self._cand("j_yorick", {"xmult": 1, "discards": 23, "x_mult": 1, "yorick_discards": 3})
         v_fresh = evaluate_joker_value(fresh, [fresh], self._HL, ante=5)
         v_near = evaluate_joker_value(near, [near], self._HL, ante=5)
         assert v_near > v_fresh, f"Near-proc Yorick should out-value fresh: {v_fresh} vs {v_near}"
 
     def test_campfire_value_positive_at_ante(self):
         """Campfire's projection should produce positive value from this-ante sells."""
-        cand = self._cand("j_campfire",
-            "This Joker gains X0.25 Mult when a card is sold (Currently X1.0 Mult)")
+        cand = self._cand("j_campfire", {"extra": 0.25, "x_mult": 1.0})
         v = evaluate_joker_value(cand, [], self._HL, ante=3)
         assert v > 0.5, f"Campfire should project ante-local gain, got {v}"
 
     def test_constellation_scales_with_planets_used(self):
-        """Constellation value should reflect live anchor from effect text."""
-        # Anchor at X2.0 Currently — live count captured via effect text.
-        owned_constellation = joker("j_constellation", "Constellation")
-        owned_constellation["value"] = {
-            "effect": "This Joker gains X0.1 Mult per Planet used (Currently X2.0 Mult)"
-        }
+        """Constellation value should reflect its live current xmult."""
+        owned_constellation = live_joker("j_constellation", {"extra": 0.1, "x_mult": 2.0}, "Constellation")
         v = evaluate_joker_value(owned_constellation, [], self._HL, ante=4)
         # X2.0 × 5 = 10 floor from live anchor alone
         assert v >= 9.0, f"Constellation @ X2.0 live should read ≥9, got {v}"
@@ -651,25 +638,20 @@ class TestPhase4LifetimeProjection:
         """Throwback should be scoped by SCALING_REGISTRY and project forward."""
         from balatro_bot.scaling import SCALING_REGISTRY
         assert "j_throwback" in SCALING_REGISTRY
-        cand = self._cand("j_throwback",
-            "X0.25 Mult per Blind skipped this run (Currently X1.0 Mult)")
+        cand = self._cand("j_throwback", {"extra": 0.25, "x_mult": 1.0})
         v = evaluate_joker_value(cand, [], self._HL, ante=2)
         # Any positive floor from projection, not zero
         assert v > 0.0, f"Throwback should have non-zero projection, got {v}"
 
     def test_lifetime_state_parses_yorick_remaining(self):
         from balatro_bot.domain.policy.sim_context import LifetimeState
-        y = joker("j_yorick", "Yorick")
-        y["value"] = {
-            "effect": "Gains X1.0 Mult per 23 cards discarded, requires 7 more"
-        }
+        y = live_joker("j_yorick", {"xmult": 1, "discards": 23, "x_mult": 1, "yorick_discards": 7}, "Yorick")
         lt = LifetimeState.from_owned([y])
         assert lt.yorick_cards_to_proc == 7
 
     def test_lifetime_state_parses_madness_anchor(self):
         from balatro_bot.domain.policy.sim_context import LifetimeState
-        m = joker("j_madness", "Madness")
-        m["value"] = {"effect": "Currently X4.5 Mult"}
+        m = live_joker("j_madness", {"extra": 0.5, "x_mult": 4.5}, "Madness")
         lt = LifetimeState.from_owned([m])
         assert lt.madness_xmult == 4.5
 
