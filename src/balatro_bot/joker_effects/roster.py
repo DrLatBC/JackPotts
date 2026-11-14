@@ -7,8 +7,8 @@ lineup instead of once per hand.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, TypeVar
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from balatro_bot.cards import is_joker_debuffed, joker_key
 from balatro_bot.domain.models.joker import Joker
@@ -20,32 +20,7 @@ if TYPE_CHECKING:
 
     JokerLike = Joker | dict[str, Any]
 
-T = TypeVar("T")
-
 _CACHE_MAX = 64
-
-
-def cached_for_roster(cache: dict, jokers: list | None, extra: object, build: Callable[[list], T]) -> T:
-    """``build(jokers)``, memoised on the jokers' identities (in order) plus *extra*.
-
-    Joker objects are frozen, so the same objects in the same order always give
-    the same result. Each entry keeps its jokers alive so their ids can't be
-    reused by other objects while the entry exists, which also means a hit can
-    only be a list of the Joker objects that were stored. Raw joker dicts are
-    mutable and are never stored.
-    """
-    joker_list = jokers or []
-    key = (tuple(map(id, joker_list)), extra)
-    hit = cache.get(key)
-    if hit is not None:
-        return hit[1]
-    value = build(joker_list)
-    if not all(isinstance(j, Joker) for j in joker_list):
-        return value
-    if len(cache) >= _CACHE_MAX:
-        cache.clear()
-    cache[key] = (tuple(joker_list), value)
-    return value
 
 
 @dataclass(frozen=True)
@@ -55,13 +30,36 @@ class Roster:
     active_keys: frozenset[str]
     resolved: tuple[tuple[str, JokerLike], ...]  # active, with Blueprint/Brainstorm as their copy target
     baseball_xmult: float                        # Baseball Card's xmult, 0 when not owned
+    # Further per-lineup facts, each built on first use by the code that reads it
+    # (effect plan, held-card jokers, retrigger flags, per-card scoring steps).
+    derived: dict = field(default_factory=dict, compare=False, repr=False)
 
 
 _ROSTERS: dict = {}
 
 
 def roster(jokers: list | None) -> Roster:
-    return cached_for_roster(_ROSTERS, jokers, None, _build)
+    """The lineup's Roster, memoised on the jokers' identities (in order).
+
+    Joker objects are frozen, so the same objects in the same order always give
+    the same result. Each entry keeps its jokers alive so their ids can't be
+    reused by other objects while the entry exists, which also means a hit can
+    only be a list of the Joker objects that were stored. Raw joker dicts are
+    mutable and are never stored: a caller scoring many hands against one list
+    of dicts builds the Roster once and passes it down.
+    """
+    joker_list = jokers or []
+    key = tuple(map(id, joker_list))
+    hit = _ROSTERS.get(key)
+    if hit is not None:
+        return hit[1]
+    value = _build(joker_list)
+    if not all(isinstance(j, Joker) for j in joker_list):
+        return value
+    if len(_ROSTERS) >= _CACHE_MAX:
+        _ROSTERS.clear()
+    _ROSTERS[key] = (tuple(joker_list), value)
+    return value
 
 
 def _build(joker_list: list) -> Roster:

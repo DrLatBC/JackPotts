@@ -73,10 +73,10 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 
 | File | Role |
 |------|------|
-| `search.py` | `enumerate_hands`, `best_hand`, `discard_candidates` |
+| `search.py` | `enumerate_hands`, `best_hand` (single pass, same pick as the first enumerated hand), `discard_candidates` |
 | `play_order.py` | `sort_play_order` — left-to-right order (additive before xmult, Hanging Chad / Photograph / DNA first slot) |
 | `classify.py` | Hand classification + scoring-card extraction |
-| `estimate.py` | Full scoring simulation |
+| `estimate.py` | Full scoring simulation: `HandScorer` is set up once per joker lineup and surroundings and scores many hands; `score_hand` uses one once |
 | `draws.py` | Flush/straight draw probability |
 | `chase.py` | Chase strategy generation for discards |
 | `base.py` | Boss blind hand-level transforms (Flint, Arm, …) |
@@ -86,6 +86,7 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | File | Role |
 |------|------|
 | `registry.py` | `apply_joker_effects(ctx)` — iterates jokers in order |
+| `roster.py` | `Roster` — one lineup's keys, active jokers and copy targets, plus per-lineup facts built on first use |
 | `context.py` | `ScoreContext` (chips/mult/xmult), retrigger logic, optional RNG |
 | `parsers.py` | Extracts chips/mult/xmult from joker effect text |
 | `per_card.py` | Per-scored-card effect model (Fibonacci, Photograph, Triboulet, Idol, Bloodstone) |

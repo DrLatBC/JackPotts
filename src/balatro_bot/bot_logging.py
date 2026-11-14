@@ -292,12 +292,12 @@ def log_hand_state(gs: GameLoopState, state: dict) -> None:
 
     # First hand of a new blind — log context once
     if not gs.hand_context_logged and gs.current_blind_name:
-        jokers_now = state.get("jokers", {}).get("cards", [])
-        hand_levels_now = state.get("hands", {})
         rnd = state.get("round", {})
         from balatro_bot.domain.scoring.search import best_hand as _bh
-        jlimit = state.get("jokers", {}).get("limit", 5)
-        bh = _bh(hand_cards, hand_levels_now, jokers=jokers_now, joker_limit=jlimit)
+        from balatro_bot.infrastructure.state_adapter import adapt_state
+        # Typed cards and jokers: hand search caches its per-card and per-lineup facts on them.
+        snap = adapt_state(state)
+        bh = _bh(snap.hand_cards, snap.hand_levels, jokers=snap.jokers, joker_limit=snap.joker_limit)
         best_score = bh.total if bh else 0
         best_name = bh.hand_name if bh else "?"
         blind_need = gs.current_blind_target or 0

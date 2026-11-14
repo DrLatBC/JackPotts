@@ -722,3 +722,46 @@ class TestEcoOverstackGate:
         gated = self._eval("j_chaos", owned, ante=3)
         ungated = self._eval("j_chaos", frozenset(), ante=3)
         assert gated == ungated
+
+
+class TestValuationMemo:
+    """evaluate_joker_value reuses results across calls with the same inputs."""
+
+    _LEVELS = {
+        "Pair": {"chips": 10, "mult": 2, "level": 1},
+        "High Card": {"chips": 5, "mult": 1, "level": 1},
+    }
+
+    def test_every_joker_that_scores_off_money_is_listed(self):
+        """A lineup without a money-reading joker is valued without money in its memo key."""
+        import inspect
+
+        from balatro_bot.domain.policy.shop_valuation import _MONEY_SCORING_KEYS
+        from balatro_bot.joker_effects.complex import COMPLEX_EFFECTS
+        from balatro_bot.joker_effects.simple import _DISPATCHERS
+
+        readers = {key for key, effect in COMPLEX_EFFECTS.items()
+                   if "ctx.money" in inspect.getsource(effect)}
+        assert readers == set(_MONEY_SCORING_KEYS)
+        for dispatcher in _DISPATCHERS.values():
+            assert "ctx.money" not in inspect.getsource(dispatcher)
+
+    def test_money_still_moves_a_money_joker(self):
+        from balatro_bot.domain.policy.shop_valuation import _joker_value, clear_sample_cache
+
+        bull = live_joker("j_bull", {"extra": 2}, label="Bull")
+        owned = [bull, joker("j_joker", "Joker")]
+        args = (bull, owned, self._LEVELS, 3, None, 5, None, 0, None, None)
+        clear_sample_cache()
+        poor = evaluate_joker_value(bull, owned, self._LEVELS, ante=3, money=0)
+        rich = evaluate_joker_value(bull, owned, self._LEVELS, ante=3, money=200)
+        assert poor == _joker_value(*args, 0, 0)
+        assert rich == _joker_value(*args, 200, 0)
+        assert rich > poor
+
+    def test_repeat_call_returns_the_same_value(self):
+        candidate = joker("j_jolly", "Jolly Joker")
+        owned = [joker("j_joker", "Joker")]
+        first = evaluate_joker_value(candidate, owned, self._LEVELS, ante=2, money=10)
+        again = evaluate_joker_value(candidate, owned, self._LEVELS, ante=2, money=30)
+        assert again == first

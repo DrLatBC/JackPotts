@@ -8,25 +8,68 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import (
+    OP_CHIPS,
+    OP_CHIPS_PER_RETRIGGER,
+    OP_MULT,
+    OP_XMULT,
     _modifier,
     card_chip_value,
     card_edition_mult_value,
     card_edition_xmult_value,
+    card_facts,
     card_mult_value,
     card_rank,
-    card_suits,
     card_xmult_value,
     is_debuffed,
-    is_stone,
-    rank_value,
 )
-from balatro_bot.constants import HAND_INFO, RANK_CHIPS
+from balatro_bot.constants import FACE_RANKS, HAND_INFO, RANK_CHIPS
 from balatro_bot.domain.models.card import Card
-from balatro_bot.joker_effects.parsers import _ability
-from balatro_bot.joker_effects.roster import roster
+from balatro_bot.joker_effects import ScoreContext, apply_joker_effects, apply_joker_effects_detailed
+from balatro_bot.joker_effects.context import first_played_scoring, retrigger_jokers
+from balatro_bot.joker_effects.parsers import _ab_xmult, _ability
+from balatro_bot.joker_effects.per_card import per_card_plan
+from balatro_bot.joker_effects.roster import Roster, roster
 
 if TYPE_CHECKING:
     from typing import Any
+
+
+def _before_phase_jokers(lineup: Roster) -> tuple:
+    """The lineup's Midas Mask / Vampire entries, in joker order."""
+    before = lineup.derived.get("before_phase")
+    if before is None:
+        before = lineup.derived["before_phase"] = tuple(
+            (k, j) for k, j in lineup.active if k in ("j_midas_mask", "j_vampire"))
+    return before
+
+
+def _held_phase_jokers(lineup: Roster) -> tuple:
+    """Held-in-hand jokers, Blueprint/Brainstorm copies included.
+
+    Returns (baron_xmult, baron_count, moon_mult, moon_count, mime_count, raised_fist_count).
+    """
+    held = lineup.derived.get("held_phase")
+    if held is None:
+        baron_xm = 0.0
+        baron_count = 0
+        moon_mult = 0.0
+        moon_count = 0
+        mime_count = 0
+        raised_fist_count = 0
+        for key, joker in lineup.resolved:
+            if key == "j_baron":
+                baron_xm = _ability(joker).get("extra", 1.5)
+                baron_count += 1
+            elif key == "j_shoot_the_moon":
+                moon_mult = _ability(joker).get("extra", 13)
+                moon_count += 1
+            elif key == "j_mime":
+                mime_count += 1
+            elif key == "j_raised_fist":
+                raised_fist_count += 1
+        held = lineup.derived["held_phase"] = (
+            baron_xm, baron_count, moon_mult, moon_count, mime_count, raised_fist_count)
+    return held
 
 
 def _apply_before_phase(scoring_cards, played_cards, lineup, pareidolia=False):
@@ -47,11 +90,7 @@ def _apply_before_phase(scoring_cards, played_cards, lineup, pareidolia=False):
     joker_main effects (Flower Pot, Seeing Double, etc.) see the correct
     post-before-phase enhancement state.
     """
-    from balatro_bot.cards import is_debuffed, _modifier
-    from balatro_bot.joker_effects.parsers import _ability, _ab_xmult
-    from balatro_bot.constants import FACE_RANKS
-
-    before_jokers = [(k, j) for k, j in lineup.active if k in ("j_midas_mask", "j_vampire")]
+    before_jokers = _before_phase_jokers(lineup)
 
     if not before_jokers:
         return scoring_cards, played_cards, None
@@ -117,166 +156,6 @@ def _apply_before_phase(scoring_cards, played_cards, lineup, pareidolia=False):
     return effective, effective_played, vampire_xmult
 
 
-def _apply_card_scoring(ctx, scoring_cards, played_cards, jokers, ancient_suit):
-    """Score cards in played order with per-card joker effects interleaved.
-
-    In Balatro, each card trigger replays the full per-card sequence:
-    base chips -> enhancement mult -> Glass xmult -> edition -> per-card jokers.
-    Per-card jokers ("when scored") fire WITHIN each trigger, not after.
-    """
-    from balatro_bot.joker_effects import retrigger_count
-    from balatro_bot.constants import FACE_RANKS
-    from balatro_bot.joker_effects.per_card import (
-        PerCardCtx,
-        build_per_card_effects,
-    )
-
-    scored_in_play_order = [c for c in (played_cards or scoring_cards)
-                            if any(c is s for s in scoring_cards)]
-    for c in scoring_cards:
-        if not any(c is p for p in scored_in_play_order):
-            scored_in_play_order.append(c)
-
-    _first_face_found = False
-    _per_card = build_per_card_effects(
-        jokers,
-        PerCardCtx(
-            smeared=ctx.smeared,
-            pareidolia=ctx.pareidolia,
-            idol_rank=ctx.idol_rank,
-            idol_suit=ctx.idol_suit,
-            ancient_suit=ancient_suit,
-        ),
-        ctx.roster,
-    )
-
-    for card in scored_in_play_order:
-        triggers = retrigger_count(card, ctx)
-        _is_first_face_card = False
-        if not _first_face_found and not is_debuffed(card):
-            rank_check = card_rank(card)
-            if ctx.pareidolia or rank_check in FACE_RANKS:
-                _is_first_face_card = True
-                _first_face_found = True
-        for _t in range(triggers):
-            ctx.chips += card_chip_value(card)
-            ctx.mult += card_mult_value(card)
-            xmv = card_xmult_value(card)
-            if xmv != 1.0:
-                ctx.mult *= xmv
-            ed_mult = card_edition_mult_value(card)
-            if ed_mult:
-                ctx.mult += ed_mult
-            ed_xmult = card_edition_xmult_value(card)
-            if ed_xmult != 1.0:
-                ctx.mult *= ed_xmult
-            if not is_debuffed(card):
-                rank = card_rank(card)
-                suits = card_suits(card, smeared=ctx.smeared) if _per_card else set()
-                for eff in _per_card:
-                    kind = eff[0]
-                    if kind == "ranks_mult" and rank in eff[1]:
-                        ctx.mult += eff[2]
-                    elif kind == "ranks_chips" and rank in eff[1]:
-                        ctx.chips += eff[2]
-                    elif kind == "ranks_cm" and rank in eff[1]:
-                        ctx.chips += eff[2]
-                        ctx.mult += eff[3]
-                    elif kind == "face_mult" and (ctx.pareidolia or rank in FACE_RANKS):
-                        ctx.mult += eff[1]
-                    elif kind == "face_chips" and (ctx.pareidolia or rank in FACE_RANKS):
-                        ctx.chips += eff[1]
-                    elif kind == "suit_mult" and eff[1] in suits:
-                        ctx.mult += eff[2]
-                    elif kind == "suit_chips" and eff[1] in suits:
-                        ctx.chips += eff[2]
-                    elif kind == "suit_xmult" and eff[1] and eff[1] in suits:
-                        ctx.mult *= eff[2]
-                    elif kind == "suit_expected_xmult" and eff[1] in suits:
-                        odds = eff[3]
-                        prob_factor = 2.0 if ctx.oops else 1.0
-                        if ctx.rng is not None:
-                            if ctx.rng.random() < prob_factor / odds:
-                                ctx.mult *= eff[2]
-                        else:
-                            ctx.mult *= eff[2] ** (prob_factor / odds)
-                    elif kind == "ranks_xmult" and rank in eff[1]:
-                        ctx.mult *= eff[2]
-                    elif kind == "rank_suit_xmult" and rank == eff[1] and eff[2] in suits:
-                        ctx.mult *= eff[3]
-                    elif kind == "first_face_xmult":
-                        if _is_first_face_card:
-                            ctx.mult *= eff[1]
-                    elif kind == "all_chips":
-                        ctx.chips += eff[1] * _t
-            if not is_debuffed(card):
-                seal = _modifier(card).get("seal", "")
-                if seal == "GOLD":
-                    ctx.money += 3
-
-    if ctx.blind_name == "The Tooth":
-        ctx.money -= len(ctx.played_cards)
-
-    # Held-card-phase joker detection — resolve Blueprint/Brainstorm targets
-    _baron_xm = 0.0
-    _baron_count = 0
-    _shoot_moon_mult = 0.0
-    _shoot_moon_count = 0
-    _mime_count = 0
-    _raised_fist_count = 0
-
-    def _count_held_phase(hk: str, hj: dict) -> None:
-        nonlocal _baron_xm, _baron_count, _shoot_moon_mult, _shoot_moon_count
-        nonlocal _mime_count, _raised_fist_count
-        if hk == "j_baron":
-            from balatro_bot.joker_effects.parsers import _ability as _ab
-            _baron_xm = _ab(hj).get("extra", 1.5)
-            _baron_count += 1
-        elif hk == "j_shoot_the_moon":
-            from balatro_bot.joker_effects.parsers import _ability as _ab
-            _shoot_moon_mult = _ab(hj).get("extra", 13)
-            _shoot_moon_count += 1
-        elif hk == "j_mime":
-            _mime_count += 1
-        elif hk == "j_raised_fist":
-            _raised_fist_count += 1
-
-    for k, j in ctx.roster.resolved:
-        _count_held_phase(k, j)
-
-    # Raised Fist: find the lowest-ranked held card (by chip value, matching game logic)
-    # The game considers ALL held cards (including debuffed ones) when picking
-    # the lowest.  If the chosen card is debuffed, the effect returns 0 mult.
-    _raised_fist_card = None
-    _raised_fist_add = 0.0
-    if _raised_fist_count > 0 and ctx.held_cards:
-        min_id = 15
-        for c in ctx.held_cards:
-            r = card_rank(c)
-            if r:
-                rv = rank_value(r)
-                if rv <= min_id:
-                    min_id = rv
-                    _raised_fist_card = c
-                    _raised_fist_add = 0.0 if is_debuffed(c) else 2 * RANK_CHIPS.get(r, 0)
-
-    _held_triggers = 1 + _mime_count
-    for card in ctx.held_cards:
-        if not is_debuffed(card):
-            for _ in range(_held_triggers):
-                if _modifier(card).get("enhancement") == "STEEL":
-                    ctx.mult *= 1.5
-                if _baron_xm and card_rank(card) == "K":
-                    for _ in range(_baron_count):
-                        ctx.mult *= _baron_xm
-                if _shoot_moon_mult and card_rank(card) == "Q":
-                    for _ in range(_shoot_moon_count):
-                        ctx.mult += _shoot_moon_mult
-                if _raised_fist_card is card:
-                    for _ in range(_raised_fist_count):
-                        ctx.mult += _raised_fist_add
-
-
 def ox_most_played_hand(hand_levels: dict) -> str | None:
     """Return the hand type with the highest played count.
 
@@ -292,6 +171,283 @@ def ox_most_played_hand(hand_levels: dict) -> str | None:
                 best_count = played
                 best_hand = ht
     return best_hand
+
+
+class HandScorer:
+    """Scores hands under one fixed set of surroundings: jokers, hand levels, money, blind.
+
+    Hand search scores every subset of a hand against the same surroundings, so
+    everything that depends only on them is set up once here; ``score`` then
+    does the per-hand work. ``score_hand`` is one HandScorer used once.
+
+    *lineup* is ``roster(jokers)`` when the caller already has it.
+    """
+
+    def __init__(
+        self,
+        hand_levels: dict[str, dict] | None = None,
+        jokers: list[dict] | None = None,
+        money: int = 0,
+        discards_left: int = 0,
+        hands_left: int = 1,
+        joker_limit: int = 5,
+        ancient_suit: str | None = None,
+        deck_count: int = 0,
+        deck_cards: list[dict] | None = None,
+        blind_name: str = "",
+        ox_most_played: str | None = None,
+        idol_rank: str | None = None,
+        idol_suit: str | None = None,
+        lineup: Roster | None = None,
+    ) -> None:
+        self._hand_levels = hand_levels
+        self._jokers = jokers
+        self._money = money
+        self._base: dict[str, tuple] = {}  # hand name -> (chips, mult) at its level
+        self._facts_of = card_facts
+        if not jokers:
+            return
+
+        # The Ox: sets money to $0 when playing the most-played hand type.
+        # ox_most_played should be pre-computed at blind start (game locks it).
+        # Fallback: derive from hand_levels if caller didn't pass it.
+        self._ox_locked = None
+        if blind_name == "The Ox":
+            self._ox_locked = ox_most_played if ox_most_played else (
+                ox_most_played_hand(hand_levels) if hand_levels else None)
+
+        if lineup is None:
+            lineup = roster(jokers)
+        active_keys = lineup.active_keys
+        self._ctx = ScoreContext(
+            chips=0,
+            mult=0.0,
+            hand_name="",
+            scoring_cards=[],
+            played_cards=[],
+            held_cards=[],
+            hand_levels=hand_levels or {},
+            jokers=jokers,
+            money=money,
+            discards_left=discards_left,
+            hands_left=hands_left,
+            joker_limit=joker_limit,
+            deck_count=deck_count,
+            deck_cards=deck_cards,
+            pareidolia="j_pareidolia" in active_keys,
+            smeared="j_smeared" in active_keys,
+            ancient_suit=ancient_suit,
+            blind_name=blind_name,
+            idol_rank=idol_rank,
+            idol_suit=idol_suit,
+            oops="j_oops" in active_keys,
+            roster=lineup,
+        )
+        ctx = self._ctx
+        self._lineup = lineup
+        self._has_before_phase = bool(_before_phase_jokers(lineup))
+        self._plan = per_card_plan(
+            lineup, ctx.smeared, ctx.pareidolia, idol_rank, idol_suit, ancient_suit)
+        self._retriggers = retrigger_jokers(lineup)
+        self._every_card_retriggers = (
+            (1 if self._retriggers[3] and hands_left == 1 else 0)  # Dusk
+            + (1 if self._retriggers[4] else 0)                    # Seltzer
+        )
+        self._held_jokers = _held_phase_jokers(lineup)
+        self._tooth = blind_name == "The Tooth"
+
+    def use_facts(self, cards: list[dict], facts: list) -> None:
+        """Score *cards* with these already-built CardFacts.
+
+        For raw card dicts, whose facts are otherwise rebuilt on every lookup:
+        the caller vouches that the dicts stay unchanged while it scores.
+        """
+        known = {id(c): f for c, f in zip(cards, facts)}
+
+        def facts_of(card):
+            return known.get(id(card)) or card_facts(card)
+
+        self._facts_of = facts_of
+        # Keeps the ids above from being reused by other objects.
+        self._facts_cards = list(cards)
+
+    def _hand_base(self, hand_name: str) -> tuple:
+        base = self._base.get(hand_name)
+        if base is None:
+            base_chips, base_mult, _ = HAND_INFO[hand_name]
+            hand_levels = self._hand_levels
+            if hand_levels and hand_name in hand_levels:
+                lvl = hand_levels[hand_name]
+                base_chips = lvl.get("chips", base_chips)
+                base_mult = lvl.get("mult", base_mult)
+            base = self._base[hand_name] = (base_chips, float(base_mult))
+        return base
+
+    def score(
+        self,
+        hand_name: str,
+        scoring_cards: list[dict],
+        played_cards: list[dict] | None = None,
+        held_cards: list[dict] | None = None,
+        rng=None,
+    ) -> tuple[int, int, int]:
+        """Compute (chips, mult, total) for a hand."""
+        if not self._jokers:
+            facts_of = self._facts_of
+            total_chips, total_mult = self._hand_base(hand_name)
+            for c in scoring_cards:
+                for code, value in facts_of(c).base_ops:
+                    if code == OP_CHIPS:
+                        total_chips += value
+                    elif code == OP_MULT:
+                        total_mult += value
+                    else:
+                        total_mult *= value
+            for c in (held_cards or []):
+                facts = facts_of(c)
+                if facts.steel and not facts.debuffed:
+                    total_mult *= 1.5
+            return total_chips, total_mult, math.floor(total_chips * total_mult)
+
+        ctx = self.score_cards(hand_name, scoring_cards, played_cards, held_cards, rng)
+        apply_joker_effects(ctx)
+        return ctx.chips, ctx.mult, math.floor(ctx.chips * ctx.mult)
+
+    def score_cards(
+        self,
+        hand_name: str,
+        scoring_cards: list[dict],
+        played_cards: list[dict] | None = None,
+        held_cards: list[dict] | None = None,
+        rng=None,
+    ) -> ScoreContext:
+        """Score everything before the joker phase: the before phase (Midas Mask,
+        Vampire), the played cards, then the cards held in hand.
+
+        Returns this scorer's ScoreContext, ready for the joker effects. The same
+        object is reused by the next call.
+
+        In Balatro, each card trigger replays the full per-card sequence:
+        base chips -> enhancement mult -> Glass xmult -> edition -> per-card jokers.
+        Per-card jokers ("when scored") fire WITHIN each trigger, not after.
+        Each card's sequence comes precompiled from PerCardPlan.ops_for.
+        """
+        ctx = self._ctx
+        chips, mult = self._hand_base(hand_name)
+        ctx.hand_name = hand_name
+        ctx.money = 0 if hand_name == self._ox_locked else self._money
+        ctx.held_cards = held_cards = held_cards or []
+        ctx.rng = rng
+        if self._has_before_phase:
+            effective_scoring, effective_played, ctx.vampire_xmult = _apply_before_phase(
+                scoring_cards, played_cards, self._lineup, pareidolia=ctx.pareidolia)
+            ctx.scoring_cards = effective_scoring
+            ctx.played_cards = effective_played or played_cards or scoring_cards
+            scoring_cards, played_cards = effective_scoring, effective_played
+        else:
+            ctx.scoring_cards = scoring_cards
+            ctx.played_cards = played_cards or scoring_cards
+
+        scoring_ids = {id(c) for c in scoring_cards}
+        scored_in_play_order = [c for c in (played_cards or scoring_cards) if id(c) in scoring_ids]
+        if len(scored_in_play_order) != len(scoring_cards):
+            seen = {id(c) for c in scored_in_play_order}
+            for c in scoring_cards:
+                if id(c) not in seen:
+                    seen.add(id(c))
+                    scored_in_play_order.append(c)
+
+        facts_of = self._facts_of
+        plan = self._plan
+        has_effects = bool(plan.effects)
+        hack, sock, chad, _, _ = self._retriggers
+        every_card_retriggers = self._every_card_retriggers
+        chad_card = first_played_scoring(ctx) if chad else None
+        pareidolia = ctx.pareidolia
+
+        first_face_found = False
+        for card in scored_in_play_order:
+            facts = facts_of(card)
+            triggers = 1
+            is_first_face = False
+            if not facts.debuffed:
+                triggers += every_card_retriggers
+                if hack and facts.hack_rank:
+                    triggers += 1
+                if sock and (facts.face or pareidolia):
+                    triggers += 1
+                if chad and card is chad_card:
+                    triggers += 2
+                if facts.red_seal:
+                    triggers += 1
+                if not first_face_found and (pareidolia or facts.face):
+                    is_first_face = True
+                    first_face_found = True
+                if facts.gold_seal:
+                    ctx.money += 3 * triggers
+            ops = plan.ops_for(facts, is_first_face) if has_effects else facts.base_ops
+            for trigger in range(triggers):
+                for code, value in ops:
+                    if code == OP_CHIPS:
+                        chips += value
+                    elif code == OP_MULT:
+                        mult += value
+                    elif code == OP_XMULT:
+                        mult *= value
+                    elif code == OP_CHIPS_PER_RETRIGGER:
+                        chips += value * trigger
+                    else:  # OP_CHANCE_XMULT
+                        xmult, odds = value
+                        prob_factor = 2.0 if ctx.oops else 1.0
+                        if rng is not None:
+                            if rng.random() < prob_factor / odds:
+                                mult *= xmult
+                        else:
+                            mult *= xmult ** (prob_factor / odds)
+
+        if self._tooth:
+            ctx.money -= len(ctx.played_cards)
+
+        # Held-in-hand phase: Steel cards, then Baron / Shoot the Moon / Raised Fist per held card.
+        if held_cards:
+            baron_xm, baron_count, moon_mult, moon_count, mime_count, raised_fist_count = self._held_jokers
+
+            # Raised Fist: the lowest-ranked held card (by rank, matching game logic).
+            # The game considers ALL held cards (including debuffed ones) when picking
+            # the lowest.  If the chosen card is debuffed, the effect returns 0 mult.
+            raised_fist_card = None
+            raised_fist_add = 0.0
+            if raised_fist_count > 0:
+                min_id = 15
+                for c in held_cards:
+                    facts = facts_of(c)
+                    if facts.rank and facts.rank_val <= min_id:
+                        min_id = facts.rank_val
+                        raised_fist_card = c
+                        raised_fist_add = 0.0 if facts.debuffed else 2 * RANK_CHIPS.get(facts.rank, 0)
+
+            held_triggers = 1 + mime_count
+            for card in held_cards:
+                facts = facts_of(card)
+                if facts.debuffed:
+                    continue
+                rank = facts.rank
+                for _ in range(held_triggers):
+                    if facts.steel:
+                        mult *= 1.5
+                    if baron_xm and rank == "K":
+                        for _ in range(baron_count):
+                            mult *= baron_xm
+                    if moon_mult and rank == "Q":
+                        for _ in range(moon_count):
+                            mult += moon_mult
+                    if raised_fist_card is card:
+                        for _ in range(raised_fist_count):
+                            mult += raised_fist_add
+
+        ctx.chips = chips
+        ctx.mult = mult
+        return ctx
 
 
 def score_hand(
@@ -313,88 +469,19 @@ def score_hand(
     idol_rank: str | None = None,
     idol_suit: str | None = None,
     rng=None,
+    lineup: Roster | None = None,
 ) -> tuple[int, int, int]:
-    """Compute (chips, mult, total) for a hand."""
-    base_chips, base_mult, _ = HAND_INFO[hand_name]
+    """Compute (chips, mult, total) for a hand.
 
-    if hand_levels and hand_name in hand_levels:
-        lvl = hand_levels[hand_name]
-        base_chips = lvl.get("chips", base_chips)
-        base_mult = lvl.get("mult", base_mult)
-
-    if not jokers:
-        total_chips = base_chips
-        total_mult  = float(base_mult)
-        for c in scoring_cards:
-            total_chips += card_chip_value(c)
-            total_mult  += card_mult_value(c)
-            xmv = card_xmult_value(c)
-            if xmv != 1.0:
-                total_mult *= xmv
-            total_mult += card_edition_mult_value(c)
-            exmv = card_edition_xmult_value(c)
-            if exmv != 1.0:
-                total_mult *= exmv
-        for c in (held_cards or []):
-            if not is_debuffed(c) and _modifier(c).get("enhancement") == "STEEL":
-                total_mult *= 1.5
-        total = math.floor(total_chips * total_mult)
-        return total_chips, total_mult, total
-
-    from balatro_bot.joker_effects import ScoreContext, apply_joker_effects, retrigger_count
-
-    # The Ox: sets money to $0 when playing the most-played hand type
-    # ox_most_played should be pre-computed at blind start (game locks it).
-    # Fallback: derive from hand_levels if caller didn't pass it.
-    if blind_name == "The Ox":
-        _ox_locked = ox_most_played if ox_most_played else (ox_most_played_hand(hand_levels) if hand_levels else None)
-        if _ox_locked and hand_name == _ox_locked:
-            money = 0
-
-    lineup = roster(jokers)
-    joker_keys_set = lineup.active_keys
-    ctx = ScoreContext(
-        chips=base_chips,
-        mult=float(base_mult),
-        hand_name=hand_name,
-        scoring_cards=scoring_cards,
-        played_cards=played_cards or scoring_cards,
-        held_cards=held_cards or [],
-        hand_levels=hand_levels or {},
-        jokers=jokers,
-        money=money,
-        discards_left=discards_left,
-        hands_left=hands_left,
-        joker_limit=joker_limit,
-        deck_count=deck_count,
-        deck_cards=deck_cards,
-        pareidolia="j_pareidolia" in joker_keys_set,
-        smeared="j_smeared" in joker_keys_set,
-        ancient_suit=ancient_suit,
-        blind_name=blind_name,
-        idol_rank=idol_rank,
-        idol_suit=idol_suit,
-        oops="j_oops" in joker_keys_set,
-        roster=lineup,
-        rng=rng,
-    )
-
-    effective_scoring, effective_played, vampire_xmult = _apply_before_phase(
-        scoring_cards, played_cards, lineup, pareidolia=ctx.pareidolia)
-    ctx.vampire_xmult = vampire_xmult
-    ctx.scoring_cards = effective_scoring
-    ctx.played_cards = effective_played or ctx.played_cards
-
-    _apply_card_scoring(ctx, effective_scoring, effective_played, jokers, ancient_suit)
-
-    pre_joker_chips = ctx.chips
-    pre_joker_mult = ctx.mult
-
-    apply_joker_effects(ctx)
-
-    total = math.floor(ctx.chips * ctx.mult)
-
-    return ctx.chips, ctx.mult, total
+    *lineup* is ``roster(jokers)`` when the caller already has it.
+    """
+    return HandScorer(
+        hand_levels, jokers, money=money, discards_left=discards_left, hands_left=hands_left,
+        joker_limit=joker_limit, ancient_suit=ancient_suit,
+        deck_count=deck_count, deck_cards=deck_cards, blind_name=blind_name,
+        ox_most_played=ox_most_played, idol_rank=idol_rank, idol_suit=idol_suit,
+        lineup=lineup,
+    ).score(hand_name, scoring_cards, played_cards, held_cards, rng)
 
 
 def score_hand_detailed(
@@ -417,14 +504,6 @@ def score_hand_detailed(
     idol_suit: str | None = None,
 ) -> dict:
     """Like score_hand but returns a full breakdown dict for logging."""
-    from balatro_bot.joker_effects import ScoreContext, apply_joker_effects_detailed, retrigger_count
-
-    # The Ox: sets money to $0 when playing the most-played hand type
-    if blind_name == "The Ox":
-        _ox_locked = ox_most_played if ox_most_played else (ox_most_played_hand(hand_levels) if hand_levels else None)
-        if _ox_locked and hand_name == _ox_locked:
-            money = 0
-
     base_chips, base_mult, _ = HAND_INFO[hand_name]
     if hand_levels and hand_name in hand_levels:
         lvl = hand_levels[hand_name]
@@ -476,40 +555,12 @@ def score_hand_detailed(
             "total": math.floor(total_chips * total_mult),
         }
 
-    lineup = roster(jokers)
-    joker_keys_set = lineup.active_keys
-    ctx = ScoreContext(
-        chips=base_chips,
-        mult=float(base_mult),
-        hand_name=hand_name,
-        scoring_cards=scoring_cards,
-        played_cards=played_cards or scoring_cards,
-        held_cards=held_cards or [],
-        hand_levels=hand_levels or {},
-        jokers=jokers,
-        money=money,
-        discards_left=discards_left,
-        hands_left=hands_left,
-        joker_limit=joker_limit,
-        deck_count=deck_count,
-        deck_cards=deck_cards,
-        pareidolia="j_pareidolia" in joker_keys_set,
-        smeared="j_smeared" in joker_keys_set,
-        ancient_suit=ancient_suit,
-        blind_name=blind_name,
-        idol_rank=idol_rank,
-        idol_suit=idol_suit,
-        oops="j_oops" in joker_keys_set,
-        roster=lineup,
-    )
-
-    effective_scoring, effective_played, vampire_xmult = _apply_before_phase(
-        scoring_cards, played_cards, lineup, pareidolia=ctx.pareidolia)
-    ctx.vampire_xmult = vampire_xmult
-    ctx.scoring_cards = effective_scoring
-    ctx.played_cards = effective_played or ctx.played_cards
-
-    _apply_card_scoring(ctx, effective_scoring, effective_played, jokers, ancient_suit)
+    ctx = HandScorer(
+        hand_levels, jokers, money=money, discards_left=discards_left, hands_left=hands_left,
+        joker_limit=joker_limit, ancient_suit=ancient_suit,
+        deck_count=deck_count, deck_cards=deck_cards, blind_name=blind_name,
+        ox_most_played=ox_most_played, idol_rank=idol_rank, idol_suit=idol_suit,
+    ).score_cards(hand_name, scoring_cards, played_cards, held_cards)
 
     pre_joker_chips = ctx.chips
     pre_joker_mult = ctx.mult

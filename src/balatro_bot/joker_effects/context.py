@@ -6,7 +6,7 @@ import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suits, is_debuffed, _modifier
+from balatro_bot.cards import card_facts, card_rank, card_suits, is_debuffed
 from balatro_bot.constants import FACE_RANKS
 from balatro_bot.domain.models.card import Card
 from balatro_bot.domain.models.joker import Joker
@@ -48,6 +48,8 @@ class ScoreContext:
     # Bloodstone) draw actual outcomes instead of using expected-value shortcuts.
     rng: random.Random | None = None
     roster: Roster | None = None  # filled from jokers when not passed
+    # _played_rank_kinds' last answer: (the played_cards list it counted, top, pairs).
+    played_kinds: tuple | None = None
 
     def __post_init__(self) -> None:
         if self.roster is None:
@@ -68,6 +70,29 @@ def _count_face_in_scoring(ctx: ScoreContext) -> int:
         for c in ctx.scoring_cards
         if not is_debuffed(c) and (ctx.pareidolia or card_rank(c) in FACE_RANKS)
     )
+
+
+_RANK_SUB_HANDS = frozenset({"Pair", "Two Pair", "Three of a Kind", "Four of a Kind"})
+
+
+def _played_rank_kinds(ctx: ScoreContext) -> tuple[int, int]:
+    """Among the played cards: (most cards of one rank, how many ranks appear twice or more).
+
+    Several hand-type jokers ask about the same play, so the answer is kept
+    until ctx.played_cards is a different list.
+    """
+    memo = ctx.played_kinds
+    if memo is not None and memo[0] is ctx.played_cards:
+        return memo[1], memo[2]
+    counts: dict[str, int] = {}
+    for c in ctx.played_cards:
+        rank = card_rank(c)
+        if rank:
+            counts[rank] = counts.get(rank, 0) + 1
+    top = max(counts.values(), default=0)
+    pairs = sum(1 for v in counts.values() if v >= 2)
+    ctx.played_kinds = (ctx.played_cards, top, pairs)
+    return top, pairs
 
 
 def _hand_contains(ctx: ScoreContext, *hand_types: str) -> bool:
@@ -109,20 +134,15 @@ def _hand_contains(ctx: ScoreContext, *hand_types: str) -> bool:
     # --- Card-based detection for rank sub-hands hidden in other types ---
     # A Flush can contain Pair/Two Pair/Trips/Quads from duplicate ranks.
     # Only check rank-based sub-hands; Flush/Straight are already covered above.
-    _rank_types = {"Pair", "Two Pair", "Three of a Kind", "Four of a Kind"}
-    if _rank_types & set(hand_types):
-        from collections import Counter
-        rank_counts = Counter(
-            card_rank(c) for c in ctx.played_cards if card_rank(c)
-        )
-        counts = sorted(rank_counts.values(), reverse=True)
-        if "Pair" in hand_types and counts and counts[0] >= 2:
+    if not _RANK_SUB_HANDS.isdisjoint(hand_types):
+        top, pairs = _played_rank_kinds(ctx)
+        if "Pair" in hand_types and top >= 2:
             return True
-        if "Two Pair" in hand_types and len([c for c in counts if c >= 2]) >= 2:
+        if "Two Pair" in hand_types and pairs >= 2:
             return True
-        if "Three of a Kind" in hand_types and counts and counts[0] >= 3:
+        if "Three of a Kind" in hand_types and top >= 3:
             return True
-        if "Four of a Kind" in hand_types and counts and counts[0] >= 4:
+        if "Four of a Kind" in hand_types and top >= 4:
             return True
 
     return False
@@ -132,37 +152,47 @@ def _noop(ctx: ScoreContext, j: dict) -> None:
     pass
 
 
-def retrigger_count(card: Card | dict, ctx: ScoreContext) -> int:
-    if is_debuffed(card):
-        return 1
-    count = 1
-    rank = card_rank(card)
-    joker_keys = ctx.roster.keys
-
-    if "j_hack" in joker_keys and rank in ("2", "3", "4", "5"):
-        count += 1
-
-    if "j_sock_and_buskin" in joker_keys and (rank in FACE_RANKS or ctx.pareidolia):
-        count += 1
-
-    if "j_hanging_chad" in joker_keys:
-        # Hanging Chad retriggers the first PLAYED card that is used in scoring.
-        # The game uses played order, not the bot's internal scoring order
-        # (which reorders e.g. trips before pairs in Full House).
-        first_played_scoring = next(
-            (c for c in ctx.played_cards
-             if any(c is s for s in ctx.scoring_cards)), None
+def retrigger_jokers(lineup: Roster) -> tuple[bool, bool, bool, bool, bool]:
+    """Which retrigger jokers the lineup holds: (hack, sock_and_buskin, hanging_chad, dusk, seltzer)."""
+    flags = lineup.derived.get("retrigger")
+    if flags is None:
+        keys = lineup.keys
+        flags = lineup.derived["retrigger"] = (
+            "j_hack" in keys,
+            "j_sock_and_buskin" in keys,
+            "j_hanging_chad" in keys,
+            "j_dusk" in keys,
+            "j_selzer" in keys,  # game API key is j_selzer (no second 't')
         )
-        if first_played_scoring is not None and card is first_played_scoring:
-            count += 2
+    return flags
 
-    if "j_dusk" in joker_keys and ctx.hands_left == 1:
+
+def first_played_scoring(ctx: ScoreContext) -> CardLike | None:
+    """The first played card that scores: the one Hanging Chad retriggers.
+
+    The game uses played order, not the bot's internal scoring order
+    (which reorders e.g. trips before pairs in Full House).
+    """
+    scoring_ids = {id(s) for s in ctx.scoring_cards}
+    return next((c for c in ctx.played_cards if id(c) in scoring_ids), None)
+
+
+def retrigger_count(card: Card | dict, ctx: ScoreContext) -> int:
+    facts = card_facts(card)
+    if facts.debuffed:
+        return 1
+    hack, sock, chad, dusk, seltzer = retrigger_jokers(ctx.roster)
+    count = 1
+    if hack and facts.hack_rank:
         count += 1
-
-    if "j_selzer" in joker_keys:  # game API key is j_selzer (no second 't')
+    if sock and (facts.face or ctx.pareidolia):
         count += 1
-
-    if _modifier(card).get("seal") == "RED":
+    if chad and card is first_played_scoring(ctx):
+        count += 2
+    if dusk and ctx.hands_left == 1:
         count += 1
-
+    if seltzer:
+        count += 1
+    if facts.red_seal:
+        count += 1
     return count

@@ -9,13 +9,14 @@ from typing import TYPE_CHECKING, NamedTuple
 if TYPE_CHECKING:
     from balatro_bot.strategy import CardProtection, Strategy
 
-from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, is_joker_debuffed, is_stone, joker_key, rank_value
+from balatro_bot.cards import card_facts, card_rank, rank_value
 from balatro_bot.constants import HAND_INFO
 
-from balatro_bot.domain.scoring.classify import classify_hand, _scoring_cards_for
+from balatro_bot.domain.scoring.classify import classify_with_counts, scoring_cards_from_facts
 from balatro_bot.domain.scoring.chase import generate_chases
-from balatro_bot.domain.scoring.estimate import score_hand
-from balatro_bot.domain.scoring.play_order import sort_play_order
+from balatro_bot.domain.scoring.estimate import HandScorer
+from balatro_bot.domain.scoring.play_order import PlayOrderer
+from balatro_bot.joker_effects.roster import roster
 
 
 class ChaseCandidate(NamedTuple):
@@ -59,6 +60,119 @@ class HandCandidate:
         return f"HandCandidate({self.hand_name}, total={self.total}, cards={labels})"
 
 
+_SUBSETS: dict[tuple[int, int, int], tuple] = {}
+
+
+def _subsets(n: int, min_select: int, max_select: int) -> tuple:
+    """Every play out of an n-card hand, smallest first: (played indices, held indices)."""
+    key = (n, min_select, max_select)
+    subsets = _SUBSETS.get(key)
+    if subsets is None:
+        everything = set(range(n))
+        subsets = _SUBSETS[key] = tuple(
+            (indices, tuple(everything - set(indices)))
+            for size in range(min_select, min(max_select, n) + 1)
+            for indices in combinations(range(n), size)
+        )
+    return subsets
+
+
+def _scored_subsets(
+    hand_cards: list[dict],
+    hand_levels: dict[str, dict] | None,
+    max_select: int,
+    min_select: int,
+    jokers: list[dict] | None,
+    money: int,
+    discards_left: int,
+    hands_left: int,
+    joker_limit: int,
+    required_hand: str | None,
+    required_card_indices: set[int] | None,
+    ancient_suit: str | None,
+    excluded_hands: set[str] | None,
+    deck_count: int,
+    deck_cards: list[dict] | None,
+    blind_name: str,
+    ox_most_played: str | None,
+    idol_rank: str | None,
+    idol_suit: str | None,
+):
+    """Yield (hand_name, indices, cards, scoring_cards, chips, mult, total) per allowed play."""
+    n = len(hand_cards)
+
+    # Everything that depends only on the hand or the lineup is worked out once
+    # here, not once per subset.
+    facts = [card_facts(c) for c in hand_cards]
+    lineup = roster(jokers) if jokers else None
+    joker_keys = lineup.active_keys if lineup else frozenset()
+    four_fingers = "j_four_fingers" in joker_keys
+    has_splash   = "j_splash" in joker_keys
+    shortcut     = "j_shortcut" in joker_keys
+    smeared      = "j_smeared" in joker_keys
+    orderer = PlayOrderer(
+        hand_cards, jokers,
+        idol_rank=idol_rank, idol_suit=idol_suit, ancient_suit=ancient_suit,
+        lineup=lineup,
+    ) if jokers else None
+
+    scorer = HandScorer(
+        hand_levels, jokers,
+        money=money, discards_left=discards_left, hands_left=hands_left,
+        joker_limit=joker_limit, ancient_suit=ancient_suit,
+        deck_count=deck_count, deck_cards=deck_cards,
+        blind_name=blind_name,
+        # The Ox: use the game's locked hand directly from API
+        ox_most_played=ox_most_played if blind_name == "The Ox" else None,
+        idol_rank=idol_rank, idol_suit=idol_suit,
+        lineup=lineup,
+    )
+    if not all(f.cached for f in facts):
+        scorer.use_facts(hand_cards, facts)
+
+    for indices, held_indices in _subsets(n, min_select, max_select):
+        if required_card_indices and not required_card_indices.issubset(indices):
+            continue
+        subset_facts = [facts[i] for i in indices]
+        hand_name, rank_counts = classify_with_counts(
+            subset_facts, four_fingers=four_fingers,
+            shortcut=shortcut, smeared=smeared,
+        )
+        if required_hand and hand_name != required_hand:
+            continue
+        if excluded_hands and hand_name in excluded_hands:
+            continue
+
+        subset = [hand_cards[i] for i in indices]
+        if jokers:
+            played_in_order = [hand_cards[i] for i in orderer.order(indices)]
+            held = [hand_cards[i] for i in held_indices]
+        else:
+            played_in_order = subset
+            held = []
+
+        scoring = subset if has_splash else scoring_cards_from_facts(
+            hand_name, subset, subset_facts,
+            four_fingers=four_fingers, smeared=smeared, shortcut=shortcut,
+            rank_counts=rank_counts)
+        chips, mult, total = scorer.score(hand_name, scoring, played_in_order, held)
+        yield hand_name, indices, subset, scoring, chips, mult, total
+
+
+def _rank_key(jokers: list[dict] | None, hand_affinity: dict[str, float] | None):
+    """Sort key (lowest = best) over (hand_name, total, card count).
+
+    With jokers, total score is king; without, hand type priority comes first.
+    Affinity then card count break ties.
+    """
+    def key(hand_name: str, total: int, size: int) -> tuple:
+        aff = -(hand_affinity.get(hand_name, 0.0)) if hand_affinity else 0.0
+        if jokers:
+            return (-total, HAND_INFO[hand_name][2], aff, size)
+        return (HAND_INFO[hand_name][2], -total, aff, size)
+    return key
+
+
 def enumerate_hands(
     hand_cards: list[dict],
     hand_levels: dict[str, dict] | None = None,
@@ -81,81 +195,23 @@ def enumerate_hands(
     idol_suit: str | None = None,
     hand_affinity: dict[str, float] | None = None,
 ) -> list[HandCandidate]:
-    """Enumerate all valid poker hands from the cards in hand.
+    """Enumerate all valid poker hands from the cards in hand, best first.
 
     ``hand_affinity`` (optional) is a ``{hand_name: weight}`` dict used as a
     tertiary sort tiebreaker — when two candidates score identically, prefer
     the one that matches the roster's strategic plan. Never overrides score.
     """
-    candidates: list[HandCandidate] = []
-    n = len(hand_cards)
-    indices_set = set(range(n))
-
-    joker_keys = {joker_key(j) for j in (jokers or []) if not is_joker_debuffed(j)}
-    four_fingers = "j_four_fingers" in joker_keys
-    has_splash   = "j_splash" in joker_keys
-    shortcut     = "j_shortcut" in joker_keys
-    smeared      = "j_smeared" in joker_keys
-
-    # The Ox: use the game's locked hand directly from API
-    _ox_mp = ox_most_played if blind_name == "The Ox" else None
-
-    for size in range(min_select, min(max_select, n) + 1):
-        for indices in combinations(range(n), size):
-            if required_card_indices and not required_card_indices.issubset(set(indices)):
-                continue
-            subset = [hand_cards[i] for i in indices]
-            hand_name = classify_hand(
-                subset, four_fingers=four_fingers,
-                shortcut=shortcut, smeared=smeared,
-            )
-
-            if jokers:
-                play_order = sort_play_order(
-                    list(indices), hand_cards, jokers,
-                    idol_rank=idol_rank, idol_suit=idol_suit,
-                    ancient_suit=ancient_suit,
-                )
-                played_in_order = [hand_cards[i] for i in play_order]
-            else:
-                played_in_order = subset
-
-            scoring = subset if has_splash else _scoring_cards_for(hand_name, subset, four_fingers=four_fingers, smeared=smeared, shortcut=shortcut)
-            held = [hand_cards[i] for i in indices_set - set(indices)] if jokers else []
-            chips, mult, total = score_hand(
-                hand_name, scoring, hand_levels,
-                jokers=jokers, played_cards=played_in_order, held_cards=held,
-                money=money, discards_left=discards_left, hands_left=hands_left,
-                joker_limit=joker_limit, ancient_suit=ancient_suit,
-                deck_count=deck_count, deck_cards=deck_cards,
-                blind_name=blind_name,
-                ox_most_played=_ox_mp,
-                idol_rank=idol_rank,
-                idol_suit=idol_suit,
-            )
-
-            candidates.append(HandCandidate(
-                hand_name=hand_name,
-                cards=subset,
-                card_indices=list(indices),
-                scoring_cards=scoring,
-                chips=chips,
-                mult=mult,
-                total=total,
-            ))
-
-    if required_hand:
-        candidates = [c for c in candidates if c.hand_name == required_hand]
-    if excluded_hands:
-        candidates = [c for c in candidates if c.hand_name not in excluded_hands]
-
-    def _aff(h: HandCandidate) -> float:
-        return -(hand_affinity.get(h.hand_name, 0.0)) if hand_affinity else 0.0
-
-    if jokers:
-        candidates.sort(key=lambda h: (-h.total, h.priority, _aff(h), len(h.cards)))
-    else:
-        candidates.sort(key=lambda h: (h.priority, -h.total, _aff(h), len(h.cards)))
+    candidates = [
+        HandCandidate(hand_name, subset, list(indices), scoring, chips, mult, total)
+        for hand_name, indices, subset, scoring, chips, mult, total in _scored_subsets(
+            hand_cards, hand_levels, max_select, min_select, jokers, money,
+            discards_left, hands_left, joker_limit, required_hand, required_card_indices,
+            ancient_suit, excluded_hands, deck_count, deck_cards, blind_name,
+            ox_most_played, idol_rank, idol_suit,
+        )
+    ]
+    key = _rank_key(jokers, hand_affinity)
+    candidates.sort(key=lambda h: key(h.hand_name, h.total, len(h.cards)))
     return candidates
 
 
@@ -181,25 +237,28 @@ def best_hand(
     idol_suit: str | None = None,
     hand_affinity: dict[str, float] | None = None,
 ) -> HandCandidate | None:
-    """Return the single best hand playable from the given cards."""
-    candidates = enumerate_hands(
-        hand_cards, hand_levels,
-        max_select=max_select, min_select=min_select,
-        jokers=jokers, money=money,
-        discards_left=discards_left, hands_left=hands_left,
-        joker_limit=joker_limit,
-        required_hand=required_hand,
-        required_card_indices=required_card_indices,
-        ancient_suit=ancient_suit,
-        excluded_hands=excluded_hands,
-        deck_count=deck_count, deck_cards=deck_cards,
-        blind_name=blind_name,
-        ox_most_played=ox_most_played,
-        idol_rank=idol_rank,
-        idol_suit=idol_suit,
-        hand_affinity=hand_affinity,
-    )
-    return candidates[0] if candidates else None
+    """Return the single best hand playable from the given cards: enumerate_hands(...)[0].
+
+    Keeps only the best play as it goes: the first one with the lowest rank key,
+    which is the play a stable sort of all of them would put first.
+    """
+    key = _rank_key(jokers, hand_affinity)
+    best = None
+    best_key = None
+    for item in _scored_subsets(
+        hand_cards, hand_levels, max_select, min_select, jokers, money,
+        discards_left, hands_left, joker_limit, required_hand, required_card_indices,
+        ancient_suit, excluded_hands, deck_count, deck_cards, blind_name,
+        ox_most_played, idol_rank, idol_suit,
+    ):
+        item_key = key(item[0], item[6], len(item[2]))
+        if best_key is None or item_key < best_key:
+            best_key = item_key
+            best = item
+    if best is None:
+        return None
+    hand_name, indices, subset, scoring, chips, mult, total = best
+    return HandCandidate(hand_name, subset, list(indices), scoring, chips, mult, total)
 
 
 def cards_not_in(

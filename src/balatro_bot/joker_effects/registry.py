@@ -7,6 +7,7 @@ from typing import Callable, TYPE_CHECKING
 from balatro_bot.cards import _modifier
 from balatro_bot.domain.models.joker import Joker
 from balatro_bot.joker_effects.context import ScoreContext, _noop
+from balatro_bot.joker_effects.roster import Roster
 from balatro_bot.joker_effects.simple import SIMPLE_EFFECTS
 from balatro_bot.joker_effects.complex import COMPLEX_EFFECTS
 
@@ -72,27 +73,6 @@ for key in (
     JOKER_EFFECTS[key] = _noop
 
 
-def _apply_joker_edition_pre(ctx: ScoreContext, joker: JokerLike) -> None:
-    """Apply pre-joker edition effects: Foil (+chips), HOLO (+mult)."""
-    mod = _modifier(joker)
-    edition = mod.get("edition", "")
-    if edition == "FOIL":
-        ctx.chips += mod.get("edition_chips", 50)
-    elif edition in ("HOLO", "HOLOGRAPHIC"):
-        ctx.mult += mod.get("edition_mult", 10)
-
-
-def _apply_joker_edition_post(ctx: ScoreContext, joker: JokerLike) -> None:
-    """Apply post-joker edition effects: Polychrome (xmult).
-    Negative has no scoring effect (just +1 slot, already in joker_limit)."""
-    mod = _modifier(joker)
-    edition = mod.get("edition", "")
-    if edition == "POLYCHROME":
-        ctx.mult *= mod.get("edition_x_mult", 1.5)
-    elif mod.get("edition_x_mult") and edition not in ("FOIL", "HOLO", "HOLOGRAPHIC", "NEGATIVE"):
-        ctx.mult *= mod["edition_x_mult"]
-
-
 def _is_uncommon(joker: JokerLike) -> bool:
     """Check if a joker is Uncommon rarity (API sends int or string)."""
     if isinstance(joker, Joker):
@@ -101,23 +81,57 @@ def _is_uncommon(joker: JokerLike) -> bool:
     return rarity in (2, "Uncommon")
 
 
-def apply_joker_effects(ctx: ScoreContext) -> None:
-    """Apply all owned joker effects to the scoring context, in order.
+def _effect_plan(lineup: Roster) -> tuple:
+    """Per active joker: (joker, effect, edition +chips, edition +mult, edition xmult, baseball).
 
-    Per joker, the game applies: pre-edition -> joker effect -> post-edition.
-    Baseball Card: after each Uncommon joker fires, apply an additional xMult.
+    Edition numbers are None when the edition adds nothing: Foil gives chips and
+    Holo gives mult before the joker's effect, Polychrome multiplies after it
+    (Negative only adds a slot). effect is None for jokers that score nothing in
+    this phase. baseball marks Uncommon jokers when Baseball Card is owned.
     """
-    baseball_xm = ctx.roster.baseball_xmult
+    plan = lineup.derived.get("effect_plan")
+    if plan is None:
+        baseball_xm = lineup.baseball_xmult
+        steps = []
+        for key, joker in lineup.active:
+            mod = _modifier(joker)
+            edition = mod.get("edition", "")
+            pre_chips = mod.get("edition_chips", 50) if edition == "FOIL" else None
+            pre_mult = mod.get("edition_mult", 10) if edition in ("HOLO", "HOLOGRAPHIC") else None
+            post_xmult = None
+            if edition == "POLYCHROME":
+                post_xmult = mod.get("edition_x_mult", 1.5)
+            elif mod.get("edition_x_mult") and edition not in ("FOIL", "HOLO", "HOLOGRAPHIC", "NEGATIVE"):
+                post_xmult = mod["edition_x_mult"]
+            effect = JOKER_EFFECTS.get(key)
+            if effect is _noop:
+                effect = None
+            baseball = bool(baseball_xm) and key != "j_baseball" and _is_uncommon(joker)
+            steps.append((joker, effect, pre_chips, pre_mult, post_xmult, baseball))
+        plan = lineup.derived["effect_plan"] = tuple(steps)
+    return plan
 
-    for key, joker in ctx.roster.active:
-        _apply_joker_edition_pre(ctx, joker)
-        effect = JOKER_EFFECTS.get(key)
-        if effect is not None:
-            effect(ctx, joker)
-        _apply_joker_edition_post(ctx, joker)
-        # Baseball Card: x1.5 after each Uncommon joker's effect
-        if baseball_xm and key != "j_baseball" and _is_uncommon(joker):
-            ctx.mult *= baseball_xm
+
+def _apply_step(ctx: ScoreContext, step: tuple, baseball_xm: float) -> None:
+    """One joker's turn: pre-edition -> joker effect -> post-edition -> Baseball Card."""
+    joker, effect, pre_chips, pre_mult, post_xmult, baseball = step
+    if pre_chips is not None:
+        ctx.chips += pre_chips
+    elif pre_mult is not None:
+        ctx.mult += pre_mult
+    if effect is not None:
+        effect(ctx, joker)
+    if post_xmult is not None:
+        ctx.mult *= post_xmult
+    if baseball:
+        ctx.mult *= baseball_xm
+
+
+def apply_joker_effects(ctx: ScoreContext) -> None:
+    """Apply all owned joker effects to the scoring context, in order."""
+    baseball_xm = ctx.roster.baseball_xmult
+    for step in _effect_plan(ctx.roster):
+        _apply_step(ctx, step, baseball_xm)
 
 
 def apply_joker_effects_detailed(ctx: ScoreContext) -> list[tuple[str, float, float, float]]:
@@ -128,16 +142,11 @@ def apply_joker_effects_detailed(ctx: ScoreContext) -> list[tuple[str, float, fl
     """
     baseball_xm = ctx.roster.baseball_xmult
     contributions: list[tuple[str, float, float, float]] = []
-    for key, joker in ctx.roster.active:
+    for (key, _), step in zip(ctx.roster.active, _effect_plan(ctx.roster)):
+        joker = step[0]
         label = joker.label if isinstance(joker, Joker) else joker.get("label", key)
         pre_chips, pre_mult = ctx.chips, ctx.mult
-        _apply_joker_edition_pre(ctx, joker)
-        effect = JOKER_EFFECTS.get(key)
-        if effect is not None:
-            effect(ctx, joker)
-        _apply_joker_edition_post(ctx, joker)
-        if baseball_xm and key != "j_baseball" and _is_uncommon(joker):
-            ctx.mult *= baseball_xm
+        _apply_step(ctx, step, baseball_xm)
         dc = ctx.chips - pre_chips
         dm = ctx.mult - pre_mult
         # Detect xmult: if mult changed multiplicatively (ratio != 1 + additive)

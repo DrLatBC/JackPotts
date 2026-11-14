@@ -29,7 +29,7 @@ from balatro_bot.domain.policy.boss_adjustment import (
     boss_multiplier, shop_blended_multiplier,
 )
 from balatro_bot.domain.policy.sim_context import SimContext
-from balatro_bot.domain.scoring.estimate import score_hand
+from balatro_bot.domain.scoring.estimate import HandScorer, score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
 from balatro_bot.joker_effects.parsers import _ab_mult, _ab_xmult
 from balatro_bot.joker_effects.scoring_phase import (
@@ -678,6 +678,32 @@ def clear_sample_cache() -> None:
     """Test helper / explicit invalidation when deck has changed in-place."""
     _HAND_SAMPLE_CACHE.clear()
     _HELD_SAMPLE_CACHE.clear()
+    _VALUE_MEMO.clear()
+
+
+class _SampleRng:
+    """The seeded rng for one valuation sample, built only if a joker draws from it.
+
+    Most lineups hold no chance-based joker, so most samples never draw.
+    """
+
+    __slots__ = ("_seed_text", "_rng")
+
+    def __init__(self, seed_text: str) -> None:
+        self._seed_text = seed_text
+        self._rng: random.Random | None = None
+
+    def _seeded(self) -> random.Random:
+        rng = self._rng
+        if rng is None:
+            rng = self._rng = random.Random(zlib.crc32(self._seed_text.encode()))
+        return rng
+
+    def random(self) -> float:
+        return self._seeded().random()
+
+    def uniform(self, a: float, b: float) -> float:
+        return self._seeded().uniform(a, b)
 
 
 def _idol_context_rank(ctx: SimContext) -> str:
@@ -1173,6 +1199,15 @@ def _scoring_delta_sampled(
 
     baseline_jokers = reorder_for_scoring(baseline_jokers)
     with_jokers = reorder_for_scoring(_place_candidate(list(baseline_jokers)))
+    # Both lineups and their surroundings are fixed for every sample below.
+    baseline_scorer, with_scorer = (
+        HandScorer(
+            hand_levels, jokers, joker_limit=joker_limit,
+            ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
+            money=ctx.money, discards_left=sim_discards_left,
+        )
+        for jokers in (baseline_jokers, with_jokers)
+    )
 
     # N=1 for candidates whose contribution doesn't vary with card composition
     # (pure runway projections or global-state multipliers).
@@ -1201,23 +1236,12 @@ def _scoring_delta_sampled(
             if "j_half" in candidate_keys and len(scoring_cards) <= 3:
                 local_played = list(scoring_cards)
 
-            seed = zlib.crc32(f"{candidate_key}|{hand_name}|{s_idx}|mc".encode())
-            base_sum += score_hand(
-                hand_name, scoring_cards, hand_levels,
-                jokers=baseline_jokers, played_cards=local_played,
-                held_cards=held, joker_limit=joker_limit,
-                ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
-                money=ctx.money, discards_left=sim_discards_left,
-                rng=random.Random(seed),
-            )[2]
-            cand_sum += score_hand(
-                hand_name, scoring_cards, hand_levels,
-                jokers=with_jokers, played_cards=local_played,
-                held_cards=held, joker_limit=joker_limit,
-                ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
-                money=ctx.money, discards_left=sim_discards_left,
-                rng=random.Random(seed),
-            )[2]
+            # Both lineups roll the same seeded stream for this sample.
+            seed_text = f"{candidate_key}|{hand_name}|{s_idx}|mc"
+            base_sum += baseline_scorer.score(
+                hand_name, scoring_cards, local_played, held, rng=_SampleRng(seed_text))[2]
+            cand_sum += with_scorer.score(
+                hand_name, scoring_cards, local_played, held, rng=_SampleRng(seed_text))[2]
 
         baseline_total = base_sum / len(samples)
         candidate_total = cand_sum / len(samples)
@@ -1814,6 +1838,17 @@ def _deck_composition_adjustment(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+# Jokers whose scoring reads the wallet (ScoreContext.money). A lineup without
+# one values the same at any money, so money is left out of its memo key.
+_MONEY_SCORING_KEYS = frozenset({"j_bull", "j_bootstraps"})
+
+# evaluate_joker_value results by the text of every input. A shop visit asks
+# for the same roster and shop jokers again on each tick that changed nothing
+# they depend on (a pack or voucher bought, a reroll, money spent).
+_VALUE_MEMO: dict[str, float] = {}
+_VALUE_MEMO_MAX = 256
+
+
 def evaluate_joker_value(
     candidate: dict,
     owned_jokers: list[dict],
@@ -1833,6 +1868,43 @@ def evaluate_joker_value(
     Higher = more valuable to the current build.
     Used for both buy and sell decisions.
     """
+    money_matters = (
+        joker_key(candidate) in _MONEY_SCORING_KEYS
+        or any(joker_key(j) in _MONEY_SCORING_KEYS for j in owned_jokers)
+    )
+    # The candidate is taken out of the roster by identity, so its slot is part of the key.
+    owned_slot = next((i for i, j in enumerate(owned_jokers) if j is candidate), None)
+    memo_key = repr((
+        candidate, owned_slot, owned_jokers, hand_levels, ante, strategy, joker_limit,
+        deck_profile, unique_planets_used, blind_name, live_stats,
+        money if money_matters else None, discards_left,
+    ))
+    value = _VALUE_MEMO.get(memo_key)
+    if value is None:
+        value = _joker_value(
+            candidate, owned_jokers, hand_levels, ante, strategy, joker_limit,
+            deck_profile, unique_planets_used, blind_name, live_stats, money, discards_left,
+        )
+        if len(_VALUE_MEMO) >= _VALUE_MEMO_MAX:
+            _VALUE_MEMO.clear()
+        _VALUE_MEMO[memo_key] = value
+    return value
+
+
+def _joker_value(
+    candidate: dict,
+    owned_jokers: list[dict],
+    hand_levels: dict[str, dict],
+    ante: int,
+    strategy: Strategy | None,
+    joker_limit: int,
+    deck_profile: DeckProfile | None,
+    unique_planets_used: int,
+    blind_name: str | None,
+    live_stats: "LiveRunStats | None",
+    money: int,
+    discards_left: int,
+) -> float:
     cand_key = candidate.get("key", "") or joker_key(candidate)
 
     # Hard blacklist — jokers whose effect is too conditional / too weak /

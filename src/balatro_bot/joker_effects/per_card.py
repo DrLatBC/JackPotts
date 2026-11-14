@@ -14,12 +14,21 @@ one card would earn per trigger under that list.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from balatro_bot.cards import card_rank, card_suits, is_debuffed
+from balatro_bot.cards import (
+    OP_CHANCE_XMULT,
+    OP_CHIPS,
+    OP_CHIPS_PER_RETRIGGER,
+    OP_MULT,
+    OP_XMULT,
+    CardFacts,
+    card_rank,
+    card_suits,
+    is_debuffed,
+)
 from balatro_bot.constants import EVEN_RANKS, FACE_RANKS, FIBONACCI_RANKS, ODD_RANKS
 from balatro_bot.joker_effects.parsers import _ability
-from balatro_bot.joker_effects.roster import Roster, cached_for_roster, roster
+from balatro_bot.joker_effects.roster import Roster, roster
 
 
 @dataclass(frozen=True)
@@ -33,7 +42,97 @@ class PerCardCtx:
 
 PerCardEffect = tuple  # ("<kind>", *args)
 
-_EFFECTS_CACHE: dict = {}
+
+class PerCardPlan:
+    """One lineup's per-card effects under one PerCardCtx, and each card's scoring steps.
+
+    ``ops_for`` gives the (code, value) steps a scored card applies per trigger:
+    the card's own steps, then one step per effect that fires on it, in joker order.
+    """
+
+    __slots__ = ("effects", "ctx", "_ops", "_ops_first_face")
+
+    def __init__(self, effects: tuple[PerCardEffect, ...], ctx: PerCardCtx) -> None:
+        self.effects = effects
+        self.ctx = ctx
+        self._ops: dict[CardFacts, tuple] = {}
+        self._ops_first_face: dict[CardFacts, tuple] = {}
+
+    def ops_for(self, facts: CardFacts, is_first_face: bool) -> tuple:
+        if not self.effects or facts.debuffed:
+            return facts.base_ops
+        cache = self._ops_first_face if is_first_face else self._ops
+        ops = cache.get(facts)
+        if ops is None:
+            ops = self._compile(facts, is_first_face)
+            if facts.cached:
+                cache[facts] = ops
+        return ops
+
+    def _compile(self, facts: CardFacts, is_first_face: bool) -> tuple:
+        ops = list(facts.base_ops)
+        rank = facts.rank
+        suits = facts.suits_smeared if self.ctx.smeared else facts.suits
+        face = self.ctx.pareidolia or facts.face
+        for eff in self.effects:
+            kind = eff[0]
+            if kind == "ranks_mult":
+                if rank in eff[1]:
+                    ops.append((OP_MULT, eff[2]))
+            elif kind == "ranks_chips":
+                if rank in eff[1]:
+                    ops.append((OP_CHIPS, eff[2]))
+            elif kind == "ranks_cm":
+                if rank in eff[1]:
+                    ops.append((OP_CHIPS, eff[2]))
+                    ops.append((OP_MULT, eff[3]))
+            elif kind == "face_mult":
+                if face:
+                    ops.append((OP_MULT, eff[1]))
+            elif kind == "face_chips":
+                if face:
+                    ops.append((OP_CHIPS, eff[1]))
+            elif kind == "suit_mult":
+                if eff[1] in suits:
+                    ops.append((OP_MULT, eff[2]))
+            elif kind == "suit_chips":
+                if eff[1] in suits:
+                    ops.append((OP_CHIPS, eff[2]))
+            elif kind == "suit_xmult":
+                if eff[1] and eff[1] in suits:
+                    ops.append((OP_XMULT, eff[2]))
+            elif kind == "suit_expected_xmult":
+                if eff[1] in suits:
+                    ops.append((OP_CHANCE_XMULT, (eff[2], eff[3])))
+            elif kind == "ranks_xmult":
+                if rank in eff[1]:
+                    ops.append((OP_XMULT, eff[2]))
+            elif kind == "rank_suit_xmult":
+                if rank == eff[1] and eff[2] in suits:
+                    ops.append((OP_XMULT, eff[3]))
+            elif kind == "first_face_xmult":
+                if is_first_face:
+                    ops.append((OP_XMULT, eff[1]))
+            elif kind == "all_chips":
+                ops.append((OP_CHIPS_PER_RETRIGGER, eff[1]))
+        return tuple(ops)
+
+
+def per_card_plan(
+    lineup: Roster,
+    smeared: bool = False,
+    pareidolia: bool = False,
+    idol_rank: str | None = None,
+    idol_suit: str | None = None,
+    ancient_suit: str | None = None,
+) -> PerCardPlan:
+    """The lineup's PerCardPlan for these settings, built once per lineup."""
+    key = ("per_card", smeared, pareidolia, idol_rank, idol_suit, ancient_suit)
+    plan = lineup.derived.get(key)
+    if plan is None:
+        ctx = PerCardCtx(smeared, pareidolia, idol_rank, idol_suit, ancient_suit)
+        plan = lineup.derived[key] = PerCardPlan(_build(lineup, ctx), ctx)
+    return plan
 
 
 def build_per_card_effects(
@@ -47,7 +146,10 @@ def build_per_card_effects(
     (and debuffed copy targets) are skipped. *lineup* is ``roster(jokers)`` when
     the caller already has it.
     """
-    return cached_for_roster(_EFFECTS_CACHE, jokers, ctx, lambda js: _build(lineup or roster(js), ctx))
+    return per_card_plan(
+        lineup or roster(jokers),
+        ctx.smeared, ctx.pareidolia, ctx.idol_rank, ctx.idol_suit, ctx.ancient_suit,
+    ).effects
 
 
 def _build(lineup: Roster, ctx: PerCardCtx) -> tuple[PerCardEffect, ...]:

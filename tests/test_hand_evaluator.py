@@ -403,6 +403,108 @@ class TestSmeared:
         assert classify_hand(cards, smeared=True) == "Flush"
 
 
+# ---------------------------------------------------------------------------
+# Hand search: the shortcuts must agree with the full search
+# ---------------------------------------------------------------------------
+
+def _search_deck() -> list:
+    """A deck with every card feature hand search treats specially."""
+    from balatro_bot.domain.models.card import Card, CardModifier, CardState, CardValue
+
+    deck = [card(r, su) for r in "23456789TJQKA" for su in "HDCS"]
+    deck += [card("K", "H", "STEEL"), card("9", "S", "GLASS"), card("5", "D", "BONUS"),
+             card("Q", "C", "MULT"), card("7", "H", "LUCKY"), card("J", "S", "GOLD"),
+             stone_card(), wild_card("8", "D"), wild_card("3", "C")]
+    deck += [
+        Card(key="H_4", label="4 of H", value=CardValue(rank="4", suit="H"),
+             modifier=CardModifier(seal="RED"), state=CardState()),
+        Card(key="S_A", label="A of S", value=CardValue(rank="A", suit="S"),
+             modifier=CardModifier(edition="POLYCHROME"), state=CardState()),
+        Card(key="C_T", label="T of C", value=CardValue(rank="T", suit="C", perma_bonus=15),
+             modifier=CardModifier(edition="HOLO"), state=CardState()),
+        Card(key="D_Q", label="Q of D", value=CardValue(rank="Q", suit="D"),
+             modifier=CardModifier(enhancement="STEEL"), state=CardState(debuff=True)),
+    ]
+    return deck
+
+
+_SEARCH_LINEUPS = [
+    [],
+    ["j_joker", "j_jolly"],
+    ["j_photograph", "j_hanging_chad", "j_scary_face"],
+    ["j_baron", "j_mime", "j_shoot_the_moon", "j_raised_fist"],
+    ["j_bloodstone", "j_fibonacci", "j_hack"],
+    ["j_dna", "j_triboulet", "j_sock_and_buskin"],
+    ["j_splash", "j_blackboard"],
+    ["j_four_fingers", "j_shortcut", "j_smeared", "j_crazy", "j_droll"],
+    ["j_midas_mask", "j_vampire", "j_pareidolia"],
+    ["j_blueprint", "j_duo", "j_brainstorm"],
+]
+
+
+def _summary(c):
+    return (c.hand_name, c.card_indices, c.chips, c.mult, c.total,
+            [id(x) for x in c.scoring_cards])
+
+
+class TestSearchShortcuts:
+    def _cases(self):
+        import random
+        rng = random.Random(20261114)
+        deck = _search_deck()
+        for keys in _SEARCH_LINEUPS:
+            for _ in range(6):
+                yield rng.sample(deck, 8), [joker(k) for k in keys]
+
+    def test_best_hand_is_the_first_enumerated_hand(self):
+        for hand, jokers in self._cases():
+            for kwargs in ({}, {"required_hand": "Pair"}, {"excluded_hands": {"High Card", "Pair"}},
+                           {"min_select": 5}, {"required_card_indices": {0, 3}},
+                           {"hand_affinity": {"Flush": 2.0, "Two Pair": 1.0}}):
+                every = enumerate_hands(hand, jokers=jokers, hands_left=1, **kwargs)
+                best = best_hand(hand, jokers=jokers, hands_left=1, **kwargs)
+                if not every:
+                    assert best is None
+                else:
+                    assert _summary(best) == _summary(every[0])
+
+    def test_required_hand_keeps_the_matching_hands_unchanged(self):
+        for hand, jokers in self._cases():
+            every = enumerate_hands(hand, jokers=jokers)
+            pairs = enumerate_hands(hand, jokers=jokers, required_hand="Pair")
+            assert [_summary(c) for c in pairs] == [_summary(c) for c in every if c.hand_name == "Pair"]
+
+    def test_raw_dict_cards_score_like_typed_cards(self):
+        from balatro_bot.domain.models.card import card_from_dict
+
+        def raw(rank, suit, **modifier):
+            return {"label": f"{rank} of {suit}", "set": "DEFAULT",
+                    "value": {"rank": rank, "suit": suit}, "modifier": modifier, "state": []}
+
+        hand = [raw("K", "H", enhancement="STEEL"), raw("K", "S"), raw("9", "S", enhancement="GLASS"),
+                raw("9", "D", seal="RED"), raw("4", "C", edition="POLYCHROME"), raw("J", "H"),
+                raw("A", "S", edition="HOLO"), raw("2", "D", enhancement="WILD")]
+        typed = [card_from_dict(c) for c in hand]
+        for keys in _SEARCH_LINEUPS:
+            jokers = [joker(k) for k in keys]
+            from_raw = enumerate_hands(hand, jokers=jokers)
+            from_typed = enumerate_hands(typed, jokers=jokers)
+            assert [_summary(c)[:5] for c in from_raw] == [_summary(c)[:5] for c in from_typed]
+
+    def test_score_hand_agrees_with_search(self):
+        """One-off score_hand and the search's reused scorer give the same numbers."""
+        for hand, jokers in self._cases():
+            for c in enumerate_hands(hand, jokers=jokers)[:25]:
+                held = [x for i, x in enumerate(hand) if i not in c.card_indices]
+                # Search orders the played cards; re-score in the same order it used.
+                from balatro_bot.domain.scoring.play_order import sort_play_order
+                order = sort_play_order(list(c.card_indices), hand, jokers) if jokers else c.card_indices
+                played = [hand[i] for i in order]
+                assert score_hand(c.hand_name, c.scoring_cards, jokers=jokers,
+                                  played_cards=played, held_cards=held if jokers else None,
+                                  ) == (c.chips, c.mult, c.total)
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])

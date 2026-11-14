@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from balatro_bot.constants import ALL_SUITS, RANK_CHIPS, RANK_ORDER
+from balatro_bot.constants import ALL_SUITS, FACE_RANKS, RANK_CHIPS, RANK_ORDER
 from balatro_bot.domain.models.card import Card
 from balatro_bot.domain.models.joker import Joker
 
@@ -249,3 +249,95 @@ def card_edition_xmult_value(card: CardLike) -> float:
 
 def rank_value(rank: str) -> int:
     return RANK_ORDER.get(rank, 0)
+
+
+# Scoring-op codes: one (code, value) pair per step a scored card applies.
+OP_CHIPS = 0          # chips += value
+OP_MULT = 1           # mult += value
+OP_XMULT = 2          # mult *= value
+OP_CHIPS_PER_RETRIGGER = 3  # chips += value * (0-based trigger number)
+OP_CHANCE_XMULT = 4   # value is (xmult, odds): rolled with an rng, else its expected value
+
+_SUIT_BIT = {"H": 1, "D": 2, "C": 4, "S": 8}
+_HACK_RANKS = frozenset({"2", "3", "4", "5"})
+
+
+class CardFacts:
+    """Everything hand search and scoring read from one card, worked out once.
+
+    Each field is the result of the accessor of the same meaning in this module,
+    so the two can never disagree.
+    """
+
+    __slots__ = (
+        "rank", "rank_val", "stone", "debuffed", "face", "hack_rank",
+        "suits", "suits_smeared", "suit_mask", "suit_mask_smeared",
+        "steel", "red_seal", "gold_seal", "base_ops", "cached",
+    )
+
+    def __init__(self, card: CardLike) -> None:
+        self.cached = type(card) is Card  # built from a frozen card, so kept and reused
+        rank = card_rank(card)
+        self.rank = rank
+        self.rank_val = rank_value(rank) if rank else 0
+        self.stone = is_stone(card)
+        self.debuffed = is_debuffed(card)
+        self.face = rank in FACE_RANKS
+        self.hack_rank = rank in _HACK_RANKS
+        self.suits = frozenset(card_suits(card))
+        self.suits_smeared = frozenset(card_suits(card, smeared=True))
+        self.suit_mask = sum(_SUIT_BIT[s] for s in self.suits)
+        self.suit_mask_smeared = sum(_SUIT_BIT[s] for s in self.suits_smeared)
+        mod = _modifier(card)
+        self.steel = mod.get("enhancement") == "STEEL"
+        seal = mod.get("seal")
+        self.red_seal = seal == "RED"
+        self.gold_seal = seal == "GOLD"
+
+        # The card's own scoring steps for one trigger, in the game's order:
+        # chips, enhancement mult, enhancement xmult, edition mult, edition xmult.
+        # Steps that change nothing are left out.
+        ops = []
+        chips = card_chip_value(card)
+        if chips != 0 or type(chips) is not int:
+            ops.append((OP_CHIPS, chips))
+        mult = card_mult_value(card)
+        if mult:
+            ops.append((OP_MULT, mult))
+        xmult = card_xmult_value(card)
+        if xmult != 1.0:
+            ops.append((OP_XMULT, xmult))
+        ed_mult = card_edition_mult_value(card)
+        if ed_mult:
+            ops.append((OP_MULT, ed_mult))
+        ed_xmult = card_edition_xmult_value(card)
+        if ed_xmult != 1.0:
+            ops.append((OP_XMULT, ed_xmult))
+        self.base_ops = tuple(ops)
+
+
+_FACTS_BY_VALUE: dict[tuple, CardFacts] = {}
+_FACTS_MAX = 4096
+
+
+def card_facts(card: CardLike) -> CardFacts:
+    """The card's CardFacts.
+
+    Typed Cards are frozen, so the facts are kept on the card, and equal cards
+    (same value, modifier and debuff) share one CardFacts. Raw dicts are
+    mutable: theirs are rebuilt on every call.
+    """
+    try:
+        return card._facts
+    except AttributeError:
+        pass
+    if type(card) is not Card:
+        return CardFacts(card)
+    key = (card.value, card.modifier, card.state.debuff)
+    facts = _FACTS_BY_VALUE.get(key)
+    if facts is None:
+        if len(_FACTS_BY_VALUE) >= _FACTS_MAX:
+            _FACTS_BY_VALUE.clear()
+        facts = _FACTS_BY_VALUE[key] = CardFacts(card)
+    card.__dict__["_facts"] = facts
+    return facts
