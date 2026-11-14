@@ -18,6 +18,7 @@ from balatro_bot.constants import (
 from balatro_bot.domain.scoring.draws import flush_draw
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.domain.scoring.search import best_hand
+from balatro_bot.strategy import LEAN_FLOOR
 from balatro_bot.domain.policy.targeting import (
     find_tarot_targets, find_gold_targets, find_enhancement_targets,
     find_clone_targets,
@@ -164,12 +165,13 @@ def score_consumable(
             return _BLACK_HOLE_VALUE  # Black Hole — always top priority
         has_constellation = any(joker_key(j) == "j_constellation" for j in jokers)
         affinity = strat.hand_affinity(hand_type) if strat else 0.0
-        if affinity > 0:
+        # A trace lean (a suit a few cards above even) is not a build.
+        if affinity >= LEAN_FLOOR:
             score = _PLANET_BASE_VALUE + affinity
             if has_constellation:
                 score += _CONSTELLATION_BONUS
             return score
-        # No joker-driven affinity: planets for hands we'll actually play still
+        # No real affinity: planets for hands we'll actually play still
         # compound for the whole run. Pair/Two Pair/3oK/High Card land every
         # round; leveling them is consistently good even on thin rosters.
         if hand_type in _COMMON_HANDS:

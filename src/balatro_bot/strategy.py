@@ -19,6 +19,7 @@ from balatro_bot.domain.policy.exploration import Lean, explorer
 if TYPE_CHECKING:
     from typing import Any
     from balatro_bot.domain.models.deck_profile import DeckProfile
+    from balatro_bot.domain.models.hand_level import HandLevel
 
 
 # ---------------------------------------------------------------------------
@@ -504,9 +505,9 @@ _DECK_RANK_CAP = 4.0
 _DECK_ENH_PER_CARD = 0.5
 _DECK_ENH_CAP = 4.0
 
-# Hand-level base contribution. Each planet used is a sunk commitment —
-# leveling a hand from 1→5 should generate meaningful affinity even if no
-# joker names that hand. 1.5 per level matches an Uncommon joker's weight.
+# Hand-level base contribution for hands the run actually plays: leveling a
+# played hand from 1→5 generates meaningful affinity even if no joker names
+# it. 1.5 per level matches an Uncommon joker's weight.
 _LEVEL_BASE_WEIGHT = 1.5
 
 
@@ -569,20 +570,24 @@ def _deck_signal(
 
 
 def _level_signal(
-    hand_levels: dict[str, dict] | None,
+    hand_levels: "dict[str, dict | HandLevel] | None",
 ) -> dict[str, float]:
-    """Sunk-commitment signal: each planet used generates hand affinity.
+    """Sunk-commitment signal: levels on a hand the run has played generate affinity.
 
     Each level above 1 contributes a base weight regardless of joker
-    ownership, so leveling Flush to 5 adds Flush affinity even without a
-    Flush joker.
+    ownership, so leveling a played Flush to 5 adds Flush affinity even
+    without a Flush joker. Levels on a never-played hand count for nothing:
+    otherwise each planet raises the affinity that prices the next one, and
+    the bot stacks levels on a hand it cannot make.
     """
     out: dict[str, float] = {}
     if not hand_levels:
         return out
     for ht, info in hand_levels.items():
-        lvl = info.get("level", 1) if isinstance(info, dict) else 1
-        if lvl > 1:
+        if not hasattr(info, "get"):
+            continue
+        lvl = info.get("level", 1)
+        if lvl > 1 and info.get("played", 0) > 0:
             out[ht] = (lvl - 1) * _LEVEL_BASE_WEIGHT
     return out
 

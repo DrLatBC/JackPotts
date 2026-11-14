@@ -23,7 +23,9 @@ from balatro_bot.domain.policy.pack_policy import (
 )
 from balatro_bot.domain.policy.blind_policy import choose_skip_for_tag
 from balatro_bot.domain.scoring.search import best_hand, HandCandidate
-from balatro_bot.strategy import compute_strategy
+from balatro_bot.domain.models.deck_profile import DeckProfile
+from balatro_bot.domain.models.hand_level import hand_levels_from_dict
+from balatro_bot.strategy import LEAN_FLOOR, compute_strategy
 from tests.conftest import card, joker
 
 
@@ -79,6 +81,36 @@ class TestScoreConsumable:
         strat = compute_strategy([], HAND_LEVELS)
         score = score_consumable("c_mercury", state, strat)
         assert score == 3.0
+
+    def test_planet_trace_lean_is_not_on_strategy(self):
+        # 17 of 52 cards in one suit leaves a trace Straight Flush lean from
+        # the deck signal; Neptune must not price as an on-strategy planet.
+        deck = DeckProfile(total_cards=52, suit_counts={"S": 17, "H": 12, "D": 12, "C": 11})
+        strat = compute_strategy([], HAND_LEVELS, deck_profile=deck)
+        assert 0 < strat.hand_affinity("Straight Flush") < LEAN_FLOOR
+        assert score_consumable("c_neptune", _state(), strat) == 0.0
+
+    def test_unplayed_levels_do_not_build_affinity(self):
+        leveled = dict(HAND_LEVELS)
+        leveled["Straight Flush"] = {"chips": 140, "mult": 12, "level": 5, "played": 0}
+        strat = compute_strategy([], leveled)
+        assert strat.hand_affinity("Straight Flush") == 0.0
+        assert score_consumable("c_neptune", _state(), strat) == 0.0
+
+    def test_played_levels_build_affinity(self):
+        leveled = dict(HAND_LEVELS)
+        leveled["Flush"] = {"chips": 65, "mult": 10, "level": 4, "played": 6}
+        strat = compute_strategy([], leveled)
+        assert strat.hand_affinity("Flush") >= LEAN_FLOOR
+        assert score_consumable("c_jupiter", _state(), strat) > 5.0
+
+    def test_typed_hand_levels_match_raw_dicts(self):
+        # RoundContext passes HandLevel objects; shop/pack paths pass raw dicts.
+        raw = dict(HAND_LEVELS)
+        raw["Flush"] = {"chips": 65, "mult": 10, "level": 4, "played": 6}
+        typed = hand_levels_from_dict(raw)
+        assert compute_strategy([], typed).hand_affinity("Flush") == \
+            compute_strategy([], raw).hand_affinity("Flush")
 
     def test_planet_with_constellation(self):
         # Common-hand floor (3.0) + Constellation bonus (2.0)
