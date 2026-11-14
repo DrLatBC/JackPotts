@@ -146,3 +146,47 @@ def test_swap_buy_dropped_when_no_longer_affordable() -> None:
     ev.evaluate(_swap_state())
     action = ev.evaluate(_swap_state(money=5, owned_count=4))
     assert not isinstance(action, BuyCard)
+
+
+def test_swap_never_sells_a_negative() -> None:
+    """Selling a Negative takes its slot with it, so the queued buy would be refused."""
+    state = _swap_state()
+    owned = [dict(joker("j_credit_card", "Credit Card"), cost={"sell": 1}) for _ in range(6)]
+    owned[0]["modifier"] = {"edition": "NEGATIVE"}
+    state["jokers"] = {"cards": owned, "count": 6, "limit": 6}
+    ev = ShopEvaluator()
+    action = ev.evaluate(state)
+    assert isinstance(action, SellJoker) and action.index != 0
+    for cand in ev.last_decision["candidates"]:
+        assert ["sell", {"joker": 0}] not in cand["steps"]
+
+
+def test_swap_buy_dropped_when_the_freed_slot_was_refilled() -> None:
+    ev = ShopEvaluator()
+    ev.evaluate(_swap_state())
+    assert ev.continue_plan(_swap_state(money=41, owned_count=5)) is None
+    assert ev.pending_plan is None
+
+
+def test_swap_buy_runs_before_consumables_can_fill_the_slot() -> None:
+    from balatro_bot.engine import RuleEngine
+    from balatro_bot.rules import ContinueShopPlan, UnifiedShopRule, UseConsumables
+
+    shop = UnifiedShopRule()
+    engine = RuleEngine({"SHOP": [ContinueShopPlan(shop), UseConsumables(), shop]})
+    assert isinstance(engine.decide(_swap_state()), SellJoker)
+
+    after = _swap_state(money=41, owned_count=4)
+    judgement = {"key": "c_judgement", "label": "Judgement", "set": "TAROT", "cost": {"sell": 1}}
+    after["consumables"] = {"cards": [judgement], "count": 1, "limit": 2}
+    assert UseConsumables().evaluate(dict(after)) is not None, "sanity: Judgement is usable here"
+    assert isinstance(engine.decide(after), BuyCard)
+
+
+def test_default_shop_rules_continue_the_plan_first() -> None:
+    from balatro_bot.engine import DEFAULT_RULES
+    from balatro_bot.rules import ContinueShopPlan, UnifiedShopRule
+
+    rules = DEFAULT_RULES["SHOP"]
+    assert isinstance(rules[0], ContinueShopPlan) and isinstance(rules[-1], UnifiedShopRule)
+    assert rules[0]._evaluator is rules[-1]._evaluator

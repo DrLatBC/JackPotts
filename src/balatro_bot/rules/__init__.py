@@ -8,6 +8,7 @@ from balatro_bot.rules.blind import AlwaysSelectBlind, SkipForTag
 from balatro_bot.rules.shop import (
     ReorderJokersForScoring,
     UnifiedShopRule,
+    ContinueShopPlan,
 )
 from balatro_bot.rules.round_eval import AlwaysCashOut
 from balatro_bot.rules.packs import (
@@ -23,6 +24,7 @@ __all__ = [
     "AlwaysSelectBlind", "SkipForTag",
     "ReorderJokersForScoring",
     "UnifiedShopRule",
+    "ContinueShopPlan",
     "AlwaysCashOut",
     "WaitForPackHand", "SkipPackForRedCard", "PickFromTarotPack", "PickFromPlanetPack",
     "PickFromBuffoonPack", "PickFromSpectralPack", "PickFromStandardPack",

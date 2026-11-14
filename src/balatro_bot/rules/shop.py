@@ -196,3 +196,18 @@ class UnifiedShopRule:
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         return self._evaluator.evaluate(state)
+
+
+class ContinueShopPlan:
+    """Runs the next step of the shop's committed plan before any other shop rule."""
+    name = "continue_shop_plan"
+
+    def __init__(self, shop: UnifiedShopRule) -> None:
+        self._evaluator = shop._evaluator
+
+    @property
+    def last_decision(self) -> dict | None:
+        return self._evaluator.last_decision
+
+    def evaluate(self, state: dict[str, Any]) -> Action | None:
+        return self._evaluator.continue_plan(state)

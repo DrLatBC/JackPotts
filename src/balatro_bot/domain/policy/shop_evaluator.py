@@ -731,12 +731,29 @@ class ShopEvaluator:
         self._invisible_first_seen: int | None = None
         self._invisible_selling_down: bool = False
 
-    def evaluate(self, state: dict[str, Any]) -> Action | None:
-        """Main entry point — called once per shop tick."""
-        self.last_decision = None
-        round_num = state.get("round_num", 0)
+    def continue_plan(self, state: dict[str, Any]) -> Action | None:
+        """Next step of a committed multi-step plan, or None when there is none.
 
-        # Reset per-shop state on new shop visit
+        Runs ahead of the other shop rules so nothing (e.g. a Judgement filling
+        the slot a swap just freed) lands between a plan's steps.
+        """
+        self.last_decision = None
+        self._reset_if_new_shop(state)
+        if not self.pending_plan:
+            return None
+        if not self._plan_still_valid(state):
+            log.info("[SHOP] pending plan invalidated, re-evaluating")
+            self.pending_plan = None
+            self._pending_sell_keys = {}
+            return None
+        action = self.pending_plan.pop(0)
+        if not self.pending_plan:
+            self.pending_plan = None
+        self.last_decision = {"kind": "shop", "continuation": True}
+        return action
+
+    def _reset_if_new_shop(self, state: dict[str, Any]) -> None:
+        round_num = state.get("round_num", 0)
         if round_num != self._last_round:
             self._rerolls_this_shop = 0
             self._last_round = round_num
@@ -745,18 +762,13 @@ class ShopEvaluator:
             self._pending_sell_keys = {}
             self._last_order = None
 
+    def evaluate(self, state: dict[str, Any]) -> Action | None:
+        """Main entry point — called once per shop tick."""
         # If mid-sequence (e.g., SellInvisible sell-down), validate and continue
-        if self.pending_plan:
-            if self._plan_still_valid(state):
-                action = self.pending_plan.pop(0)
-                if not self.pending_plan:
-                    self.pending_plan = None
-                self.last_decision = {"kind": "shop", "continuation": True}
-                return action
-            else:
-                log.info("[SHOP] pending plan invalidated, re-evaluating")
-                self.pending_plan = None
-                self._pending_sell_keys = {}
+        action = self.continue_plan(state)
+        if action is not None:
+            return action
+        round_num = state.get("round_num", 0)
 
         # ── Gather state ──
         money = state.get("money", 0)
@@ -899,7 +911,9 @@ class ShopEvaluator:
                 # consume the slot — net result is no joker lost.
                 sell_candidates = sorted(roster, key=lambda r: r.ev_delta)
                 for sc in sell_candidates:
-                    if _get_edition(owned[sc.index]) == "POLYCHROME":
+                    # Selling a Negative takes its slot with it, so it never
+                    # frees room for the buy.
+                    if _get_edition(owned[sc.index]) in ("POLYCHROME", "NEGATIVE"):
                         continue
                     # Scaling jokers with accumulated investment (Hologram,
                     # Castle, Caino, Green Joker, etc.) and extinction-
@@ -1252,6 +1266,9 @@ class ShopEvaluator:
                 return False
             cost = card.get("cost", {}).get("buy", 999)
             if cost > money:
+                return False
+            jokers = state.get("jokers", {})
+            if card.get("set") == "JOKER" and len(jokers.get("cards", [])) >= jokers.get("limit", 5):
                 return False
 
         return True

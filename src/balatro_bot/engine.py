@@ -10,7 +10,7 @@ from balatro_bot.rules import (
     PlayHighValueHand, DiscardToImprove, PlayBestAvailable,
     AlwaysSelectBlind, SkipForTag,
     ReorderJokersForScoring,
-    UnifiedShopRule,
+    UnifiedShopRule, ContinueShopPlan,
     AlwaysCashOut,
     WaitForPackHand, SkipPackForRedCard, PickFromTarotPack, PickFromPlanetPack,
     PickFromBuffoonPack, PickFromSpectralPack, PickFromStandardPack,
@@ -21,6 +21,8 @@ from balatro_bot.rules import (
 if TYPE_CHECKING:
     from typing import Any
 
+
+_unified_shop = UnifiedShopRule()
 
 # Default rule sets by game state — priority order preserved exactly
 DEFAULT_RULES: dict[str, list[Rule]] = {
@@ -40,8 +42,9 @@ DEFAULT_RULES: dict[str, list[Rule]] = {
         AlwaysSelectBlind(),
     ],
     "SHOP": [
+        ContinueShopPlan(_unified_shop),
         UseConsumables(),
-        UnifiedShopRule(),
+        _unified_shop,
     ],
     "ROUND_EVAL": [
         AlwaysCashOut(),
