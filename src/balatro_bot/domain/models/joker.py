@@ -6,7 +6,8 @@ returning ``[]`` instead of ``{}`` for empty nested objects.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
+from functools import cached_property
 
 from balatro_bot.domain.models.card import CardModifier, CardState, _safe_dict
 
@@ -33,6 +34,11 @@ class JokerAbility:
     odds: int | None = None
     poker_hand: str | None = None
     to_do_poker_hand: str | None = None
+
+    @cached_property
+    def as_dict(self) -> dict:
+        """The set fields as a dict, built once per instance. Callers must not mutate it."""
+        return {f.name: v for f in fields(self) if (v := getattr(self, f.name)) is not None}
 
 
 @dataclass(frozen=True)

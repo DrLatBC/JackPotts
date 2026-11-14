@@ -114,9 +114,7 @@ def current_counter(joker: JokerLike) -> int | None:
 def _ability(joker: JokerLike) -> dict:
     """Return the joker's ability as a dict (for .get() callers)."""
     if isinstance(joker, Joker):
-        from dataclasses import fields as dc_fields
-        ab = joker.value.ability
-        return {f.name: v for f in dc_fields(ab) if (v := getattr(ab, f.name)) is not None}
+        return joker.value.ability.as_dict
     return joker.get("value", {}).get("ability", {})
 
 
