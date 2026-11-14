@@ -12,7 +12,8 @@ import argparse
 import json
 import os
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from jackdaw.bridge import RPCError, SimBackend
 
@@ -30,6 +31,9 @@ def handle(sim: SimBackend, body: bytes) -> dict:
     except RPCError as e:
         return {"jsonrpc": "2.0", "id": req.get("id"),
                 "error": {"code": e.code, "message": e.message, "data": e.data}}
+    if req.get("method") == "health" and isinstance(result, dict):
+        # Tells the bot every response is the settled state, so it skips its pre-decision re-poll.
+        result["simulator"] = "jackdaw"
     game = sim.game
     return {"jsonrpc": "2.0", "id": req.get("id"),
             "result": augment(result, game.to_dict() if game is not None else None)}
@@ -41,10 +45,16 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=12371)
     args = parser.parse_args()
     sim = SimBackend()
+    sim_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
+        # Keep-alive: the bot reuses one connection instead of opening one per request.
+        protocol_version = "HTTP/1.1"
+
         def do_POST(self):
-            out = json.dumps(handle(sim, self.rfile.read(int(self.headers.get("Content-Length", 0))))).encode()
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            with sim_lock:
+                out = json.dumps(handle(sim, body)).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(out)))
@@ -55,7 +65,10 @@ def main() -> None:
             pass
 
     print(f"jackdaw adapter on http://{args.host}:{args.port}", flush=True)
-    HTTPServer((args.host, args.port), Handler).serve_forever()
+    # Threaded so the supervisor's health probes connect while the bot holds its connection.
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server.daemon_threads = True
+    server.serve_forever()
 
 
 if __name__ == "__main__":

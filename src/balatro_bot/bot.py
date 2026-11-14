@@ -193,7 +193,8 @@ def wait_for_server(client: BalatroClient, timeout: float = 30.0) -> None:
     start = time.time()
     while time.time() - start < timeout:
         try:
-            client.call("health")
+            health = client.call("health")
+            client.responses_settled = isinstance(health, dict) and bool(health.get("simulator"))
             log.info("Connected to balatrobot API")
             return
         except Exception:
@@ -435,9 +436,9 @@ def run_bot(
         if game_state == "SELECTING_HAND":
             log_hand_state(gs, state)
 
-        # Refresh state before deciding — previous action response may have
+        # Refresh state before deciding — the live game's action response may have
         # stale money, joker counters, or debuff flags.
-        if game_state == "SELECTING_HAND":
+        if game_state == "SELECTING_HAND" and not getattr(client, "responses_settled", False):
             _boss_disabled_before = state.get("_boss_disabled", False)
             state = client.call("gamestate")
             if _boss_disabled_before:
