@@ -422,6 +422,7 @@ class InstanceTable(tk.Canvas):
         self.status: dict | None = None
         self.empty_text = "No batch running"
         self.hover_row: int | None = None
+        self.first = 0  # index of the top visible row; the mouse wheel scrolls past one screen of rows
         self.bold = tkfont.Font(family=FONT, size=10, weight="bold")
         self.head_font = tkfont.Font(family=FONT, size=8, weight="bold")
         self.small = tkfont.Font(family=FONT, size=9)
@@ -430,6 +431,7 @@ class InstanceTable(tk.Canvas):
         self.bind("<Leave>", self._leave)
         self.bind("<Button-1>", self._click)
         self.bind("<Double-Button-1>", self._double)
+        self.bind("<MouseWheel>", self._wheel)
 
     def update_status(self, status: dict | None) -> None:
         self.status = status
@@ -452,13 +454,22 @@ class InstanceTable(tk.Canvas):
     def _hit(self, x: int, y: int) -> tuple[int | None, str | None]:
         if y < self.head_h:
             return None, None
-        row = (y - self.head_h) // self.row_h
+        row = (y - self.head_h) // self.row_h + self.first
         if row >= len(self.slots):
             return None, None
         for key, (x0, x1) in self._spans().items():
             if x0 <= x < x1:
                 return row, key
         return row, None
+
+    def _visible(self) -> int:
+        return max(1, (self.winfo_height() - self.head_h) // self.row_h)
+
+    def _wheel(self, e: tk.Event) -> None:
+        self.first -= 3 * (1 if e.delta > 0 else -1)
+        self.hover_row = None
+        self.tooltip.hide()
+        self.redraw()
 
     def explore_toggleable(self) -> bool:
         """Only a supervisor that hands its bots a rate file can switch them mid-batch."""
@@ -542,12 +553,18 @@ class InstanceTable(tk.Canvas):
             self.create_text(width // 2, self.head_h + px(60), text=self.empty_text, fill=DIM,
                              font=(FONT, 11))
             return
+        slots, visible = self.slots, self._visible()
+        self.first = max(0, min(self.first, len(slots) - visible))
+        last = min(len(slots), self.first + visible)
+        if len(slots) > visible:
+            self.create_text(width - px(12), self.head_h // 2 + px(2), anchor="e", fill=MUTED,
+                             font=self.small, text=f"{self.first + 1}–{last} of {len(slots)}")
         stall = (self.status or {}).get("stall_secs", 600)
-        for i, slot in enumerate(self.slots):
-            self._draw_row(i, slot, spans, stall)
+        for i in range(self.first, last):
+            self._draw_row(i, slots[i], spans, stall)
 
     def _draw_row(self, i: int, s: dict, spans: dict, stall: int) -> None:
-        top = self.head_h + i * self.row_h
+        top = self.head_h + (i - self.first) * self.row_h
         mid = top + self.row_h // 2
         width = self.winfo_width()
         if i == self.hover_row:
@@ -792,14 +809,15 @@ class ControlPanel:
         self.explore_rate_input = ttk.Spinbox(controls, from_=0.05, to=1.0, increment=0.05, width=5,
                                               format="%.2f", textvariable=self.vars["explore_rate"])
         fields = [
-            ("INSTANCES", ttk.Spinbox(controls, from_=1, to=8, width=3, textvariable=self.vars["instances"])),
+            ("INSTANCES", ttk.Spinbox(controls, from_=1, to=MAX_INSTANCES, width=4,
+                                      textvariable=self.vars["instances"])),
             ("GAMES EACH", ttk.Spinbox(controls, from_=1, to=100000, increment=100, width=7,
                                        textvariable=self.vars["games"])),
             ("DECK", ttk.Combobox(controls, values=DECKS, state="readonly", width=11,
                                   textvariable=self.vars["deck"])),
             ("STAKE", ttk.Combobox(controls, values=STAKES, state="readonly", width=8,
                                    textvariable=self.vars["stake"])),
-            ("EXPLORING", ttk.Spinbox(controls, from_=0, to=8, width=3,
+            ("EXPLORING", ttk.Spinbox(controls, from_=0, to=MAX_INSTANCES, width=4,
                                       textvariable=self.vars["explore_instances"])),
             ("RATE", self.explore_rate_input),
             ("SIMULATOR", ttk.Checkbutton(controls, style="Card.TCheckbutton",
@@ -956,8 +974,8 @@ class ControlPanel:
             }
         except (tk.TclError, ValueError):
             raise ValueError("Instances, games and exploring must be whole numbers.")
-        if not 1 <= settings["instances"] <= 8:
-            raise ValueError("Instances must be 1 to 8.")
+        if not 1 <= settings["instances"] <= MAX_INSTANCES:
+            raise ValueError(f"Instances must be 1 to {MAX_INSTANCES}.")
         if settings["games"] < 1:
             raise ValueError("Games each must be at least 1.")
         if not 0 <= settings["explore_instances"] <= settings["instances"]:
@@ -1156,12 +1174,17 @@ class ControlPanel:
         self.mini_line.set(f"{status['wins']} wins  {_win_pct(status['wins'], completed)}"
                            f"   ·   {_fmt_eta(status['eta_secs'])}")
         self._bar(self.mini_bar, completed / expected if expected else 0)
-        step, d = px(18), px(12)
-        for i, s in enumerate(sl for sl in status["slots"] if sl["state"] != "removed"):
+        shown = [sl for sl in status["slots"] if sl["state"] != "removed"]
+        # Dots shrink to keep a big batch on one line.
+        step = max(3, min(px(18), (self.mini_dots.winfo_width() - px(4)) // max(1, len(shown))))
+        d = max(2, step * 2 // 3)
+        ring = px(2) if step >= px(12) else 1
+        top = px(4) + (px(12) - d) // 2
+        for i, s in enumerate(shown):
             x = i * step + px(2)
             fill = STATE_COLOURS.get(s["state"], MUTED)
             outline = PURPLE if s.get("explore_active", s["explore_rate"]) else fill
-            self.mini_dots.create_oval(x, px(4), x + d, px(4) + d, fill=fill, outline=outline, width=px(2))
+            self.mini_dots.create_oval(x, top, x + d, top + d, fill=fill, outline=outline, width=ring)
 
 
 def main() -> None:

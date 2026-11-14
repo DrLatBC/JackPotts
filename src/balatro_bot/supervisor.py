@@ -67,10 +67,10 @@ STATUS_FILE = LOG_DIR / "supervisor_status.json"
 STOP_FILE = LOG_DIR / "supervisor.stop"
 PAUSE_FILE = LOG_DIR / "supervisor.pause"
 COMMANDS_DIR = LOG_DIR / "supervisor_commands"
-MAX_INSTANCES = 8
+MAX_INSTANCES = 100
 # Removed slots keep their port so their logs and counts stay theirs; a batch
 # hands out at most this many ports from its base port.
-PORT_SPAN = 16
+PORT_SPAN = 2 * MAX_INSTANCES
 DEEP_RECOVERY_THRESHOLD = 5
 
 # ---------------------------------------------------------------------------
