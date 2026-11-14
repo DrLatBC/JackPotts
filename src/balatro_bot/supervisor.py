@@ -45,9 +45,10 @@ BALATROBOT = cfg.balatrobot_path
 _VENV_PYTHON = BASE_DIR / ".venv" / "Scripts" / "python.exe"
 # A worktree checkout has no .venv of its own; its bots run on the supervisor's interpreter.
 PYTHON = cfg.python_path or str(_VENV_PYTHON if _VENV_PYTHON.exists() else Path(sys.executable))
-# Sim mode serves each slot from the Jackdaw simulator through this adapter, run by
-# $JACKDAW_PYTHON (a Python 3.12+ environment with the jackdaw package).
+# Sim mode serves each slot from the Jackdaw simulator through this adapter, run by a
+# Python 3.12+ environment with the jackdaw package: $JACKDAW_PYTHON, else .venv-jackdaw.
 JACKDAW_ADAPTER = BASE_DIR / "sim" / "jackdaw_adapter" / "serve.py"
+JACKDAW_PYTHON = os.environ.get("JACKDAW_PYTHON") or str(BASE_DIR / ".venv-jackdaw" / "Scripts" / "python.exe")
 
 HEALTH_TIMEOUT = cfg.health_timeout
 RESTART_COOLDOWN = cfg.restart_cooldown
@@ -1113,14 +1114,15 @@ def main() -> None:
     parser.add_argument("--base-port", type=int, default=BASE_PORT,
                         help=f"First instance's port (default: {BASE_PORT})")
     parser.add_argument("--sim", action="store_true",
-                        help="Play on the Jackdaw simulator instead of Balatro (needs $JACKDAW_PYTHON)")
+                        help="Play on the Jackdaw simulator instead of Balatro")
     args = parser.parse_args()
 
     sim_python = None
     if args.sim:
-        sim_python = os.environ.get("JACKDAW_PYTHON", "")
-        if not sim_python or not os.path.exists(sim_python):
-            parser.error("--sim needs $JACKDAW_PYTHON: a Python 3.12+ interpreter with jackdaw installed")
+        if not os.path.exists(JACKDAW_PYTHON):
+            parser.error(f"--sim: no jackdaw interpreter at {JACKDAW_PYTHON} "
+                         "(create .venv-jackdaw with jackdaw installed, or set $JACKDAW_PYTHON)")
+        sim_python = JACKDAW_PYTHON
 
     if args.stream:
         args.instances = 1

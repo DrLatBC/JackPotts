@@ -42,7 +42,7 @@ DECKS = [
 STAKES = ["WHITE", "RED", "GREEN", "BLACK", "BLUE", "PURPLE", "ORANGE", "GOLD"]
 
 DEFAULTS = {"instances": 6, "games": 2000, "deck": "BLUE", "stake": "WHITE",
-            "explore_instances": 2, "explore_rate": 0.15}
+            "explore_instances": 2, "explore_rate": 0.15, "sim": False}
 
 # Dashboard palette
 BG = "#1a1a2e"
@@ -161,6 +161,8 @@ def supervisor_command(settings: dict) -> list[str]:
     if settings["explore_instances"] > 0:
         cmd += ["--explore-instances", str(settings["explore_instances"]),
                 "--explore-rate", str(settings["explore_rate"])]
+    if settings.get("sim"):
+        cmd.append("--sim")
     return cmd
 
 
@@ -649,6 +651,11 @@ class ControlPanel:
         style.configure("Card.TFrame", background=CARD)
         style.configure("Field.TLabel", background=CARD, foreground=MUTED, font=(FONT, 8, "bold"))
         style.configure("Hint.TLabel", foreground=DIM, font=(FONT, 9))
+        style.configure("Card.TCheckbutton", background=CARD, foreground=TEXT,
+                        indicatorbackground=BG, indicatorforeground=GOLD, focuscolor=CARD,
+                        indicatorsize=px(16), padding=(0, px(3)))
+        style.map("Card.TCheckbutton", background=[("active", CARD)],
+                  indicatorbackground=[("disabled", CARD)], indicatorforeground=[("disabled", DIM)])
         style.configure("TSpinbox", arrowcolor=TEXT, foreground=TEXT, fieldbackground=BG,
                         background=CARD, arrowsize=px(11))
         style.map("TSpinbox", foreground=[("disabled", DIM)], fieldbackground=[("disabled", CARD)],
@@ -694,6 +701,7 @@ class ControlPanel:
             "stake": tk.StringVar(value=s["stake"]),
             "explore_instances": tk.IntVar(value=s["explore_instances"]),
             "explore_rate": tk.DoubleVar(value=s["explore_rate"]),
+            "sim": tk.BooleanVar(value=bool(s["sim"])),
         }
         self.explore_rate_input = ttk.Spinbox(controls, from_=0.05, to=1.0, increment=0.05, width=5,
                                               format="%.2f", textvariable=self.vars["explore_rate"])
@@ -708,6 +716,8 @@ class ControlPanel:
             ("EXPLORING", ttk.Spinbox(controls, from_=0, to=8, width=3,
                                       textvariable=self.vars["explore_instances"])),
             ("RATE", self.explore_rate_input),
+            ("SIMULATOR", ttk.Checkbutton(controls, style="Card.TCheckbutton",
+                                          variable=self.vars["sim"])),
         ]
         self.inputs = []
         for col, (label, widget) in enumerate(fields):
@@ -830,6 +840,7 @@ class ControlPanel:
                 "stake": self.vars["stake"].get(),
                 "explore_instances": int(self.vars["explore_instances"].get()),
                 "explore_rate": round(float(self.vars["explore_rate"].get()), 2),
+                "sim": bool(self.vars["sim"].get()),
             }
         except (tk.TclError, ValueError):
             raise ValueError("Instances, games and exploring must be whole numbers.")

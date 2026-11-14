@@ -27,6 +27,11 @@ def test_command_with_exploration():
     assert cmd[-4:] == ["--explore-instances", "2", "--explore-rate", "0.15"]
 
 
+def test_simulator_toggle_adds_sim_flag():
+    assert "--sim" not in gui.supervisor_command(gui.DEFAULTS)
+    assert gui.supervisor_command({**gui.DEFAULTS, "sim": True})[-1] == "--sim"
+
+
 def test_status_of_a_live_supervisor_is_read(status_file):
     status_file.write_text(json.dumps({"phase": "running", "pid": os.getpid()}))
     assert gui.read_status()["phase"] == "running"
