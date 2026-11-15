@@ -50,3 +50,20 @@ pytest -q
 ```
 
 All 380 unit tests should pass without a running game.
+
+## Optional: PyPy for simulator batches
+
+Simulator batches (`--sim`) run their bots on [PyPy](https://pypy.org) when `.venv-pypy` exists, about 1.8x the games per hour with identical play ([ADR 0010](adr/0010-simulator-bots-run-on-pypy.md)). Without it they run on the normal environment. Unpack PyPy 3.12 (v8.0.1 or later) anywhere, then from the repo root:
+
+```powershell
+& "C:\path\to\pypy3.12-v8.0.1-win64\pypy.exe" -m venv .venv-pypy
+.venv-pypy\Scripts\python.exe -m pip install httpx "typer==0.15.4" pytest
+.venv-pypy\Scripts\python.exe -m pip install --no-deps --ignore-requires-python -e ..\balatrobot
+.venv-pypy\Scripts\python.exe -m pip install --no-deps -e .
+```
+
+`typer` is pinned because newer releases need a compiled dependency with no PyPy build, and the fork is installed past its Python 3.13 floor because the bot only uses its client. `$BOT_PYPY` points the supervisor at a different PyPy interpreter. Check the bot still runs there with:
+
+```powershell
+.venv-pypy\Scripts\python.exe -m pytest -q --ignore=tests/test_gui.py --ignore=tests/test_supervisor_job.py --ignore=tests/test_dashboard_client.py
+```

@@ -50,6 +50,10 @@ PYTHON = cfg.python_path or str(_VENV_PYTHON if _VENV_PYTHON.exists() else Path(
 # Python 3.12+ environment with the jackdaw package: $JACKDAW_PYTHON, else .venv-jackdaw.
 JACKDAW_ADAPTER = BASE_DIR / "sim" / "jackdaw_adapter" / "serve.py"
 JACKDAW_PYTHON = os.environ.get("JACKDAW_PYTHON") or str(BASE_DIR / ".venv-jackdaw" / "Scripts" / "python.exe")
+# Sim-mode bots run on PyPy when its environment exists ($BOT_PYPY, else .venv-pypy):
+# the same decisions at well over 1.5x the games per hour once warmed up. The server
+# they talk to stays on JACKDAW_PYTHON, and bots on the live game stay on PYTHON.
+PYPY_PYTHON = os.environ.get("BOT_PYPY") or str(BASE_DIR / ".venv-pypy" / "Scripts" / "python.exe")
 
 HEALTH_TIMEOUT = cfg.health_timeout
 RESTART_COOLDOWN = cfg.restart_cooldown
@@ -571,6 +575,7 @@ class Supervisor:
         self.stream = stream
         self.explore_rate = explore_rate
         self.sim_python = sim_python
+        self.bot_python = PYPY_PYTHON if sim_python and os.path.exists(PYPY_PYTHON) else PYTHON
         self.running = True
         self.paused = False
         self.resumed = False
@@ -782,7 +787,7 @@ class Supervisor:
         completed = self.games - games
         deck = slot.deck
         cmd = [
-            PYTHON, "-m", BOT_MODULE,
+            self.bot_python, "-m", BOT_MODULE,
             "--start", "--port", str(slot.port),
             "--games", str(games),
             "--games-offset", str(completed),
@@ -1084,6 +1089,10 @@ class Supervisor:
         print(f"  Mother Gothel is sending {len(to_start)} princesses to play Balatro")
         print(f"  ({names})\n")
         print(f"  Session {self.session_num}, {self.games} games each\n")
+        if self.sim_python:
+            runtime = "PyPy" if self.bot_python == PYPY_PYTHON else "CPython (no PyPy environment found)"
+            log.info("Simulator batch: bots run on %s", runtime)
+            print(f"  Simulator batch, bots on {runtime}\n")
 
         self._write_status(self._status("starting"))
         for i, slot in enumerate(to_start):

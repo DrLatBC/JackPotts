@@ -318,3 +318,17 @@ def test_paused_batch_resumes_with_its_counts(sup_files, tmp_path):
     (tmp_path / str(sup.slots[0].port) / "progress.txt").write_text("4/10")
     resumed.setup()
     assert resumed._remaining_games(resumed.slots[0]) == 6
+
+
+def test_simulator_bots_run_on_pypy_when_its_environment_exists(tmp_path, monkeypatch):
+    pypy = tmp_path / "pypy.exe"
+    pypy.write_text("")
+    monkeypatch.setattr(supervisor, "PYPY_PYTHON", str(pypy))
+    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python")
+    live = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None)
+    assert sim.bot_python == str(pypy)
+    assert live.bot_python == supervisor.PYTHON
+
+    monkeypatch.setattr(supervisor, "PYPY_PYTHON", str(tmp_path / "missing.exe"))
+    without = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python")
+    assert without.bot_python == supervisor.PYTHON
