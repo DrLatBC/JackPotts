@@ -273,10 +273,13 @@ class CardFacts:
         "rank", "rank_val", "stone", "debuffed", "face", "hack_rank",
         "suits", "suits_smeared", "suit_mask", "suit_mask_smeared",
         "steel", "red_seal", "gold_seal", "base_ops", "cached",
+        # The card as the compiled kernel takes it (domain/scoring/kernel.py), filled on first use.
+        "record", "record_gold", "record_plain",
     )
 
     def __init__(self, card: CardLike) -> None:
         self.cached = type(card) is Card  # built from a frozen card, so kept and reused
+        self.record = self.record_gold = self.record_plain = None
         rank = card_rank(card)
         self.rank = rank
         self.rank_val = rank_value(rank) if rank else 0

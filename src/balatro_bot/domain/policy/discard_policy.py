@@ -21,6 +21,7 @@ from dataclasses import replace as dc_replace
 from balatro_bot.actions import DiscardCards, Action
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.joker import Joker
+from balatro_bot.domain.scoring import estimate
 from balatro_bot.domain.scoring.draws import sample_draws
 from balatro_bot.domain.scoring.search import (
     best_hand, cards_not_in, discard_candidates, ChaseCandidate,
@@ -204,6 +205,24 @@ def _expected_play_value(keep_indices: list[int], ctx: RoundContext) -> float:
     sim_jokers = _adjust_jokers_for_discard(ctx.jokers, discard_count)
 
     total = 0.0
+    if estimate.USE_KERNEL:
+        # The compiled kernel scores every sampled hand in one call.
+        from balatro_bot.domain.scoring.kernel import KernelScorer
+
+        scorer = KernelScorer(
+            ctx.hand_levels, sim_jokers,
+            money=ctx.money,
+            discards_left=max(0, ctx.discards_left - 1),
+            hands_left=ctx.hands_left,
+            ancient_suit=ctx.ancient_suit,
+            idol_rank=ctx.idol_rank,
+            idol_suit=ctx.idol_suit,
+            blind_name=ctx.blind_name,
+        )
+        hands = [keep_cards + drawn for drawn in sample_draws(draw_pile, discard_count, N_SAMPLES)]
+        for best_total in scorer.best_totals(hands):
+            total += best_total
+        return total / N_SAMPLES
     for drawn in sample_draws(draw_pile, discard_count, N_SAMPLES):
         result = best_hand(
             keep_cards + drawn,

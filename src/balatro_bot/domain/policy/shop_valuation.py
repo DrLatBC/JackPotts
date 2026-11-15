@@ -29,6 +29,7 @@ from balatro_bot.domain.policy.boss_adjustment import (
     boss_multiplier, shop_blended_multiplier,
 )
 from balatro_bot.domain.policy.sim_context import SimContext
+from balatro_bot.domain.scoring import estimate
 from balatro_bot.domain.scoring.estimate import HandScorer, score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
 from balatro_bot.joker_effects.parsers import _ab_mult, _ab_xmult
@@ -678,10 +679,35 @@ def _get_held_samples(
     return samples
 
 
+# Sample hands as the compiled kernel takes them, prepared once per sample:
+# (sample identity, half) -> (sample, held cards, the prepared play).
+_SAMPLE_PLAYS: dict[tuple[int, bool], tuple] = {}
+_SAMPLE_PLAYS_MAX = 20000
+_NO_HELD: list = []
+
+
+def _sample_play(hand_name: str, sample: tuple, held: list, half: bool) -> tuple:
+    """The sample hand ready for the kernel. *half* plays only the scoring cards when
+    there are three or fewer, as the bot does with Half Joker."""
+    from balatro_bot.domain.scoring.kernel import prepare_play
+
+    key = (id(sample), half)
+    entry = _SAMPLE_PLAYS.get(key)
+    if entry is None or entry[0] is not sample or entry[1] is not held:
+        scoring_cards, played_cards = sample
+        if half and len(scoring_cards) <= 3:
+            played_cards = list(scoring_cards)
+        if len(_SAMPLE_PLAYS) >= _SAMPLE_PLAYS_MAX:
+            _SAMPLE_PLAYS.clear()
+        entry = _SAMPLE_PLAYS[key] = (sample, held, prepare_play(hand_name, scoring_cards, played_cards, held))
+    return entry[2]
+
+
 def clear_sample_cache() -> None:
     """Test helper / explicit invalidation when deck has changed in-place."""
     _HAND_SAMPLE_CACHE.clear()
     _HELD_SAMPLE_CACHE.clear()
+    _SAMPLE_PLAYS.clear()
     _VALUE_MEMO.clear()
 
 
@@ -1232,7 +1258,22 @@ def _scoring_delta_sampled(
 
         base_sum = 0.0
         cand_sum = 0.0
-        for s_idx, (scoring_cards, played_cards) in enumerate(samples):
+        if estimate.USE_KERNEL:
+            # One call per lineup scores every sample; both lineups roll the same seeded streams.
+            half = "j_half" in candidate_keys
+            plays = [
+                _sample_play(hand_name, sample, held_samples[i] if i < len(held_samples) else _NO_HELD, half)
+                for i, sample in enumerate(samples)
+            ]
+            seeds = [f"{candidate_key}|{hand_name}|{i}|mc" for i in range(len(samples))]
+            for chips, mult in baseline_scorer.kernel.score_many(plays, [_SampleRng(s) for s in seeds]):
+                base_sum += math.floor(chips * mult)
+            for chips, mult in with_scorer.kernel.score_many(plays, [_SampleRng(s) for s in seeds]):
+                cand_sum += math.floor(chips * mult)
+            samples_to_score = ()
+        else:
+            samples_to_score = samples
+        for s_idx, (scoring_cards, played_cards) in enumerate(samples_to_score):
             held = held_samples[s_idx] if s_idx < len(held_samples) else []
 
             # Half Joker caps played at the scoring subset.

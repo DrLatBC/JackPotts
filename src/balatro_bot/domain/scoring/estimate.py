@@ -212,10 +212,10 @@ class HandScorer:
         self._money = money
         self._base: dict[str, tuple] = {}  # hand name -> (chips, mult) at its level
         self._facts_of = card_facts
-        self._kernel = None
+        self.kernel = None
         if USE_KERNEL:
             from balatro_bot.domain.scoring.kernel import KernelScorer
-            self._kernel = KernelScorer(
+            self.kernel = KernelScorer(
                 hand_levels, jokers, money=money, discards_left=discards_left, hands_left=hands_left,
                 joker_limit=joker_limit, ancient_suit=ancient_suit, deck_count=deck_count,
                 blind_name=blind_name, ox_most_played=ox_most_played,
@@ -309,8 +309,8 @@ class HandScorer:
         rng=None,
     ) -> tuple[int, int, int]:
         """Compute (chips, mult, total) for a hand."""
-        if self._kernel is not None:
-            return self._kernel.score(hand_name, scoring_cards, played_cards, held_cards, rng)
+        if self.kernel is not None:
+            return self.kernel.score(hand_name, scoring_cards, played_cards, held_cards, rng)
         if not self._jokers:
             facts_of = self._facts_of
             total_chips, total_mult = self._hand_base(hand_name)

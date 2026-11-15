@@ -14,6 +14,7 @@ use jackpotts_kernel_core::lineup::{LineupSpec, Play, Step, MAX_CARDS};
 use jackpotts_kernel_core::search::{Constraints, Found, Hand};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::PyBytes;
 
 #[pyfunction]
@@ -73,6 +74,9 @@ type JokerTuple = (String, f64, Option<f64>, Option<f64>, Option<f64>, Option<f6
 type StepTuple = (Option<f64>, Option<f64>, Option<f64>, bool, Option<usize>);
 type SettingsTuple = (f64, f64, f64, f64, f64, u8, Option<u8>, u8, u8, u8);
 type FlagsTuple = (bool, bool, bool, bool, bool, bool, bool, bool);
+/// One play as `Lineup.score` takes it: (hand id, cards, played count, scoring
+/// positions, scoring bits, held, gold, plain).
+type PlayTuple = (u8, PyBackedBytes, usize, PyBackedBytes, u16, PyBackedBytes, PyBackedBytes, PyBackedBytes);
 /// (hand id, played bits, scoring positions, chips, mult, total)
 type FoundTuple<'py> = (u8, u16, Bound<'py, PyBytes>, f64, f64, f64);
 
@@ -229,6 +233,28 @@ impl Lineup {
         }
     }
 
+    /// `score` for many plays in one call. `rngs`, when given, holds one random
+    /// generator per play.
+    #[pyo3(signature = (plays, rngs=None))]
+    fn score_many(&self, plays: Vec<PlayTuple>, rngs: Option<Vec<Bound<'_, PyAny>>>) -> PyResult<Vec<(f64, f64)>> {
+        if rngs.as_ref().is_some_and(|r| r.len() != plays.len()) {
+            return Err(PyValueError::new_err("one random generator per play"));
+        }
+        let mut rngs = rngs.map(|r| r.into_iter());
+        let mut out = Vec::with_capacity(plays.len());
+        for (hand_id, cards, played_count, scoring, in_scoring, held, gold, plain) in &plays {
+            let mut rolls = rngs.as_mut().and_then(|r| r.next()).map(|rng| PyRolls { rng, error: None });
+            let scored = self.with_play(*hand_id, cards, *played_count, scoring, *in_scoring, held, gold, plain, |play| {
+                self.inner.score(play, rolls.as_mut().map(|r| r as &mut dyn Rolls))
+            })?;
+            if let Some(error) = rolls.and_then(|r| r.error) {
+                return Err(error);
+            }
+            out.push(scored);
+        }
+        Ok(out)
+    }
+
     /// (chips before jokers, mult before jokers, chips, mult, [(chips added, mult
     /// added, mult ratio) per active joker]).
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -293,6 +319,31 @@ impl Lineup {
         let limits = limits(min_select, max_select, required_hand, excluded_hands, required_cards, affinity)?;
         let found = self.inner.best(&Hand { cards: &hand, gold: &gold, plain: &plain }, &limits);
         Ok(found.as_ref().map(|f| found_tuple(py, f)))
+    }
+
+    /// The best allowed play's total for each hand, or None where a hand allows no
+    /// play. Each hand is (cards, gold, plain).
+    #[pyo3(signature = (hands, min_select=1, max_select=5, required_hand=None, excluded_hands=0, required_cards=0, affinity=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn best_totals(
+        &self,
+        hands: Vec<(PyBackedBytes, PyBackedBytes, PyBackedBytes)>,
+        min_select: usize,
+        max_select: usize,
+        required_hand: Option<u8>,
+        excluded_hands: u16,
+        required_cards: u16,
+        affinity: Option<Vec<f64>>,
+    ) -> PyResult<Vec<Option<f64>>> {
+        let limits = limits(min_select, max_select, required_hand, excluded_hands, required_cards, affinity)?;
+        let mut totals = Vec::with_capacity(hands.len());
+        for (hand, gold, plain) in &hands {
+            let (hand, gold, plain) = (cards(hand)?, cards(gold)?, cards(plain)?);
+            self.check_variants(&hand, &gold, &plain)?;
+            let found = self.inner.best(&Hand { cards: &hand, gold: &gold, plain: &plain }, &limits);
+            totals.push(found.map(|f| f.total));
+        }
+        Ok(totals)
     }
 
     /// The order to play the hand cards at `positions` (ascending) in.

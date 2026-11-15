@@ -78,26 +78,38 @@ def _with_enhancement(card: Any, enhancement: str | None) -> Any:
     return changed
 
 
-def _cached(card: Any, name: str, build) -> bytes:
-    """A typed Card is frozen, so its record is kept on it; a raw dict's is rebuilt."""
-    if type(card) is not Card:
-        return build(card)
-    record = card.__dict__.get(name)
+def card_record(card: Any) -> bytes:
+    """The card's record. Equal typed cards share one CardFacts, and the record is
+    kept there; a raw dict's is rebuilt on every call."""
+    facts = card_facts(card)
+    record = facts.record
     if record is None:
-        record = card.__dict__[name] = build(card)
+        record = _pack(card)
+        if facts.cached:
+            facts.record = record
     return record
 
 
-def card_record(card: Any) -> bytes:
-    return _cached(card, "_record", _pack)
-
-
 def gold_record(card: Any) -> bytes:
-    return _cached(card, "_record_gold", lambda c: _pack(_with_enhancement(c, "GOLD")))
+    """The card's record as Midas Mask would leave it."""
+    facts = card_facts(card)
+    record = facts.record_gold
+    if record is None:
+        record = _pack(_with_enhancement(card, "GOLD"))
+        if facts.cached:
+            facts.record_gold = record
+    return record
 
 
 def plain_record(card: Any) -> bytes:
-    return _cached(card, "_record_plain", lambda c: _pack(_with_enhancement(c, None)))
+    """The card's record as Vampire would leave it."""
+    facts = card_facts(card)
+    record = facts.record_plain
+    if record is None:
+        record = _pack(_with_enhancement(card, None))
+        if facts.cached:
+            facts.record_plain = record
+    return record
 
 
 def _records(cards: list, record=card_record) -> bytes:
@@ -120,6 +132,38 @@ def _joker_tuple(joker: Any) -> tuple:
         joker_key(joker), float(cost.get("sell", 0) or 0),
         _ab_chips(joker, fallback=None), _ab_mult(joker, fallback=None), _ab_xmult(joker, fallback=None),
         None if counter is None else float(counter), numbers,
+    )
+
+
+def prepare_play(
+    hand_name: str, scoring_cards: list, played_cards: list | None, held_cards: list | None,
+    variants: bool = True,
+) -> tuple:
+    """One play as the kernel takes it. Cards are matched by identity, as the Python
+    kernel does: a scoring card that is not among the played ones scores after them.
+
+    *variants* adds each card as Midas Mask and Vampire would leave it, which only
+    a lineup holding one of them reads. A prepared play can be scored under any lineup.
+    """
+    played = played_cards or scoring_cards
+    where: dict[int, int] = {}
+    for i, card in enumerate(played):
+        where.setdefault(id(card), i)
+    scoring_ids = {id(card) for card in scoring_cards}
+    in_scoring = sum(1 << i for i, card in enumerate(played) if id(card) in scoring_ids)
+    cards = list(played)
+    positions = bytearray()
+    for card in scoring_cards:
+        position = where.get(id(card))
+        if position is None:
+            position = where[id(card)] = len(cards)
+            cards.append(card)
+        positions.append(position)
+    return (
+        HAND_IDS[hand_name], _records(cards), len(played), bytes(positions), in_scoring,
+        _records(held_cards or []),
+        _records(cards, gold_record) if variants else b"",
+        _records(cards, plain_record) if variants else b"",
     )
 
 
@@ -213,29 +257,11 @@ class KernelScorer:
     # -- one play ---------------------------------------------------------------
 
     def _play(self, hand_name: str, scoring_cards: list, played_cards: list | None, held_cards: list | None) -> tuple:
-        """The kernel's arguments for one play. Cards are matched by identity, as the
-        Python kernel does: a scoring card that is not among the played ones scores
-        after them."""
-        played = played_cards or scoring_cards
-        where: dict[int, int] = {}
-        for i, card in enumerate(played):
-            where.setdefault(id(card), i)
-        scoring_ids = {id(card) for card in scoring_cards}
-        in_scoring = sum(1 << i for i, card in enumerate(played) if id(card) in scoring_ids)
-        cards = list(played)
-        positions = bytearray()
-        for card in scoring_cards:
-            position = where.get(id(card))
-            if position is None:
-                position = where[id(card)] = len(cards)
-                cards.append(card)
-            positions.append(position)
-        gold = _records(cards, gold_record) if self._variants else b""
-        plain = _records(cards, plain_record) if self._variants else b""
-        return (
-            HAND_IDS[hand_name], _records(cards), len(played), bytes(positions), in_scoring,
-            _records(held_cards or []), gold, plain,
-        )
+        return prepare_play(hand_name, scoring_cards, played_cards, held_cards, self._variants)
+
+    def score_many(self, plays: list[tuple], rngs: list | None = None) -> list[tuple[float, float]]:
+        """(chips, mult) for each play from ``prepare_play``, one generator per play if given."""
+        return self._kernel.score_many(plays, rngs)
 
     def score(
         self, hand_name: str, scoring_cards: list, played_cards: list | None = None,
@@ -307,6 +333,14 @@ class KernelScorer:
                                  required_card_indices, excluded_hands, hand_affinity)
         found = self._kernel.best(*args)
         return None if found is None else self._found(found)
+
+    def best_totals(self, hands: list[list]) -> list[int]:
+        """The best play's total for each hand (0 where a hand allows no play), in one call."""
+        if self._variants:
+            packed = [(_records(h), _records(h, gold_record), _records(h, plain_record)) for h in hands]
+        else:
+            packed = [(_records(h), b"", b"") for h in hands]
+        return [0 if total is None else int(total) for total in self._kernel.best_totals(packed)]
 
     def play_order(self, hand_cards: list, indices: list[int]) -> list[int]:
         """The order to play the cards at *indices* in."""
