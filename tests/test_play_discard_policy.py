@@ -371,3 +371,39 @@ class TestCardsNotInSuitAwareness:
         result = cards_not_in(hand, keep, protection=strat.card_protection())
         # All three should sort by rank affinity/rank value, not suit
         assert len(result) == 3
+
+
+class TestNeedleWithNothingOutsideTheBestHand:
+    """The Needle allows one hand. When the best play already uses every card,
+    the bot still has to act: dig with discards, or play."""
+
+    def _needle(self, hand, jokers=None, discards_left=4):
+        return _ctx(hand_cards=hand, jokers=jokers, blind_name="The Needle", blind_score=560000,
+                    hands_left=1, discards_left=discards_left)
+
+    def test_splash_pair_keeps_the_pair_and_discards_the_rest(self):
+        hand = [card("K", "S"), card("K", "D"), card("8", "C"), card("5", "C"), card("4", "D")]
+        ctx = self._needle(hand, jokers=[joker("j_splash")])
+        assert sorted(ctx.best.card_indices) == [0, 1, 2, 3, 4]
+        action = choose_best_available(ctx)
+        assert isinstance(action, DiscardCards)
+        assert sorted(action.card_indices) == [2, 3, 4]
+
+    def test_a_made_five_card_hand_with_nothing_to_throw_is_played(self):
+        hand = [card(r, "H") for r in "2589K"]
+        ctx = self._needle(hand)
+        assert ctx.best.hand_name == "Flush"
+        action = choose_best_available(ctx)
+        assert isinstance(action, PlayCards)
+
+    def test_cards_outside_the_best_hand_are_still_discarded_first(self):
+        hand = [card("K", "S"), card("K", "D"), card("8", "C"), card("5", "C"), card("4", "D"),
+                card("3", "H"), card("9", "S"), card("J", "C")]
+        action = choose_best_available(self._needle(hand))
+        assert isinstance(action, DiscardCards)
+        assert not {0, 1} & set(action.card_indices)
+
+    def test_no_discards_left_plays_the_best_hand(self):
+        hand = [card("K", "S"), card("K", "D"), card("8", "C"), card("5", "C"), card("4", "D")]
+        action = choose_best_available(self._needle(hand, jokers=[joker("j_splash")], discards_left=0))
+        assert isinstance(action, PlayCards)

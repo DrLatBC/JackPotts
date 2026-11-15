@@ -11,9 +11,9 @@ import random
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import PlayCards, DiscardCards, Action
-from balatro_bot.cards import card_rank, joker_key, rank_value, _modifier
+from balatro_bot.cards import card_rank, is_joker_debuffed, joker_key, rank_value, _modifier
 from balatro_bot.constants import FACE_RANKS_SET
-from balatro_bot.domain.scoring.classify import classify_hand
+from balatro_bot.domain.scoring.classify import _scoring_cards_for, classify_hand
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.domain.scoring.search import (
     best_hand, cards_not_in, discard_candidates,
@@ -168,19 +168,34 @@ def choose_high_value_play(ctx: RoundContext) -> Action | None:
 # PlayBestAvailable
 # ---------------------------------------------------------------------------
 
+def _hand_core(ctx: RoundContext) -> set[int]:
+    """Hand positions of the cards that make the best hand's type: the two Kings of a
+    Pair, not the cards that only score because of Splash or come along as padding."""
+    played = [ctx.hand_cards[i] for i in ctx.best.card_indices]
+    keys = {joker_key(j) for j in ctx.jokers if not is_joker_debuffed(j)}
+    core = _scoring_cards_for(
+        ctx.best.hand_name, played,
+        four_fingers="j_four_fingers" in keys, smeared="j_smeared" in keys, shortcut="j_shortcut" in keys,
+    )
+    core_ids = {id(c) for c in core}
+    return {i for i in ctx.best.card_indices if id(ctx.hand_cards[i]) in core_ids}
+
+
 def choose_best_available(ctx: RoundContext) -> Action | None:
     """Last resort: play the best hand we have, even if it won't clear."""
     # The Serpent: only 3 cards drawn back per discard — cap at 1 (nets +2).
     _size_cap = 1 if ctx.blind_name == "The Serpent" else 5
 
-    # The Needle: keep discarding if we have discards — don't give up
-    if ctx.blind_name == "The Needle" and ctx.discards_left > 0:
-        if ctx.best:
-            keep = set(ctx.best.card_indices)
-            to_discard = cards_not_in(ctx.hand_cards, keep, protection=ctx.card_protection)[:min(_size_cap, ctx.discards_left)]
-            if to_discard:
-                return DiscardCards(to_discard, reason="Needle: use all discards to find winning hand")
-        return None
+    # The Needle: one hand only, so spend every discard looking for a winner first.
+    if ctx.blind_name == "The Needle" and ctx.discards_left > 0 and ctx.best:
+        limit = min(_size_cap, ctx.discards_left)
+        to_discard = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), protection=ctx.card_protection)[:limit]
+        if not to_discard:
+            # The best play uses the whole hand (Splash, or a hand of five or fewer):
+            # keep only the cards that make its hand type and dig with the rest.
+            to_discard = cards_not_in(ctx.hand_cards, _hand_core(ctx), protection=ctx.card_protection)[:limit]
+        if to_discard:
+            return DiscardCards(to_discard, reason="Needle: use all discards to find winning hand")
 
     # If hand can't win and we still have discards AND the hand is < 5 cards,
     # discard junk to try to improve.
