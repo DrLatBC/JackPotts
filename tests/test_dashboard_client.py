@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import gzip
+import json
+
 import httpx
 import pytest
 
@@ -33,7 +36,7 @@ def client(monkeypatch):
         it = iter(statuses)
 
         def fake_post(url, **kw):
-            calls.append(1)
+            calls.append(len(json.loads(gzip.decompress(kw["content"]))["games"]))
             s = next(it)
             if s is None:
                 raise httpx.ConnectError("down")
@@ -86,6 +89,30 @@ def test_buffer_cap_drops_oldest(client, monkeypatch):
     _buffer(5)
     dc._flush_buffer()
     assert [g["seed"] for _, g in dc._game_buffer] == ["S2", "S3", "S4"]
+
+
+def test_backlog_is_sent_in_chunks(client):
+    calls = client([200, 200, 200])
+    _buffer(60)
+    assert dc._flush_buffer() is True
+    assert calls == [25, 25, 10]
+    assert dc._game_buffer == []
+
+
+def test_transient_failure_stops_the_flush_and_keeps_the_rest_in_order(client):
+    calls = client([200, None])
+    _buffer(60)
+    assert dc._flush_buffer() is False
+    assert calls == [25, 25]
+    assert [g["seed"] for _, g in dc._game_buffer] == [f"S{i}" for i in range(25, 60)]
+
+
+def test_rejected_chunk_is_dropped_and_the_rest_still_sent(client):
+    calls = client([200, 422, 200])
+    _buffer(60)
+    assert dc._flush_buffer() is True
+    assert calls == [25, 25, 10]
+    assert dc._game_buffer == []
 
 
 def test_flush_games_retries_until_delivered(client):

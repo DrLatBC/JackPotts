@@ -1,7 +1,8 @@
 """Thin HTTP client that pushes data to the JackPotts dashboard API.
 
 No-ops when JACKPOTTS_URL is not configured. Game data is buffered and
-flushed every FLUSH_INTERVAL seconds as a gzip-compressed bulk POST.
+flushed every FLUSH_INTERVAL seconds as gzip-compressed bulk POSTs of at
+most BULK_CHUNK_SIZE games each.
 Instance state updates and batch start/finish are sent immediately.
 """
 
@@ -24,6 +25,10 @@ _TIMEOUT = 10.0
 FLUSH_INTERVAL = 120.0  # 2 minutes
 # Bound on games held while the dashboard is unreachable (~100 KB each).
 MAX_BUFFERED_GAMES = 2000
+# The server holds a whole bulk request in memory several times over while it
+# parses and inserts it, so one request must stay a few MB however large the
+# backlog grows.
+BULK_CHUNK_SIZE = 25
 
 # ---------------------------------------------------------------------------
 # Game buffer — collects post_game payloads, flushes periodically
@@ -109,10 +114,12 @@ def _post_gzip_status(path: str, data: dict) -> tuple[Optional[dict], bool]:
 
 
 def _flush_buffer() -> bool:
-    """Send all buffered games as compressed bulk requests.
+    """Send all buffered games as compressed bulk requests, BULK_CHUNK_SIZE at a time.
 
-    Games from a transiently failed request go back to the front of the
-    buffer for the next flush. Returns True when nothing is left to retry.
+    The first transient failure stops the flush: that chunk and every unsent
+    one go back to the front of the buffer for the next flush, so a struggling
+    server is not sent the rest of the backlog. Returns True when nothing is
+    left to retry.
     """
     global _flush_timer
     with _buffer_lock:
@@ -130,11 +137,16 @@ def _flush_buffer() -> bool:
     retry: list[tuple[int, dict]] = []
     for batch_id, games in by_batch.items():
         logger.info("Flushing %d buffered games for batch %d", len(games), batch_id)
-        result, retryable = _post_gzip_status(f"/api/ingest/batch/{batch_id}/games/bulk", {"games": games})
-        if retryable:
-            retry.extend((batch_id, g) for g in games)
-        elif result is None:
-            logger.error("Dashboard rejected %d games for batch %d; dropping them", len(games), batch_id)
+        for start in range(0, len(games), BULK_CHUNK_SIZE):
+            chunk = games[start:start + BULK_CHUNK_SIZE]
+            if retry:
+                retry.extend((batch_id, g) for g in chunk)
+                continue
+            result, retryable = _post_gzip_status(f"/api/ingest/batch/{batch_id}/games/bulk", {"games": chunk})
+            if retryable:
+                retry.extend((batch_id, g) for g in chunk)
+            elif result is None:
+                logger.error("Dashboard rejected %d games for batch %d; dropping them", len(chunk), batch_id)
 
     if retry:
         with _buffer_lock:
