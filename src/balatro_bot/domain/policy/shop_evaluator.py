@@ -981,10 +981,13 @@ class ShopEvaluator:
             ]
             if fodder_candidates:
                 best = max(fodder_candidates, key=lambda r: (r.fodder_mult, -r.index))
-                # Skip if best fodder is already right of Dagger (positioning done)
+                # Positioning is done when the joker right of Dagger feeds it as much as
+                # the best one would. Moving a tied joker there only pushes this one to a
+                # lower slot, where it wins the tie next tick and the two swap forever.
                 dagger_idx = next(i for i, j in enumerate(owned) if joker_key(j) == "j_ceremonial")
-                already_positioned = (
-                    dagger_idx + 1 < len(owned) and best.index == dagger_idx + 1
+                already_positioned = any(
+                    r.index == dagger_idx + 1 and r.fodder_mult >= best.fodder_mult
+                    for r in fodder_candidates
                 )
                 if not already_positioned:
                     new_order = _compute_optimal_order(owned, fodder_idx=best.index)

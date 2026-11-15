@@ -190,3 +190,62 @@ def test_default_shop_rules_continue_the_plan_first() -> None:
     rules = DEFAULT_RULES["SHOP"]
     assert isinstance(rules[0], ContinueShopPlan) and isinstance(rules[-1], UnifiedShopRule)
     assert rules[0]._evaluator is rules[-1]._evaluator
+
+
+# ---------------------------------------------------------------------------
+# Ceremonial Dagger fodder positioning
+# ---------------------------------------------------------------------------
+
+def _dagger_state(monkeypatch) -> dict:
+    """Dagger with two equally good meals: one on each side of it."""
+    from balatro_bot.domain.policy import shop_evaluator
+
+    def joker_worth(candidate, *args, **kwargs):
+        return 0.5 if candidate["key"] in ("j_even_steven", "j_delayed_grat") else 6.0
+
+    monkeypatch.setattr(shop_evaluator, "evaluate_joker_value", joker_worth)
+    state = _shop_state(money=17)
+    state["ante_num"] = 7
+    owned = [
+        dict(joker("j_stuntman", "Stuntman"), cost={"sell": 3}),
+        dict(joker("j_even_steven", "Even Steven"), cost={"sell": 2}),
+        dict(joker("j_ceremonial", "Ceremonial Dagger"), cost={"sell": 3}),
+        dict(joker("j_delayed_grat", "Delayed Gratification"), cost={"sell": 2}),
+        dict(joker("j_hologram", "Hologram"), cost={"sell": 4}),
+    ]
+    state["jokers"] = {"cards": owned, "count": 5, "limit": 5}
+    state["shop"] = {"cards": []}
+    return state
+
+
+def test_tied_dagger_fodder_is_not_swapped_back_and_forth(monkeypatch) -> None:
+    from balatro_bot.actions import RearrangeJokers
+
+    state = _dagger_state(monkeypatch)
+    ev = ShopEvaluator()
+    feeds = 0
+    for _ in range(6):
+        action = ev.evaluate(state)
+        if not (isinstance(action, RearrangeJokers) and "to Dagger" in action.reason):
+            break
+        feeds += 1
+        owned = state["jokers"]["cards"]
+        state["jokers"]["cards"] = [owned[i] for i in action.order]
+    assert feeds == 0  # Delayed Gratification already sits right of Dagger and is as good a meal
+
+
+def test_better_dagger_fodder_is_still_moved_into_place(monkeypatch) -> None:
+    from balatro_bot.actions import RearrangeJokers
+
+    state = _dagger_state(monkeypatch)
+    state["jokers"]["cards"][1]["cost"] = {"sell": 4}  # Even Steven now feeds +8, not +4
+    ev = ShopEvaluator()
+    action = ev.evaluate(state)
+    assert isinstance(action, RearrangeJokers) and "feed Even Steven to Dagger" in action.reason
+    order = action.order
+    assert order.index(1) == order.index(2) + 1  # Even Steven lands right of Dagger
+
+    owned = state["jokers"]["cards"]
+    state["jokers"]["cards"] = [owned[i] for i in order]
+    again = ev.evaluate(state)
+    assert not (isinstance(again, RearrangeJokers) and "to Dagger" in again.reason)
