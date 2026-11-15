@@ -1,0 +1,8 @@
+[package]
+name = "jackpotts-kernel-core"
+version = "0.0.1"
+edition = "2021"
+description = "Hand search and scoring for the JackPotts Balatro bot. No Python in this crate."
+
+[lib]
+name = "jackpotts_kernel_core"

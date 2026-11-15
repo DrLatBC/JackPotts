@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "jackpotts-kernel"
+version = "0.0.1"
+description = "Compiled hand search and scoring for the JackPotts Balatro bot."
+requires-python = ">=3.12"
+
+[tool.maturin]
+module-name = "jackpotts_kernel"
+features = ["pyo3/extension-module"]

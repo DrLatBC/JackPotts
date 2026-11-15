@@ -1,0 +1,13 @@
+[package]
+name = "jackpotts-kernel"
+version = "0.0.1"
+edition = "2021"
+description = "Python binding for the JackPotts scoring kernel."
+
+[lib]
+name = "jackpotts_kernel"
+crate-type = ["cdylib"]
+
+[dependencies]
+jackpotts-kernel-core = { path = "../core" }
+pyo3 = { version = "0.25", features = ["abi3-py312"] }
