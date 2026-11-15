@@ -800,3 +800,31 @@ class TestDebuffedAndCopiedJokers:
         uncommon = joker("j_joker", rarity=2)
         copied = [joker("j_blueprint"), joker("j_baseball"), uncommon]
         assert score_hand("High Card", self.ACE, jokers=copied) == (16, 11.25, 180)
+
+
+class TestFourFingersFlushSuit:
+    """With Four Fingers the flush is the first suit, in the game's order (Diamonds,
+    Clubs, Hearts, Spades), that four cards count as; only its cards score."""
+
+    @staticmethod
+    def _scoring(cards):
+        from balatro_bot.cards import card_facts
+        from balatro_bot.domain.scoring.classify import scoring_cards_from_facts
+        return scoring_cards_from_facts("Flush", cards, [card_facts(c) for c in cards], four_fingers=True)
+
+    def test_tie_between_suits_goes_to_the_earlier_suit(self):
+        wilds = [wild_card("2", "C"), wild_card("5", "C"), wild_card("8", "C")]
+        spade, heart = card("K", "S"), card("3", "H")
+        for hand in (wilds + [spade, heart], [spade, heart] + wilds, [heart] + wilds + [spade]):
+            scoring = self._scoring(hand)
+            assert heart in scoring and spade not in scoring
+            assert len(scoring) == 4
+
+    def test_four_wilds_make_the_flush_before_a_later_suit_is_tried(self):
+        wilds = [wild_card(r, "H") for r in "2589"]
+        spade = card("K", "S")
+        assert self._scoring(wilds + [spade]) == wilds
+
+    def test_five_cards_of_one_suit_all_score(self):
+        hand = [card(r, "S") for r in "2589K"]
+        assert self._scoring(hand) == hand

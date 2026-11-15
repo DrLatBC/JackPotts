@@ -7,7 +7,7 @@ cards' CardFacts so nothing is re-read from a card per subset.
 
 from __future__ import annotations
 
-from balatro_bot.cards import CardFacts, card_facts, card_suits
+from balatro_bot.cards import CardFacts, card_facts
 from balatro_bot.constants import RANK_ORDER
 
 _FLUSH_HANDS = frozenset({"Flush", "Straight Flush", "Flush Five", "Flush House"})
@@ -164,15 +164,22 @@ def classify_hand(
     )
 
 
-def _suit_groups(cards: list[dict], facts: list[CardFacts], smeared: bool) -> dict[str, list[dict]]:
-    """Non-Stone cards grouped by each suit they count as."""
-    groups: dict[str, list[dict]] = {}
-    for c, f in zip(cards, facts):
-        if f.stone:
-            continue
-        for s in card_suits(c, smeared=smeared):
-            groups.setdefault(s, []).append(c)
-    return groups
+# The game tries suits in this order and takes the first one enough cards count as
+# (get_flush over Steamodded's suit list).
+_FLUSH_SUIT_BITS = (2, 4, 1, 8)  # Diamonds, Clubs, Hearts, Spades
+
+
+def _four_fingers_flush_cards(cards: list[dict], facts: list[CardFacts], smeared: bool) -> list[dict]:
+    """The cards of the flush Four Fingers finds: every non-Stone card of the first
+    suit, in the game's suit order, that at least four of them count as."""
+    for bit in _FLUSH_SUIT_BITS:
+        group = [
+            c for c, f in zip(cards, facts)
+            if not f.stone and (f.suit_mask_smeared if smeared else f.suit_mask) & bit
+        ]
+        if len(group) >= 4:
+            return group
+    return []
 
 
 def _flush_scoring_cards(
@@ -184,12 +191,7 @@ def _flush_scoring_cards(
         return []
     if not four_fingers:
         return suited  # all non-Stone cards are flush cards in a normal flush
-    # Four Fingers: find the dominant suit, return only cards of that suit
-    suit_groups = _suit_groups(cards, facts, smeared)
-    if not suit_groups:
-        return []
-    flush_suit = max(suit_groups, key=lambda s: len(suit_groups[s]))
-    return suit_groups[flush_suit]
+    return _four_fingers_flush_cards(cards, facts, smeared)
 
 
 def _straight_scoring_cards(
@@ -275,18 +277,10 @@ def scoring_cards_from_facts(
                         straight_cards.append(c)
                 _append_stones(straight_cards, cards, facts)
                 return straight_cards or list(cards)
-            # Plain Flush with four_fingers: only the 4 flush-suit cards score.
-            masks = [f.suit_mask_smeared if smeared else f.suit_mask for f in facts if not f.stone]
-            if masks:
-                common = 15
-                for m in masks:
-                    common &= m
-                if not common:
-                    suit_groups = _suit_groups(cards, facts, smeared)
-                    flush_suit = max(suit_groups, key=lambda s: len(suit_groups[s]))
-                    flush_cards = suit_groups[flush_suit]
-                    stone_cards = [c for c, f in zip(cards, facts) if f.stone]
-                    return flush_cards + [c for c in stone_cards if c not in flush_cards]
+            # Plain Flush with four_fingers: only the flush suit's cards score, plus Stones.
+            flush_cards = _four_fingers_flush_cards(cards, facts, smeared)
+            if flush_cards:
+                return flush_cards + [c for c, f in zip(cards, facts) if f.stone]
         return list(cards)
     if hand_name == "Straight":
         if four_fingers:
