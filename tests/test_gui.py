@@ -332,3 +332,12 @@ def test_simulator_bots_run_on_pypy_when_its_environment_exists(tmp_path, monkey
     monkeypatch.setattr(supervisor, "PYPY_PYTHON", str(tmp_path / "missing.exe"))
     without = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python")
     assert without.bot_python == supervisor.PYTHON
+
+
+def test_simulator_bots_stay_on_cpython_with_the_compiled_kernel(tmp_path, monkeypatch):
+    pypy = tmp_path / "pypy.exe"
+    pypy.write_text("")
+    monkeypatch.setattr(supervisor, "PYPY_PYTHON", str(pypy))
+    monkeypatch.setenv("BALATRO_KERNEL", "rust")
+    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python")
+    assert sim.bot_python == supervisor.PYTHON

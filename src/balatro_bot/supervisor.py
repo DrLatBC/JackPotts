@@ -575,7 +575,10 @@ class Supervisor:
         self.stream = stream
         self.explore_rate = explore_rate
         self.sim_python = sim_python
-        self.bot_python = PYPY_PYTHON if sim_python and os.path.exists(PYPY_PYTHON) else PYTHON
+        # The compiled kernel (BALATRO_KERNEL=rust) loads on CPython only.
+        self.kernel = os.environ.get("BALATRO_KERNEL", "").lower() == "rust"
+        on_pypy = bool(sim_python) and not self.kernel and os.path.exists(PYPY_PYTHON)
+        self.bot_python = PYPY_PYTHON if on_pypy else PYTHON
         self.running = True
         self.paused = False
         self.resumed = False
@@ -1090,7 +1093,12 @@ class Supervisor:
         print(f"  ({names})\n")
         print(f"  Session {self.session_num}, {self.games} games each\n")
         if self.sim_python:
-            runtime = "PyPy" if self.bot_python == PYPY_PYTHON else "CPython (no PyPy environment found)"
+            if self.kernel:
+                runtime = "CPython with the compiled kernel"
+            elif self.bot_python == PYPY_PYTHON:
+                runtime = "PyPy"
+            else:
+                runtime = "CPython (no PyPy environment found)"
             log.info("Simulator batch: bots run on %s", runtime)
             print(f"  Simulator batch, bots on {runtime}\n")
 

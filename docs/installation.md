@@ -90,4 +90,4 @@ Rebuild after any change under `kernel/`. Checks:
 .venv\Scripts\python.exe scripts/kernel_mutations.py
 ```
 
-The first compares both scorers on generated hands, the second does the same over every joker with every card enhancement, and the third plants bugs in the kernel to confirm those comparisons notice. The kernel runs on CPython only, so PyPy bots keep the Python scorer.
+The first compares both scorers on generated hands, the second does the same over every joker with every card enhancement, and the third plants bugs in the kernel to confirm those comparisons notice. The kernel runs on CPython only: with `BALATRO_KERNEL=rust` set, the supervisor launches simulator bots from the normal environment instead of `.venv-pypy`, and the startup line says so.
