@@ -828,3 +828,13 @@ class TestFourFingersFlushSuit:
     def test_five_cards_of_one_suit_all_score(self):
         hand = [card(r, "S") for r in "2589K"]
         assert self._scoring(hand) == hand
+
+
+class TestHolographicCardMult:
+    def test_zero_mult_field_still_gives_ten(self):
+        from balatro_bot.cards import card_edition_mult_value
+        from balatro_bot.domain.models.card import card_from_dict
+        raw = {"label": "9 of S", "set": "DEFAULT", "value": {"rank": "9", "suit": "S"},
+               "modifier": {"edition": "HOLO", "edition_mult": 0}, "state": []}
+        assert card_edition_mult_value(raw) == 10
+        assert card_edition_mult_value(card_from_dict(raw)) == 10

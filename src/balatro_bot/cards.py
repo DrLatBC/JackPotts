@@ -191,7 +191,7 @@ def card_edition_mult_value(card: CardLike) -> float:
     mod = _modifier(card)
     edition = mod.get("edition", "")
     if edition in ("HOLO", "HOLOGRAPHIC"):
-        return mod.get("edition_mult", 10)
+        return mod.get("edition_mult") or 10
     elif mod.get("edition_mult"):
         return mod["edition_mult"]
     return 0
@@ -218,7 +218,7 @@ def card_xmult_value(card: CardLike) -> float:
     enhancement = mod.get("enhancement", "")
     result = 1.0
     if enhancement == "GLASS":
-        result *= mod.get("enhancement_x_mult", 2.0)
+        result *= mod.get("enhancement_x_mult") or 2.0
     return result
 
 
@@ -241,7 +241,7 @@ def card_edition_xmult_value(card: CardLike) -> float:
         return 1.0
     mod = _modifier(card)
     if mod.get("edition") == "POLYCHROME":
-        return mod.get("edition_x_mult", 1.5)
+        return mod.get("edition_x_mult") or 1.5
     elif mod.get("edition_x_mult"):
         return mod["edition_x_mult"]
     return 1.0
