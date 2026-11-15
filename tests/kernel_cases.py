@@ -80,7 +80,12 @@ _COMBOS = [
     ("j_splash", "j_blackboard", "j_seeing_double", "j_smeared"),
     ("j_midas_mask", "j_vampire", "j_blueprint", "j_brainstorm"),
     ("j_baseball", "j_blueprint", "j_baron", "j_mime", "j_raised_fist"),
+    ("j_lucky_cat", "j_oops", "j_bloodstone", "j_misprint"),
+    ("j_hiker", "j_hack", "j_selzer", "j_wee"),
+    ("j_steel_joker", "j_shoot_the_moon", "j_baron", "j_mime"),
+    ("j_ride_the_bus", "j_pareidolia", "j_smiley", "j_scary_face", "j_sock_and_buskin"),
 ]
+_ENHANCEMENTS = ["BONUS", "MULT", "WILD", "GLASS", "STEEL", "STONE", "GOLD", "LUCKY"]
 
 
 @dataclass
@@ -92,13 +97,16 @@ class Case:
     search: dict = field(default_factory=dict)
 
 
-def _card(rng: random.Random, index: int, plain: bool, ranks: str = RANKS, suits: str = SUITS) -> dict:
+def _card(rng: random.Random, index: int, plain: bool, ranks: str = RANKS, suits: str = SUITS,
+          mostly: str | None = None) -> dict:
     rank, suit = rng.choice(ranks), rng.choice(suits)
     modifier: dict = {}
     value: dict = {"rank": rank, "suit": suit}
     state: dict = {}
     if not plain:
-        enhancement = rng.choice([None] * 5 + ["BONUS", "MULT", "WILD", "GLASS", "STEEL", "STONE", "GOLD", "LUCKY"])
+        enhancement = rng.choice([None] * 5 + _ENHANCEMENTS)
+        if mostly and rng.random() < 0.7:
+            enhancement = mostly
         if enhancement:
             modifier["enhancement"] = enhancement
         if enhancement == "STONE" and rng.random() < 0.5:
@@ -217,8 +225,10 @@ def random_case(seed: int) -> Case:
         suits = rng.choice(SUITS)
     elif theme < 0.33:
         ranks, suits = "".join(rng.sample(RANKS, 2)), rng.choice(SUITS)
-    hand = [_card(rng, i, plain_cards, ranks, suits) for i in range(hand_size)]
-    if rng.random() < 0.2:
+    # Some hands lean on one enhancement, which the jokers that read it need.
+    mostly = rng.choice(_ENHANCEMENTS) if rng.random() < 0.2 else None
+    hand = [_card(rng, i, plain_cards and not mostly, ranks, suits, mostly) for i in range(hand_size)]
+    if rng.random() < 0.3:
         keys = list(rng.choice(_COMBOS))
         rng.shuffle(keys)
         keys += [rng.choice(JOKER_KEYS) for _ in range(rng.choice([0, 1, 2]))]
@@ -250,6 +260,28 @@ def pair_case(first: str, second: str, variant: int) -> Case:
         _enrich(rng, jokers, settings["money"])
     seed = zlib.crc32(f"{first}|{second}|{variant}".encode())
     return Case(seed, hand, jokers, _levels(rng), settings)
+
+
+# Jokers that change how other jokers score.
+_PARTNERS = ["j_oops", "j_pareidolia", "j_smeared", "j_blueprint", "j_brainstorm", "j_four_fingers",
+             "j_splash", "j_hanging_chad", "j_mime", "j_baseball", "j_dusk", "j_midas_mask", "j_vampire"]
+
+
+def targeted_case(key: str, variant: int) -> Case:
+    """One named joker with two of the jokers that change how others score, over a hand
+    leaning on one enhancement (the variant picks which, and which partners)."""
+    rng = random.Random(f"{key}|target|{variant}")
+    mostly = (_ENHANCEMENTS + [None])[variant % (len(_ENHANCEMENTS) + 1)]
+    partners = [_PARTNERS[(variant + k) % len(_PARTNERS)] for k in (0, 5)]
+    keys = [partners[0], key, partners[1]] if variant % 2 else [key, partners[0], partners[1]]
+    jokers = [_joker(rng, k, plain=variant % 3 == 0) for k in keys]
+    ranks = RANKS if variant % 4 else "".join(rng.sample(RANKS, 3))
+    hand = [_card(rng, i, plain=False, ranks=ranks, mostly=mostly) for i in range(8)]
+    settings = _search_settings(rng, len(hand))
+    settings["hands_left"] = 1 if variant % 2 else settings["hands_left"]
+    if variant % 3:
+        _enrich(rng, jokers, settings["money"])
+    return Case(zlib.crc32(f"{key}|target|{variant}".encode()), hand, jokers, _levels(rng), settings)
 
 
 def materialise(case: Case, typed: bool) -> tuple[list, list]:
@@ -299,4 +331,61 @@ def score_results(case: Case, typed: bool, plays: int = 3) -> list[tuple]:
         # The shop scores sample hands whose played list need not hold every scoring card.
         short = score_hand(*args, **{**common, "played_cards": played[:2]})
         out.append((candidate.hand_name, tuple(order), expected, rolled, detail, short))
+    return out
+
+
+# --- The compiled kernel on the same cases -------------------------------------
+
+_SEARCH_SETTINGS = ("max_select", "min_select", "required_hand", "required_card_indices",
+                    "excluded_hands", "hand_affinity")
+
+
+def _kernel_scorer(case: Case, jokers: list):
+    from balatro_bot.domain.scoring.kernel import KernelScorer
+    settings = {k: v for k, v in case.search.items() if k in _SCORE_SETTINGS}
+    return KernelScorer(case.levels, jokers, **settings)
+
+
+def kernel_search_result(case: Case, typed: bool) -> tuple[list[tuple], tuple | None]:
+    """search_result, answered by the compiled kernel."""
+    hand, jokers = materialise(case, typed)
+    limits = {k: v for k, v in case.search.items() if k in _SEARCH_SETTINGS}
+    scorer = _kernel_scorer(case, jokers)
+    return scorer.search(hand, **limits), scorer.best(hand, **limits)
+
+
+_BREAKDOWN_KEYS = ("pre_joker_chips", "pre_joker_mult", "joker_contributions",
+                   "post_joker_chips", "post_joker_mult", "total")
+
+
+def score_pairs(case: Case, typed: bool, plays: int = 3) -> list[tuple[tuple, tuple]]:
+    """score_results from both kernels: (Python's answer, the compiled kernel's) per play."""
+    hand, jokers = materialise(case, typed)
+    settings = {k: v for k, v in case.search.items() if k in _SCORE_SETTINGS}
+    every = enumerate_hands(hand, case.levels, jokers=jokers or None, **case.search)
+    scorer = _kernel_scorer(case, jokers)
+    rng = random.Random(case.seed)
+    out = []
+    for candidate in rng.sample(every, min(plays, len(every))):
+        indices = list(candidate.card_indices)
+        order = sort_play_order(indices, hand, jokers) if jokers else indices
+        played = [hand[i] for i in order]
+        held = [c for i, c in enumerate(hand) if i not in candidate.card_indices]
+        args = (candidate.hand_name, candidate.scoring_cards, case.levels)
+        common = dict(jokers=jokers or None, played_cards=played, held_cards=held, **settings)
+        detail = score_hand_detailed(*args, **common)
+        python = (
+            score_hand(*args, **common),
+            score_hand(*args, rng=random.Random(case.seed), **common),
+            {k: detail[k] for k in _BREAKDOWN_KEYS},
+            score_hand(*args, **{**common, "played_cards": played[:2]}),
+        )
+        name, scoring = candidate.hand_name, candidate.scoring_cards
+        kernel = (
+            scorer.score(name, scoring, played, held),
+            scorer.score(name, scoring, played, held, rng=random.Random(case.seed)),
+            scorer.breakdown(name, scoring, played, held),
+            scorer.score(name, scoring, played[:2], held),
+        )
+        out.append((python, kernel))
     return out
