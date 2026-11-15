@@ -63,25 +63,41 @@ def roster(jokers: list | None) -> Roster:
     return value
 
 
+def copy_target(joker_list: list, index: int) -> JokerLike | None:
+    """The joker whose effect the joker at *index* runs: itself, or for Blueprint and
+    Brainstorm the joker at the end of the copy chain (Blueprint copies its right
+    neighbour, Brainstorm the leftmost joker, and a copy of a copy joker follows
+    that one's target). None when the chain ends on nothing, on a debuffed or
+    copy-incompatible joker, or loops back on itself.
+    """
+    for _ in range(len(joker_list) + 1):
+        key = joker_key(joker_list[index])
+        if key == "j_blueprint":
+            index += 1
+        elif key == "j_brainstorm" and index != 0:
+            index = 0
+        elif key == "j_brainstorm":
+            return None
+        else:
+            return joker_list[index]
+        if index >= len(joker_list):
+            return None
+        target = joker_list[index]
+        if is_joker_debuffed(target) or joker_key(target) in BLUEPRINT_INCOMPATIBLE:
+            return None
+    return None
+
+
 def _build(joker_list: list) -> Roster:
     active = []
     resolved = []
     for i, j in enumerate(joker_list):
-        k = joker_key(j)
         if is_joker_debuffed(j):
             continue
-        active.append((k, j))
-        if k == "j_blueprint":
-            target = joker_list[i + 1] if i + 1 < len(joker_list) else None
-        elif k == "j_brainstorm":
-            target = joker_list[0] if joker_list[0] is not j else None
-        else:
-            resolved.append((k, j))
-            continue
-        if target is not None and not is_joker_debuffed(target):
-            tkey = joker_key(target)
-            if tkey not in BLUEPRINT_INCOMPATIBLE:
-                resolved.append((tkey, target))
+        active.append((joker_key(j), j))
+        target = copy_target(joker_list, i)
+        if target is not None:
+            resolved.append((joker_key(target), target))
     return Roster(
         active=tuple(active),
         active_keys=frozenset(k for k, _ in active),

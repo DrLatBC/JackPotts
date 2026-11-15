@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import (
-    card_rank, card_suit, card_suits, is_debuffed, is_joker_debuffed, _modifier, joker_key,
-)
+from balatro_bot.cards import card_rank, card_suit, card_suits, is_debuffed, _modifier, joker_key
 from balatro_bot.domain.models.joker import Joker
 from balatro_bot.constants import FACE_RANKS
 from balatro_bot.domain.models.card import Card
 from balatro_bot.joker_effects.parsers import _ability, _ab_chips, _ab_mult, _ab_xmult, current_counter
 from balatro_bot.joker_effects.context import ScoreContext, _hand_contains, retrigger_count
-from balatro_bot.scaling import BLUEPRINT_INCOMPATIBLE
+from balatro_bot.joker_effects.roster import copy_target
 
 if TYPE_CHECKING:
     from typing import Any
@@ -212,27 +210,22 @@ def _flower_pot(ctx: ScoreContext, j: dict) -> None:
         if len(natural_suits) + wild_count >= 4:
             ctx.mult *= _ability(j).get("extra", 3.0)
 
-def _copy_effect(ctx: ScoreContext, target: dict) -> None:
-    """Run the copied joker's effect. A debuffed or copy-incompatible joker gives nothing,
-    the same rule Roster.resolved applies to the per-card and held-card phases."""
+def _copy(ctx: ScoreContext, j: dict) -> None:
+    """Blueprint and Brainstorm: run the effect of the joker they end up copying
+    (roster.copy_target, the same rule the per-card and held-card phases use)."""
     # Import JOKER_EFFECTS lazily to avoid circular import
     from balatro_bot.joker_effects.registry import JOKER_EFFECTS
-    key = joker_key(target)
-    if is_joker_debuffed(target) or key in BLUEPRINT_INCOMPATIBLE:
-        return
-    effect = JOKER_EFFECTS.get(key)
-    if effect and effect is not _blueprint and effect is not _brainstorm:
-        effect(ctx, target)
-
-def _blueprint(ctx: ScoreContext, j: dict) -> None:
     for i, jk in enumerate(ctx.jokers):
-        if jk is j and i + 1 < len(ctx.jokers):
-            _copy_effect(ctx, ctx.jokers[i + 1])
+        if jk is j:
+            target = copy_target(ctx.jokers, i)
+            if target is not None:
+                effect = JOKER_EFFECTS.get(joker_key(target))
+                if effect:
+                    effect(ctx, target)
             break
 
-def _brainstorm(ctx: ScoreContext, j: dict) -> None:
-    if ctx.jokers and ctx.jokers[0] is not j:
-        _copy_effect(ctx, ctx.jokers[0])
+_blueprint = _copy
+_brainstorm = _copy
 
 def _drivers_license(ctx: ScoreContext, j: dict) -> None:
     ab = _ability(j)

@@ -152,19 +152,20 @@ def _noop(ctx: ScoreContext, j: dict) -> None:
     pass
 
 
-def retrigger_jokers(lineup: Roster) -> tuple[bool, bool, bool, bool, bool]:
-    """Which retrigger jokers the lineup holds: (hack, sock_and_buskin, hanging_chad, dusk, seltzer)."""
-    flags = lineup.derived.get("retrigger")
-    if flags is None:
-        keys = lineup.active_keys
-        flags = lineup.derived["retrigger"] = (
-            "j_hack" in keys,
-            "j_sock_and_buskin" in keys,
-            "j_hanging_chad" in keys,
-            "j_dusk" in keys,
-            "j_selzer" in keys,  # game API key is j_selzer (no second 't')
+def retrigger_jokers(lineup: Roster) -> tuple[int, int, int, int, int]:
+    """How many of each retrigger joker are in effect, copies by Blueprint and
+    Brainstorm included: (hack, sock_and_buskin, hanging_chad, dusk, seltzer)."""
+    counts = lineup.derived.get("retrigger")
+    if counts is None:
+        keys = [k for k, _ in lineup.resolved]
+        counts = lineup.derived["retrigger"] = (
+            keys.count("j_hack"),
+            keys.count("j_sock_and_buskin"),
+            keys.count("j_hanging_chad"),
+            keys.count("j_dusk"),
+            keys.count("j_selzer"),  # game API key is j_selzer (no second 't')
         )
-    return flags
+    return counts
 
 
 def first_played_scoring(ctx: ScoreContext) -> CardLike | None:
@@ -182,17 +183,15 @@ def retrigger_count(card: Card | dict, ctx: ScoreContext) -> int:
     if facts.debuffed:
         return 1
     hack, sock, chad, dusk, seltzer = retrigger_jokers(ctx.roster)
-    count = 1
-    if hack and facts.hack_rank:
-        count += 1
-    if sock and (facts.face or ctx.pareidolia):
-        count += 1
+    count = 1 + seltzer
+    if facts.hack_rank:
+        count += hack
+    if facts.face or ctx.pareidolia:
+        count += sock
     if chad and card is first_played_scoring(ctx):
-        count += 2
-    if dusk and ctx.hands_left == 1:
-        count += 1
-    if seltzer:
-        count += 1
+        count += 2 * chad
+    if ctx.hands_left == 1:
+        count += dusk
     if facts.red_seal:
         count += 1
     return count

@@ -250,8 +250,8 @@ class HandScorer:
             lineup, ctx.smeared, ctx.pareidolia, idol_rank, idol_suit, ancient_suit)
         self._retriggers = retrigger_jokers(lineup)
         self._every_card_retriggers = (
-            (1 if self._retriggers[3] and hands_left == 1 else 0)  # Dusk
-            + (1 if self._retriggers[4] else 0)                    # Seltzer
+            (self._retriggers[3] if hands_left == 1 else 0)  # Dusk
+            + self._retriggers[4]                            # Seltzer
         )
         self._held_jokers = _held_phase_jokers(lineup)
         self._tooth = blind_name == "The Tooth"
@@ -372,12 +372,12 @@ class HandScorer:
             is_first_face = False
             if not facts.debuffed:
                 triggers += every_card_retriggers
-                if hack and facts.hack_rank:
-                    triggers += 1
-                if sock and (facts.face or pareidolia):
-                    triggers += 1
+                if facts.hack_rank:
+                    triggers += hack
+                if facts.face or pareidolia:
+                    triggers += sock
                 if chad and card is chad_card:
-                    triggers += 2
+                    triggers += 2 * chad
                 if facts.red_seal:
                     triggers += 1
                 if not first_face_found and (pareidolia or facts.face):

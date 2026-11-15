@@ -838,3 +838,35 @@ class TestHolographicCardMult:
                "modifier": {"edition": "HOLO", "edition_mult": 0}, "state": []}
         assert card_edition_mult_value(raw) == 10
         assert card_edition_mult_value(card_from_dict(raw)) == 10
+
+
+class TestStackedRetriggersAndCopyChains:
+    """Each retrigger joker in effect retriggers, and a copy of a copy joker follows the chain."""
+
+    TWO = [card("2", "S")]
+    ACE = [card("A", "S")]
+
+    def test_two_hacks_retrigger_twice(self):
+        # High Card 5 chips; the 2 scores once plus once per Hack.
+        assert score_hand("High Card", self.TWO, jokers=[joker("j_hack")])[0] == 5 + 2 * 2
+        assert score_hand("High Card", self.TWO, jokers=[joker("j_hack"), joker("j_hack")])[0] == 5 + 2 * 3
+
+    def test_a_copied_hack_retriggers_again(self):
+        assert score_hand("High Card", self.TWO, jokers=[joker("j_blueprint"), joker("j_hack")])[0] == 5 + 2 * 3
+        assert score_hand("High Card", self.TWO, jokers=[joker("j_hack"), joker("j_brainstorm")])[0] == 5 + 2 * 3
+
+    def test_blueprint_copies_through_another_blueprint(self):
+        chain = [joker("j_blueprint"), joker("j_blueprint"), joker("j_joker")]
+        assert score_hand("High Card", self.ACE, jokers=chain) == (16, 13.0, 208)
+
+    def test_brainstorm_copies_through_a_leading_blueprint(self):
+        chain = [joker("j_blueprint"), joker("j_joker"), joker("j_brainstorm")]
+        assert score_hand("High Card", self.ACE, jokers=chain) == (16, 13.0, 208)
+
+    def test_copy_jokers_pointing_at_each_other_copy_nothing(self):
+        loop = [joker("j_blueprint"), joker("j_brainstorm")]
+        assert score_hand("High Card", self.ACE, jokers=loop) == score_hand("High Card", self.ACE, jokers=[])
+
+    def test_a_chain_ending_on_a_debuffed_joker_copies_nothing(self):
+        chain = [joker("j_blueprint"), joker("j_blueprint"), _debuffed(joker("j_joker"))]
+        assert score_hand("High Card", self.ACE, jokers=chain) == score_hand("High Card", self.ACE, jokers=[])
