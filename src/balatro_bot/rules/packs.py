@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from balatro_bot.actions import PackAction, Action, Wait
+from balatro_bot.actions import PackAction, RearrangeHand, Action, Wait
 from balatro_bot.cards import card_rank, card_suit, joker_key
 from balatro_bot.constants import (
     NO_TARGET_TAROTS, TARGETING_TAROTS, PLANET_HAND_MAP, PLANET_KEYS,
     SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
 )
 from balatro_bot.domain.policy.exploration import Choice, explorer
+from balatro_bot.domain.policy.targeting import clone_reorder
 from balatro_bot.strategy import card_lean, compute_strategy, JOKER_HAND_AFFINITY
 
 if TYPE_CHECKING:
@@ -260,6 +261,18 @@ class PickFromTarotPack:
         reason = self.last_decision["reason"]
 
         if best_idx is not None:
+            if targets and cards[best_idx].get("key") == "c_death":
+                # Death keeps the right-hand card. Reorder first; the pick is decided
+                # again, and recorded, on the next tick.
+                best, worst = targets
+                order = clone_reorder(best, worst, len(hand_cards))
+                if order is not None:
+                    self.last_decision = None
+                    return RearrangeHand(
+                        order=order,
+                        reason=f"rearrange for Death: move {hand_cards[best].get('label', '?')} "
+                               f"right of {hand_cards[worst].get('label', '?')}",
+                    )
             if targets:
                 return PackAction(card_index=best_idx, targets=targets, reason=reason)
             return PackAction(card_index=best_idx, reason=reason)

@@ -21,7 +21,7 @@ from balatro_bot.domain.scoring.search import best_hand
 from balatro_bot.strategy import LEAN_FLOOR
 from balatro_bot.domain.policy.targeting import (
     find_tarot_targets, find_gold_targets, find_enhancement_targets,
-    find_clone_targets,
+    find_clone_targets, clone_reorder,
 )
 
 if TYPE_CHECKING:
@@ -520,19 +520,16 @@ def _score_targeting_use(
     """Score and return action args for a targeting tarot."""
     # --- Immediate-use targeting (destroy, clone, stone, rank_up) ---
     if effect_type in IMMEDIATE_TARGETING:
-        # Death tarot: rearrange hand if needed
+        # Death keeps the right-hand card: put the best card right of the worst first.
         if effect_type == "clone":
             result = find_clone_targets(hand_cards, strat)
             if result is None:
                 return (0.0, None)
             best_idx, worst_idx = result
-            if best_idx > worst_idx:
-                order = list(range(len(hand_cards)))
-                order.remove(best_idx)
-                insert_pos = order.index(worst_idx)
-                order.insert(insert_pos, best_idx)
+            order = clone_reorder(best_idx, worst_idx, len(hand_cards))
+            if order is not None:
                 return (4.0, ("rearrange", order,
-                    f"rearrange for Death: move {hand_cards[best_idx].get('label','?')} left of {hand_cards[worst_idx].get('label','?')}"))
+                    f"rearrange for Death: move {hand_cards[best_idx].get('label','?')} right of {hand_cards[worst_idx].get('label','?')}"))
             return (4.0, ("use_target", idx, [best_idx, worst_idx],
                 f"Death: clone {hand_cards[best_idx].get('label','?')} onto {hand_cards[worst_idx].get('label','?')}"))
 

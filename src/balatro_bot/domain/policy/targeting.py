@@ -151,6 +151,18 @@ def find_clone_targets(hand_cards, strategy=None):
     return (best_idx, worst_idx)
 
 
+def clone_reorder(best_idx: int, worst_idx: int, hand_size: int) -> list[int] | None:
+    """Death turns the left selected card into the right one, so the card to copy has
+    to sit to the right of the card it replaces. Returns the hand order that moves the
+    best card to just right of the worst, or None when it is already to its right."""
+    if best_idx > worst_idx:
+        return None
+    order = list(range(hand_size))
+    order.remove(best_idx)
+    order.insert(order.index(worst_idx) + 1, best_idx)
+    return order
+
+
 def find_seal_targets(hand_cards, count, seal_type=None, strategy=None, current_best=None):
     """Pick targets for a seal-applying consumable.
 
