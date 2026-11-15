@@ -765,3 +765,29 @@ class TestValuationMemo:
         first = evaluate_joker_value(candidate, owned, self._LEVELS, ante=2, money=10)
         again = evaluate_joker_value(candidate, owned, self._LEVELS, ante=2, money=30)
         assert again == first
+
+
+class TestSampleOrder:
+    """Sampled hands depend on what the deck holds, not on the order its cards were read in."""
+
+    _HANDS = ("High Card", "Pair", "Two Pair", "Three of a Kind", "Straight", "Flush",
+              "Full House", "Four of a Kind")
+
+    def test_same_deck_in_another_card_order_gives_the_same_samples(self):
+        import random
+
+        from balatro_bot.domain.policy.shop_valuation import _get_hand_samples, clear_sample_cache
+
+        cards =[card(r, s) for r in "23456789TJQKA" for s in "HDCS"]
+        cards += [card("A", "S"), card("A", "H"), card("7", "S"), card("K", "S", "STEEL")]
+        shuffled = list(cards)
+        random.Random(7).shuffle(shuffled)
+
+        def samples(deck_cards):
+            clear_sample_cache()
+            deck = DeckProfile.from_cards(deck_cards)
+            return [[[(c.value.rank, c.value.suit, c.modifier.enhancement) for c in played]
+                     for _, played in _get_hand_samples(deck, hand, 32)]
+                    for hand in self._HANDS]
+
+        assert samples(cards) == samples(shuffled)

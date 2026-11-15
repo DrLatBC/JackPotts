@@ -250,7 +250,11 @@ _SAMPLING_ENHANCEMENTS: tuple[str, ...] = (
 
 def _deck_signature(dp: "DeckProfile | None") -> tuple:
     """Hashable fingerprint of a DeckProfile. Changes iff deck composition
-    changes; held constant across shop ticks on the same deck state."""
+    changes; held constant across shop ticks on the same deck state.
+
+    Sample caches are keyed on it, so the samplers must read a profile's tallies
+    in an order fixed by rank and suit, never in the order the dicts were built.
+    """
     if dp is None:
         return ("vanilla",)
     return (
@@ -294,8 +298,8 @@ def _rank_with_min(
     dp: "DeckProfile", min_copies: int, rng: random.Random,
     *, exclude: set[str] | None = None,
 ) -> str | None:
-    items = [r for r, c in dp.rank_counts.items()
-             if c >= min_copies and (exclude is None or r not in exclude)]
+    items = [r for r in _ALL_RANKS
+             if dp.rank_counts.get(r, 0) >= min_copies and (exclude is None or r not in exclude)]
     if not items:
         return None
     weights = [float(dp.rank_counts[r]) for r in items]
@@ -319,8 +323,8 @@ def _stratified_ranks(
     Returns [] if no rank satisfies min_copies. Output length is exactly n
     (or 0).
     """
-    items = [(r, c) for r, c in dp.rank_counts.items()
-             if c >= min_copies and (exclude is None or r not in exclude)]
+    items = [(r, dp.rank_counts[r]) for r in _ALL_RANKS
+             if dp.rank_counts.get(r, 0) >= min_copies and (exclude is None or r not in exclude)]
     if not items:
         return []
     total = sum(c for _, c in items)
@@ -346,7 +350,7 @@ def _stratified_ranks(
 
 
 def _suit_with_min(dp: "DeckProfile", min_copies: int, rng: random.Random) -> str | None:
-    items = [s for s, c in dp.suit_counts.items() if c >= min_copies]
+    items = [s for s in _ALL_SUITS if dp.suit_counts.get(s, 0) >= min_copies]
     if not items:
         return None
     weights = [float(dp.suit_counts[s]) for s in items]
@@ -558,7 +562,7 @@ def _sample_held_from_deck(
 # synthetic decks from blowing memory.
 _HAND_SAMPLE_CACHE: dict[tuple, list[tuple[list[Card], list[Card]]]] = {}
 _HELD_SAMPLE_CACHE: dict[tuple, list[list[Card]]] = {}
-_SAMPLE_CACHE_MAX = 2048
+_SAMPLE_CACHE_MAX = 256
 
 
 def _trim_cache(cache: dict) -> None:
