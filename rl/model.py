@@ -128,7 +128,7 @@ class Prepared:
         total = int(self.tok_start[-1])
         self.feat = np.zeros((total + 1, D_TOKEN), np.float32)  # the last row is padding
         # Per token: list (1-5), item id, rank, suit, enhancement, edition, seal.
-        self.cats = np.zeros((total + 1, 7), np.int64)
+        self.cats = np.zeros((total + 1, 7), np.int16)
         splits = a["splits"].astype(np.int64)
         for li, name in enumerate(_LISTS):
             rows = a[name]
@@ -190,7 +190,7 @@ class Prepared:
         return {
             "glob": torch.from_numpy(self.ex["glob"][idx]),
             "feat": torch.from_numpy(self.feat[at]),
-            "cats": torch.from_numpy(self.cats[at]),
+            "cats": torch.from_numpy(self.cats[at].astype(np.int64)),
             "pad": torch.from_numpy(~real),
             "type_mask": torch.from_numpy(self.ex["type_mask"][idx]),
         }

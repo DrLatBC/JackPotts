@@ -222,8 +222,10 @@ def say(line: str) -> None:
 
 
 def train(prep: Prepared, train_idx, held_idx, *, steps: int, batch: int, lr: float,
-          config: dict, seed: int = 0, seconds: float = 0.0, log=say):
-    """Train a new policy; returns it with the held-out measurements taken along the way."""
+          config: dict, seed: int = 0, seconds: float = 0.0, log=say, checkpoint=None):
+    """Train a new policy; returns it with the held-out measurements taken along the way.
+    ``checkpoint``, when given, is called with the policy and the step at every
+    measurement, so a long run that is cut off leaves its latest state behind."""
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     model = Policy(**config)
@@ -265,6 +267,8 @@ def train(prep: Prepared, train_idx, held_idx, *, steps: int, batch: int, lr: fl
             log(f"step {done:>6}  {elapsed:6.0f}s  train loss {running:.3f}  held-out loss "
                 f"{r['loss']:.3f}  type {r['action type']:.3f}  item {r['item']:.3f}  "
                 f"cards {r['cards']:.3f}  whole {r['whole action']:.3f}")
+            if checkpoint is not None:
+                checkpoint(model, done)
             if seconds and elapsed > seconds:
                 break
     return model, prior, history
@@ -292,15 +296,22 @@ def main() -> int:
         f"games ({len(train_idx):,} examples), {len(held_idx):,} held-out examples; "
         f"{steps} steps of {args.batch}")
     config = {"width": args.width, "layers": args.layers}
+    out = DATA / "models"
+
+    def checkpoint(model: Policy, step: int) -> None:
+        if args.name:
+            save_model(out / f"{args.name}.pt", model, config,
+                       {"training games": n_games, "steps": step})
+
     model, prior, history = train(prep, train_idx, held_idx, steps=steps, batch=args.batch,
-                                  lr=args.lr, config=config, seconds=args.seconds)
+                                  lr=args.lr, config=config, seconds=args.seconds,
+                                  checkpoint=checkpoint)
     result = report(measure(model, prep, held_idx, prior))
     result["training games"] = n_games
     result["training examples"] = int(len(train_idx))
     result["history"] = history
     print(json.dumps({k: v for k, v in result.items() if k != "history"}, indent=2))
     if args.name:
-        out = DATA / "models"
         save_model(out / f"{args.name}.pt", model, config,
                    {"training games": n_games, "steps": history[-1]["step"] if history else 0})
         (out / f"{args.name}.json").write_text(json.dumps(result, indent=2))
