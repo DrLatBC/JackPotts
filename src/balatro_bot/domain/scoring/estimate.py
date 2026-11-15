@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,11 @@ from balatro_bot.joker_effects.roster import Roster, roster
 
 if TYPE_CHECKING:
     from typing import Any
+
+
+# BALATRO_KERNEL=rust answers hand scoring and hand search from the compiled kernel
+# (domain/scoring/kernel.py) instead of the Python below.
+USE_KERNEL = os.environ.get("BALATRO_KERNEL", "").lower() == "rust"
 
 
 def _before_phase_jokers(lineup: Roster) -> tuple:
@@ -206,6 +212,16 @@ class HandScorer:
         self._money = money
         self._base: dict[str, tuple] = {}  # hand name -> (chips, mult) at its level
         self._facts_of = card_facts
+        self._kernel = None
+        if USE_KERNEL:
+            from balatro_bot.domain.scoring.kernel import KernelScorer
+            self._kernel = KernelScorer(
+                hand_levels, jokers, money=money, discards_left=discards_left, hands_left=hands_left,
+                joker_limit=joker_limit, ancient_suit=ancient_suit, deck_count=deck_count,
+                blind_name=blind_name, ox_most_played=ox_most_played,
+                idol_rank=idol_rank, idol_suit=idol_suit, lineup=lineup,
+            )
+            return
         if not jokers:
             return
 
@@ -293,6 +309,8 @@ class HandScorer:
         rng=None,
     ) -> tuple[int, int, int]:
         """Compute (chips, mult, total) for a hand."""
+        if self._kernel is not None:
+            return self._kernel.score(hand_name, scoring_cards, played_cards, held_cards, rng)
         if not self._jokers:
             facts_of = self._facts_of
             total_chips, total_mult = self._hand_base(hand_name)
@@ -530,6 +548,20 @@ def score_hand_detailed(
             if isinstance(mod, dict) and (mod.get("edition") or mod.get("enhancement")):
                 label += f"[{mod.get('edition','')}/{mod.get('enhancement','')}]"
         card_details.append((label, chips, mult, xmult))
+
+    if USE_KERNEL:
+        from balatro_bot.domain.scoring.kernel import KernelScorer
+        return {
+            "hand_name": hand_name,
+            "base_chips": base_chips, "base_mult": base_mult,
+            "card_details": card_details,
+            **KernelScorer(
+                hand_levels, jokers, money=money, discards_left=discards_left, hands_left=hands_left,
+                joker_limit=joker_limit, ancient_suit=ancient_suit, deck_count=deck_count,
+                blind_name=blind_name, ox_most_played=ox_most_played,
+                idol_rank=idol_rank, idol_suit=idol_suit,
+            ).breakdown(hand_name, scoring_cards, played_cards, held_cards),
+        }
 
     if not jokers:
         total_chips = base_chips

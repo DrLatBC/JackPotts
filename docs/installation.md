@@ -67,3 +67,27 @@ Simulator batches (`--sim`) run their bots on [PyPy](https://pypy.org) when `.ve
 ```powershell
 .venv-pypy\Scripts\python.exe -m pytest -q --ignore=tests/test_gui.py --ignore=tests/test_supervisor_job.py --ignore=tests/test_dashboard_client.py
 ```
+
+## Optional: the compiled scoring kernel
+
+`kernel/` holds hand search and scoring in Rust. With `BALATRO_KERNEL=rust` in the environment the bot asks it instead of the Python scorer; the two give the same answers (`tests/test_kernel_differential.py`), the compiled one about 85 times faster per search. Without the variable nothing changes.
+
+It needs Rust (`winget install --id Rustlang.Rustup -e`) and, on Windows, Visual Studio's "Desktop development with C++" workload with a Windows SDK. Build it into the bot's environment from the repo root:
+
+```powershell
+$env:VIRTUAL_ENV = "$PWD\.venv"
+.venv\Scripts\python.exe -m pip install maturin
+Set-Location kernel\py
+..\..\.venv\Scripts\maturin.exe develop --release
+Set-Location ..\..
+```
+
+Rebuild after any change under `kernel/`. Checks:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q tests/test_kernel_differential.py
+.venv\Scripts\python.exe scripts/kernel_soak.py targeted
+.venv\Scripts\python.exe scripts/kernel_mutations.py
+```
+
+The first compares both scorers on generated hands, the second does the same over every joker with every card enhancement, and the third plants bugs in the kernel to confirm those comparisons notice. The kernel runs on CPython only, so PyPy bots keep the Python scorer.

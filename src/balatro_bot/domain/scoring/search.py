@@ -14,6 +14,7 @@ from balatro_bot.constants import HAND_INFO
 
 from balatro_bot.domain.scoring.classify import classify_with_counts, scoring_cards_from_facts
 from balatro_bot.domain.scoring.chase import generate_chases
+from balatro_bot.domain.scoring import estimate
 from balatro_bot.domain.scoring.estimate import HandScorer
 from balatro_bot.domain.scoring.play_order import PlayOrderer
 from balatro_bot.joker_effects.roster import roster
@@ -161,6 +162,52 @@ def _scored_subsets(
         yield hand_name, indices, subset, scoring, chips, mult, total
 
 
+def _kernel_plays(
+    best_only: bool,
+    hand_cards: list[dict],
+    hand_levels: dict[str, dict] | None,
+    max_select: int,
+    min_select: int,
+    jokers: list[dict] | None,
+    money: int,
+    discards_left: int,
+    hands_left: int,
+    joker_limit: int,
+    required_hand: str | None,
+    required_card_indices: set[int] | None,
+    ancient_suit: str | None,
+    excluded_hands: set[str] | None,
+    deck_count: int,
+    blind_name: str,
+    ox_most_played: str | None,
+    idol_rank: str | None,
+    idol_suit: str | None,
+    hand_affinity: dict[str, float] | None,
+) -> list[HandCandidate]:
+    """The compiled kernel's answer: every allowed play best first, or just the best."""
+    from balatro_bot.domain.scoring.kernel import KernelScorer
+
+    scorer = KernelScorer(
+        hand_levels, jokers, money=money, discards_left=discards_left, hands_left=hands_left,
+        joker_limit=joker_limit, ancient_suit=ancient_suit, deck_count=deck_count,
+        blind_name=blind_name, ox_most_played=ox_most_played,
+        idol_rank=idol_rank, idol_suit=idol_suit,
+    )
+    limits = (max_select, min_select, required_hand, required_card_indices, excluded_hands, hand_affinity)
+    if best_only:
+        best = scorer.best(hand_cards, *limits)
+        found = [] if best is None else [best]
+    else:
+        found = scorer.search(hand_cards, *limits)
+    return [
+        HandCandidate(
+            hand_name, [hand_cards[i] for i in indices], list(indices),
+            [hand_cards[i] for i in scoring], chips, mult, total,
+        )
+        for hand_name, indices, chips, mult, total, scoring in found
+    ]
+
+
 def _rank_key(jokers: list[dict] | None, hand_affinity: dict[str, float] | None):
     """Sort key (lowest = best) over (hand_name, total, card count).
 
@@ -203,6 +250,13 @@ def enumerate_hands(
     tertiary sort tiebreaker — when two candidates score identically, prefer
     the one that matches the roster's strategic plan. Never overrides score.
     """
+    if estimate.USE_KERNEL:
+        return _kernel_plays(
+            False, hand_cards, hand_levels, max_select, min_select, jokers, money,
+            discards_left, hands_left, joker_limit, required_hand, required_card_indices,
+            ancient_suit, excluded_hands, deck_count, blind_name,
+            ox_most_played, idol_rank, idol_suit, hand_affinity,
+        )
     candidates = [
         HandCandidate(hand_name, subset, list(indices), scoring, chips, mult, total)
         for hand_name, indices, subset, scoring, chips, mult, total in _scored_subsets(
@@ -244,6 +298,14 @@ def best_hand(
     Keeps only the best play as it goes: the first one with the lowest rank key,
     which is the play a stable sort of all of them would put first.
     """
+    if estimate.USE_KERNEL:
+        found = _kernel_plays(
+            True, hand_cards, hand_levels, max_select, min_select, jokers, money,
+            discards_left, hands_left, joker_limit, required_hand, required_card_indices,
+            ancient_suit, excluded_hands, deck_count, blind_name,
+            ox_most_played, idol_rank, idol_suit, hand_affinity,
+        )
+        return found[0] if found else None
     key = _rank_key(jokers, hand_affinity)
     best = None
     best_key = None
