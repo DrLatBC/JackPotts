@@ -121,18 +121,59 @@ def _feed_log(slot, path, text):
     slot.poll_log_for_softlock()
 
 
-def test_status_follows_the_current_game_and_records_finished_ones(sup, tmp_path):
+GAME_WON = "16:21:30 [INFO] Game over: VICTORY | seed=7KQ2M9XA ante=9 round=25 | 301 actions taken\n"
+
+
+def test_status_summarises_finished_games_and_lists_the_wins(sup, tmp_path):
     slot = sup.slots[0]
     log_path = tmp_path / "game.log"
     _feed_log(slot, log_path, GAME_LOG)
-    live = sup._status("running")["slots"][0]
-    assert (live["ante"], live["blind"]) == (6, "The Serpent")
+    assert sup._status("running")["recent"] == {"games": 0, "wins": 0, "lost_at": {}}
 
-    _feed_log(slot, log_path, GAME_OVER)
+    _feed_log(slot, log_path, GAME_OVER + GAME_OVER.replace("ante=6", "ante=3") + GAME_OVER + GAME_WON)
     status = sup._status("running")
-    assert (status["slots"][0]["ante"], status["slots"][0]["blind"]) == (0, "")
-    [game] = status["recent_games"]
-    assert (game["name"], game["won"], game["ante"], game["seed"]) == (slot.name, False, 6, "UDABG75D")
+    assert status["recent"] == {"games": 4, "wins": 1, "lost_at": {6: 2, 3: 1}}
+    [win] = status["recent_wins"]
+    assert (win["name"], win["seed"], win["ante"]) == (slot.name, "7KQ2M9XA", 9)
+
+
+def test_summary_covers_only_the_latest_games(sup, tmp_path):
+    slot = sup.slots[0]
+    _feed_log(slot, tmp_path / "game.log", GAME_OVER * (supervisor.RECENT_WINDOW + 40))
+    assert sup._status("running")["recent"]["games"] == supervisor.RECENT_WINDOW
+
+
+def test_instance_speed_is_games_per_minute_over_the_last_minute(sup):
+    slot = sup.slots[0]
+    assert slot.games_per_minute(1000.0, 0) is None
+    assert slot.games_per_minute(1005.0, 5) is None
+    assert slot.games_per_minute(1010.0, 10) == 60.0
+    # A slow stretch moves the rate as the fast readings age out of the window.
+    assert slot.games_per_minute(1040.0, 20) == 30.0
+    assert slot.games_per_minute(1100.0, 21) == 1.0
+
+
+def test_only_a_running_instance_reports_a_speed(sup):
+    slot = sup.slots[0]
+    slot.state, slot.progress = "running", "3/10"
+    slot.rate_samples.append((0.0, 0))
+    assert sup._status("running")["slots"][0]["games_per_min"] is not None
+    slot.state = "done"
+    assert sup._status("running")["slots"][0]["games_per_min"] is None
+    assert not slot.rate_samples
+
+
+def test_finished_games_survive_a_pause(sup, tmp_path):
+    slot = sup.slots[0]
+    _feed_log(slot, tmp_path / "game.log", GAME_OVER + GAME_WON)
+    resumed = supervisor.Supervisor.from_pause_state(sup.pause_state(), sim_python=None)
+    status = resumed._status("running")
+    assert status["recent"] == {"games": 2, "wins": 1, "lost_at": {6: 1}}
+    assert [w["seed"] for w in status["recent_wins"]] == ["7KQ2M9XA"]
+
+
+def test_rate_format_keeps_slow_batches_readable():
+    assert (gui._fmt_rate(62.4), gui._fmt_rate(10.0), gui._fmt_rate(0.5)) == ("62", "10", "0.5")
 
 
 def test_panel_explore_switch_reaches_the_status_and_the_bot(sup, tmp_path, monkeypatch):
@@ -159,7 +200,7 @@ def test_relaunched_bot_gets_the_rate_file_and_reads_its_log_from_the_end(sup, t
     assert cmd[cmd.index("--explore") + 1] == "0.15"
     assert slot.log_offset == log_path.stat().st_size
     slot.poll_log_for_softlock()
-    assert not slot.finished_games
+    assert not slot.recent
 
 
 def test_bot_switches_rate_from_the_file_before_a_game(tmp_path, monkeypatch):

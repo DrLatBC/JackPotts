@@ -249,6 +249,11 @@ def _fmt_secs(secs: float) -> str:
     return f"{secs // 3600}h"
 
 
+def _fmt_rate(per_minute: float) -> str:
+    """Games per minute: whole numbers from ten up, one decimal below."""
+    return f"{per_minute:.0f}" if per_minute >= 10 else f"{per_minute:.1f}"
+
+
 def _win_pct(wins: int, games: int) -> str:
     return f"{100 * wins / games:.1f}%" if games else ""
 
@@ -411,7 +416,7 @@ class InstanceTable(tk.Canvas):
     # key, heading, width at 96 dpi (the 0-width column takes what's left)
     COLUMNS = [
         ("dot", "", 24), ("name", "NAME", 86), ("deck", "DECK", 112), ("explore", "EXPLORE", 80),
-        ("progress", "PROGRESS", 146), ("wins", "WINS", 80), ("game", "NOW", 124),
+        ("progress", "PROGRESS", 146), ("wins", "WINS", 80), ("speed", "GAMES/MIN", 92),
         ("idle", "IDLE", 46), ("issue", "LAST ISSUE", 0), ("remove", "", 28),
     ]
 
@@ -609,13 +614,11 @@ class InstanceTable(tk.Canvas):
             self.create_text(x["wins"] + self.bold.measure(str(wins)) + px(6), mid,
                              text=_win_pct(wins, done), anchor="w", fill=MUTED, font=self.small)
 
-        ante, blind = s.get("ante", 0), s.get("blind", "")
-        if ante:
-            self.create_text(x["game"], mid, text=f"A{ante}", anchor="w", fill=GOLD, font=self.bold)
-            self.create_text(x["game"] + px(30), mid, text=self._fit(blind, w["game"] - px(30), self.small),
-                             anchor="w", fill=TEXT, font=self.small)
+        speed = s.get("games_per_min")
+        if speed is None:
+            self.create_text(x["speed"], mid, text="—", anchor="w", fill=DIM, font=self.small)
         else:
-            self.create_text(x["game"], mid, text="—", anchor="w", fill=DIM, font=self.small)
+            self.create_text(x["speed"], mid, text=_fmt_rate(speed), anchor="w", fill=TEXT, font=self.bold)
 
         idle = s.get("idle_secs")
         if idle is not None:
@@ -655,13 +658,19 @@ class InstanceTable(tk.Canvas):
 
 
 class RecentGames(tk.Canvas):
-    """The latest finished games across every instance, newest first."""
+    """The last few hundred finished games in one picture: how many won, the ante
+    the rest ended at, and the latest wins by name and seed."""
+
+    LOWEST_TOP_ANTE = 8
 
     def __init__(self, master: tk.Misc, tooltip: Tooltip, **kw) -> None:
         super().__init__(master, bg=CARD, highlightthickness=0, bd=0, **kw)
-        self.head_h, self.row_h = px(26), px(26)
+        self.head_h, self.row_h, self.bar_h = px(26), px(26), px(19)
         self.tooltip = tooltip
-        self.games: list[dict] = []
+        self.recent: dict = {}
+        self.wins: list[dict] = []
+        # (top, bottom, tooltip text) per hoverable row, set by redraw.
+        self.hover: list[tuple[int, int, str]] = []
         self.font = tkfont.Font(family=FONT, size=10)
         self.bold = tkfont.Font(family=FONT, size=10, weight="bold")
         self.small = tkfont.Font(family=FONT, size=9)
@@ -669,42 +678,77 @@ class RecentGames(tk.Canvas):
         self.bind("<Motion>", self._motion)
         self.bind("<Leave>", lambda e: self.tooltip.hide())
 
-    def update_games(self, games: list[dict]) -> None:
-        self.games = games
+    def update_summary(self, recent: dict | None, wins: list[dict] | None) -> None:
+        self.recent, self.wins = recent or {}, wins or []
         self.redraw()
 
     def _motion(self, e: tk.Event) -> None:
-        row = (e.y - self.head_h) // self.row_h
-        if e.y >= self.head_h and row < len(self.games):
-            g = self.games[row]
-            self.tooltip.show(f"{'Win' if g['won'] else 'Loss'} at ante {g['ante']} · seed {g['seed']}",
-                              e.x_root, e.y_root)
-        else:
-            self.tooltip.hide()
+        for top, bottom, text in self.hover:
+            if top <= e.y < bottom:
+                self.tooltip.show(text, e.x_root, e.y_root)
+                return
+        self.tooltip.hide()
+
+    def _heading(self, top: int, text: str) -> int:
+        """A section heading with its rule; returns the y below it."""
+        width = self.winfo_width()
+        self.create_text(px(12), top + self.head_h // 2 + px(2), text=text, anchor="w", fill=MUTED,
+                         font=(FONT, 8, "bold"))
+        self.create_line(px(8), top + self.head_h, width - px(8), top + self.head_h, fill=BORDER)
+        return top + self.head_h
 
     def redraw(self) -> None:
         self.delete("all")
-        width = self.winfo_width()
-        self.create_text(px(12), self.head_h // 2 + px(2), text="RECENT GAMES", anchor="w", fill=MUTED,
-                         font=(FONT, 8, "bold"))
-        self.create_line(px(8), self.head_h, width - px(8), self.head_h, fill=BORDER)
-        if not self.games:
-            self.create_text(width // 2, self.head_h + px(34), text="None yet", fill=DIM, font=(FONT, 10))
+        self.hover = []
+        width, height = self.winfo_width(), self.winfo_height()
+        games = self.recent.get("games", 0)
+        y = self._heading(0, f"LAST {games:,} GAMES" if games else "RECENT GAMES")
+        if not games:
+            self.create_text(width // 2, y + px(34), text="None yet", fill=DIM, font=(FONT, 10))
+            return
+
+        wins = self.recent.get("wins", 0)
+        mid = y + self.row_h // 2
+        r = px(4)
+        self.create_oval(px(14), mid - r, px(14) + 2 * r, mid + r, fill=GOLD if wins else DIM, outline="")
+        self.create_text(px(32), mid, text=f"{wins:,} won", anchor="w", fill=GOLD if wins else MUTED,
+                         font=self.bold if wins else self.font)
+        self.create_text(width - px(12), mid, text=_win_pct(wins, games), anchor="e", fill=MUTED,
+                         font=self.small)
+        y += self.row_h
+
+        # One bar per ante a game ended at, deepest first; the longest bar fills the row.
+        lost_at = {int(ante): count for ante, count in self.recent.get("lost_at", {}).items()}
+        most = max(lost_at.values(), default=0)
+        left, right = px(40), width - px(46)
+        for ante in range(max(self.LOWEST_TOP_ANTE, *lost_at, 0), 0, -1):
+            count = lost_at.get(ante, 0)
+            mid = y + self.bar_h // 2
+            self.create_text(px(14), mid, text=f"A{ante}", anchor="w", fill=MUTED if count else DIM,
+                             font=self.small)
+            if count:
+                length = max(px(2), round((right - left) * count / most))
+                self.create_rectangle(left, mid - px(4), left + length, mid + px(4), fill=MUTED, width=0)
+            self.create_text(width - px(12), mid, text=f"{count:,}" if count else "", anchor="e",
+                             fill=TEXT, font=self.small)
+            self.hover.append((y, y + self.bar_h, f"{count:,} of {games:,} ended at ante {ante}"))
+            y += self.bar_h
+
+        y = self._heading(y + px(4), "LATEST WINS")
+        if not self.wins:
+            self.create_text(width // 2, y + px(24), text="None yet", fill=DIM, font=(FONT, 10))
             return
         now = time.time()
-        r = px(4)
-        for i, g in enumerate(self.games):
-            mid = self.head_h + i * self.row_h + self.row_h // 2
-            if mid + self.row_h // 2 > self.winfo_height():
+        for g in self.wins:
+            if y + self.row_h > height:
                 break
-            won = g["won"]
-            self.create_oval(px(14), mid - r, px(14) + 2 * r, mid + r, fill=GOLD if won else DIM, outline="")
-            self.create_text(px(32), mid, text=g["name"], anchor="w", fill=GOLD if won else TEXT,
-                             font=self.bold if won else self.font)
-            self.create_text(width - px(56), mid, text=f"A{g['ante']}", anchor="e",
-                             fill=GOLD if won else MUTED, font=self.small)
+            mid = y + self.row_h // 2
+            self.create_text(px(14), mid, text=g["name"], anchor="w", fill=GOLD, font=self.bold)
+            self.create_text(width - px(44), mid, text=g["seed"], anchor="e", fill=MUTED, font=self.small)
             self.create_text(width - px(12), mid, text=_fmt_secs(now - g["time"]), anchor="e",
                              fill=DIM, font=self.small)
+            self.hover.append((y, y + self.row_h, f"{g['name']} won · seed {g['seed']}"))
+            y += self.row_h
 
 
 class ControlPanel:
@@ -1122,7 +1166,8 @@ class ControlPanel:
         self.table.empty_text = {"starting": "Starting…", "stopping": "Stopping…",
                                  "outside": "Running outside this panel"}.get(phase, "No batch running")
         self.table.update_status(shown)
-        self.feed.update_games(shown.get("recent_games", []) if shown else [])
+        self.feed.update_summary(shown.get("recent") if shown else None,
+                                 shown.get("recent_wins") if shown else None)
         self._fill_stats(shown)
         self._fill_mini(shown, phase)
         self.footer.set({

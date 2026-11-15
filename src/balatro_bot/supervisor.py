@@ -262,12 +262,11 @@ _MAX_PERIOD = 4  # check cycles of period 1, 2, 3, 4
 _STALL_TIMEOUT = 600  # seconds without a new action seq before declaring stuck
 
 _ACTION_SEQ_RE = re.compile(r"\[#(\d+)\]")
-_NEW_GAME_RE = re.compile(r"Started new game: ")
-_ANTE_RE = re.compile(r"\[ANTE (\d+)\]")
-_BLIND_RE = re.compile(r"Blind: (.+?) \(need ")
 _GAME_OVER_RE = re.compile(r"Game over: (VICTORY|DEFEAT).*?seed=(\S+) ante=(\d+)")
 _EXPLORE_RATE_RE = re.compile(r"Explore rate: ([\d.]+)")
-RECENT_GAMES = 15
+RECENT_WINDOW = 300  # finished games the panel's summary covers
+RECENT_WINS = 12
+RATE_WINDOW = 60.0   # seconds an instance's games-per-minute is measured over
 
 
 def _has_repeating_cycle(lines: list[str]) -> bool:
@@ -321,9 +320,11 @@ class Slot:
     explore_rate: float = 0.0
     # Rate the game in progress started with.
     explore_active: float = 0.0
-    ante: int = 0
-    blind: str = ""
-    finished_games: deque = field(default_factory=lambda: deque(maxlen=RECENT_GAMES))
+    # [time, ante, won] per finished game, and the wins among them in full.
+    recent: deque = field(default_factory=lambda: deque(maxlen=RECENT_WINDOW))
+    recent_wins: deque = field(default_factory=lambda: deque(maxlen=RECENT_WINS))
+    # (time, games completed) readings from the last RATE_WINDOW seconds.
+    rate_samples: deque = field(default_factory=deque)
 
     @property
     def explore_file(self) -> Path:
@@ -386,21 +387,28 @@ class Slot:
             log.warning("%s (port %d): could not write explore rate: %s", self.name, self.port, e)
 
     def _track_game(self, line: str) -> None:
-        """Follow the current game's ante and blind, and record each finished game."""
-        if _NEW_GAME_RE.search(line):
-            self.ante, self.blind = 1, ""
-        elif m := _ANTE_RE.search(line):
-            self.ante = int(m.group(1))
-        elif m := _BLIND_RE.search(line):
-            self.blind = m.group(1)
-        elif m := _EXPLORE_RATE_RE.search(line):
+        """Follow the explore rate in use and record each finished game."""
+        if m := _EXPLORE_RATE_RE.search(line):
             self.explore_active = float(m.group(1))
         elif m := _GAME_OVER_RE.search(line):
-            self.finished_games.append({
-                "name": self.name, "port": self.port, "won": m.group(1) == "VICTORY",
-                "seed": m.group(2), "ante": int(m.group(3)), "time": time.time(),
-            })
-            self.ante, self.blind = 0, ""
+            won, ante, now = m.group(1) == "VICTORY", int(m.group(3)), time.time()
+            self.recent.append([now, ante, won])
+            if won:
+                self.recent_wins.append({
+                    "name": self.name, "port": self.port, "seed": m.group(2), "ante": ante, "time": now,
+                })
+
+    def games_per_minute(self, now: float, completed: int) -> float | None:
+        """Games finished per minute over the last RATE_WINDOW seconds; None until
+        ten seconds of readings are in."""
+        samples = self.rate_samples
+        samples.append((now, completed))
+        while len(samples) > 2 and samples[1][0] <= now - RATE_WINDOW:
+            samples.popleft()
+        since, then = samples[0]
+        if now - since < 10:
+            return None
+        return round(60 * (completed - then) / (now - since), 1)
 
     def read_wins(self, session_num: int) -> None:
         try:
@@ -601,7 +609,7 @@ class Supervisor:
                 "port": s.port, "name": s.name, "deck": s.deck, "stake": s.stake,
                 "explore_rate": s.explore_rate, "restarts": s.restarts, "last_reason": s.last_reason,
                 "state": s.state if s.state in ("done", "removed") else "stopped",
-                "finished_games": list(s.finished_games),
+                "recent": list(s.recent), "recent_wins": list(s.recent_wins),
             } for s in self.slots],
         }
 
@@ -615,7 +623,8 @@ class Supervisor:
             slot = Slot(port=s["port"], name=s["name"], deck=s["deck"], stake=s["stake"],
                         explore_rate=s["explore_rate"], restarts=s["restarts"],
                         last_reason=s["last_reason"], state=s["state"])
-            slot.finished_games.extend(s["finished_games"])
+            slot.recent.extend(s.get("recent", []))
+            slot.recent_wins.extend(s.get("recent_wins", []))
             sup.slots.append(slot)
         sup.session_num = state["session_num"]
         sup.dashboard_batch_id = state["dashboard_batch_id"]
@@ -813,7 +822,6 @@ class Supervisor:
         if slot.explore_rate > 0:
             cmd.extend(["--explore", str(slot.explore_rate)])
         slot.explore_active = slot.explore_rate
-        slot.ante, slot.blind = 0, ""
         slot.bot_proc = subprocess.Popen(
             cmd,
             env={**os.environ, "BALATRO_KERNEL": "rust" if self.kernel else ""},
@@ -919,7 +927,6 @@ class Supervisor:
             return
         slot.kill_pair()
         slot.state = "removed"
-        slot.ante, slot.blind = 0, ""
         log.info("%s (port %d): removed", slot.name, slot.port)
 
     def apply_commands(self) -> None:
@@ -986,6 +993,12 @@ class Supervisor:
             slot.read_wins(self.session_num)
             slot.read_explore_rate()
             last_action = slot.last_action_seq_time or slot.bot_launch_time
+            completed = int(slot.progress.split("/")[0]) if "/" in slot.progress else 0
+            if slot.state == "running":
+                games_per_min = slot.games_per_minute(now, completed)
+            else:
+                games_per_min = None
+                slot.rate_samples.clear()
             slots.append({
                 "port": slot.port,
                 "name": slot.name,
@@ -993,13 +1006,12 @@ class Supervisor:
                 "stake": slot.stake,
                 "explore_rate": slot.explore_rate,
                 "explore_active": slot.explore_active,
-                "ante": slot.ante,
-                "blind": slot.blind,
+                "games_per_min": games_per_min,
                 "idle_secs": int(now - last_action) if slot.state == "running" and last_action else None,
                 "log": str(slot.log_file) if slot.log_file else "",
                 "state": slot.state,
                 "progress": slot.progress,
-                "games_completed": int(slot.progress.split("/")[0]) if "/" in slot.progress else 0,
+                "games_completed": completed,
                 "wins": slot.wins,
                 "restarts": slot.restarts,
                 "last_reason": slot.last_reason,
@@ -1010,6 +1022,11 @@ class Supervisor:
         elapsed = time.time() - self.session_start if self.session_start else 0
         rate = completed / (elapsed / 3600) if elapsed > 30 and completed > 0 else 0.0
         eta_secs = int((total_expected - completed) / (rate / 3600)) if rate > 0 else None
+        recent = sorted((g for s in self.slots for g in s.recent), reverse=True)[:RECENT_WINDOW]
+        lost_at: dict[int, int] = {}
+        for _, ante, won in recent:
+            if not won:
+                lost_at[ante] = lost_at.get(ante, 0) + 1
         return {
             "phase": phase,
             "pid": os.getpid(),
@@ -1024,8 +1041,11 @@ class Supervisor:
             "eta_secs": eta_secs,
             "explore_rate": self.explore_rate,
             "stall_secs": _STALL_TIMEOUT,
-            "recent_games": sorted((g for s in self.slots for g in s.finished_games),
-                                   key=lambda g: g["time"], reverse=True)[:RECENT_GAMES],
+            # The last RECENT_WINDOW finished games: how many, how many won, and the
+            # ante each of the rest ended at.
+            "recent": {"games": len(recent), "wins": sum(1 for g in recent if g[2]), "lost_at": lost_at},
+            "recent_wins": sorted((g for s in self.slots for g in s.recent_wins),
+                                  key=lambda g: g["time"], reverse=True)[:RECENT_WINS],
         }
 
     def _write_status(self, status: dict) -> None:
@@ -1164,7 +1184,7 @@ class Supervisor:
         if self.paused:
             # Counts, logs and the dashboard batch stay open for --resume.
             for slot in self.live_slots():
-                slot.state, slot.ante, slot.blind = "stopped", 0, ""
+                slot.state = "stopped"
             self._write_status({**self._status("paused"), "resume": self.pause_state()})
             print("  Batch paused.")
             return
