@@ -15,12 +15,15 @@ import json
 import math
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from jackdaw.core.game import IllegalActionError
+from jackdaw.env.action_space import ActionType
 
 from rl import dataset
 from rl.model import Policy, Prepared, choose
+from rl.ordering import put_in_order
 from rl.playback import env_view, make_env, read_seeds
 from rl.train import HELDOUT, load_model
 
@@ -31,9 +34,11 @@ PAST = (1, 2, 4, 6)
 
 
 def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64,
-         max_steps: int = MAX_STEPS) -> list[dict]:
+         max_steps: int = MAX_STEPS, order_plays: bool = True) -> list[dict]:
     """Play each ``(seed, deck, stake)`` to its end. Per game: whether it was won, the
-    final ante (9 for a win), the steps taken, and why it was cut short, if it was."""
+    final ante (9 for a win), the steps taken, and why it was cut short, if it was.
+    ``order_plays`` plays the chosen cards in the bot's left-to-right order
+    (``rl.ordering``); without it they score in hand order."""
     results: list[dict] = []
     waiting = list(reversed(games))
     active: list[dict] = []
@@ -48,6 +53,9 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
         still = []
         for slot, action in zip(active, actions):
             cut = None
+            if order_plays and action.action_type == ActionType.PlayHand:
+                action = replace(
+                    action, card_target=put_in_order(slot["info"]["game"], action.card_target))
             try:
                 _, terminated, truncated, _, info = slot["env"].step(action)
             except IllegalActionError as e:
@@ -121,6 +129,8 @@ def main() -> int:
     ap.add_argument("--shards", default=str(DATA / "shards"))
     ap.add_argument("--games", type=int, default=0, help="play only this many held-out seeds")
     ap.add_argument("--parallel", type=int, default=64)
+    ap.add_argument("--hand-order", action="store_true",
+                    help="play the chosen cards in hand order, not the bot's play order")
     args = ap.parse_args()
 
     model, meta = load_model(DATA / "models" / f"{args.name}.pt")
@@ -129,12 +139,13 @@ def main() -> int:
     seeds = sorted(bot)[:args.games or None]
     started = time.perf_counter()
     rows = play(model, [(s, bot[s]["deck"], bot[s]["stake"]) for s in seeds],
-                parallel=args.parallel)
+                parallel=args.parallel, order_plays=not args.hand_order)
     rows.sort(key=lambda r: r["seed"])
     bot_rows = [bot[s] for s in seeds]
     steps = sum(r["steps"] for r in rows)
+    how = "hand order" if args.hand_order else "the bot's play order"
     print(f"model {args.name} (trained on {meta['training games']} games) played {len(rows)} "
-          f"held-out seeds, {steps:,} steps, in {time.perf_counter() - started:.0f}s\n")
+          f"held-out seeds in {how}, {steps:,} steps, in {time.perf_counter() - started:.0f}s\n")
     print(table(rows, bot_rows))
     cuts: dict[str, int] = {}
     for r in rows:
@@ -149,11 +160,11 @@ def main() -> int:
     print(f"\nseeds won by both: {both}; by the model only: "
           f"{sum(r['won'] for r in rows) - both}; by the bot only: "
           f"{sum(b['won'] for b in bot_rows) - both}")
-    out = {"model": args.name, "meta": meta, "model summary": summary(rows),
+    out = {"model": args.name, "meta": meta, "play order": how, "model summary": summary(rows),
            "bot summary": summary(bot_rows), "cut short": cuts,
            "games": [{**r, "bot ante": b["ante"], "bot won": b["won"]}
                      for r, b in zip(rows, bot_rows)]}
-    path = DATA / "models" / f"{args.name}_eval.json"
+    path = DATA / "models" / f"{args.name}_eval{'_hand_order' if args.hand_order else ''}.json"
     path.write_text(json.dumps(out, indent=2))
     print(f"saved {path}")
     return 0
