@@ -870,3 +870,16 @@ class TestStackedRetriggersAndCopyChains:
     def test_a_chain_ending_on_a_debuffed_joker_copies_nothing(self):
         chain = [joker("j_blueprint"), joker("j_blueprint"), _debuffed(joker("j_joker"))]
         assert score_hand("High Card", self.ACE, jokers=chain) == score_hand("High Card", self.ACE, jokers=[])
+
+
+class TestMidasThenVampire:
+    def test_a_card_both_jokers_change_still_scores_in_its_played_position(self):
+        """Midas turns the Steel Jack Gold, Vampire strips it: it scores first, as played."""
+        jack = dc_replace(card("J", "C", "STEEL"), modifier=dc_replace(card("J", "C", "STEEL").modifier, edition="POLYCHROME"))
+        eight = dc_replace(card("8", "C"), modifier=dc_replace(card("8", "C").modifier, edition="HOLO"))
+        played = [jack, eight]
+        jokers = [joker("j_midas_mask"), _joker_with_ability("j_vampire", {"x_mult": 1.0, "extra": 0.1})]
+        chips, mult, _ = score_hand("Pair", played, jokers=jokers, played_cards=played)
+        # Pair 10 chips x 2 mult. Jack: x1.5 -> 3. Eight: +10 -> 13. Vampire strips one card: x1.1.
+        assert chips == 10 + 10 + 8
+        assert mult == (2 * 1.5 + 10) * 1.1

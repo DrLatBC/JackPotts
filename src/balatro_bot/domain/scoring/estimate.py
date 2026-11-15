@@ -147,9 +147,10 @@ def _apply_before_phase(scoring_cards, played_cards, lineup, pareidolia=False):
     effective_played = played_cards
     if remap and played_cards is not None:
         def _get_remapped(c):
+            # A card changed twice (Midas, then Vampire) follows both replacements.
             for orig, replacement in remap:
                 if c is orig:
-                    return replacement
+                    c = replacement
             return c
         effective_played = [_get_remapped(c) for c in played_cards]
 
