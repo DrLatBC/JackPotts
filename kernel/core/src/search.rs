@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use crate::card::Card;
 use crate::hands::{classify, rank_counts, scoring_cards, HAND_COUNT};
-use crate::lineup::{Lineup, Play, MAX_CARDS};
+use crate::lineup::{Lineup, Play, MAX_CARDS, MAX_HAND};
 
 /// What the round allows a play to be.
 #[derive(Clone, Debug)]
@@ -19,7 +19,7 @@ pub struct Constraints {
     /// The Eye: bit per hand type already used.
     pub excluded_hands: u16,
     /// Cerulean Bell: bit per hand position that must be played.
-    pub required_cards: u16,
+    pub required_cards: u32,
     /// A tie-break weight per hand type, when the roster has a plan.
     pub affinity: Option<[f64; HAND_COUNT]>,
 }
@@ -35,7 +35,7 @@ impl Default for Constraints {
 pub struct Found {
     pub hand_id: u8,
     /// Bit per hand position played.
-    pub cards: u16,
+    pub cards: u32,
     /// Hand positions that score, in scoring order, and how many.
     pub scoring: [u8; 8],
     pub scoring_len: u8,
@@ -49,7 +49,7 @@ type Subset = (u8, [u8; 5]);
 /// Every choice of 1 to 5 positions out of `n`, smallest first, in the order
 /// Python's `itertools.combinations` gives them.
 fn subsets(n: usize) -> &'static [Subset] {
-    static CACHE: [OnceLock<Vec<Subset>>; MAX_CARDS + 1] = [const { OnceLock::new() }; MAX_CARDS + 1];
+    static CACHE: [OnceLock<Vec<Subset>>; MAX_HAND + 1] = [const { OnceLock::new() }; MAX_HAND + 1];
     CACHE[n].get_or_init(|| {
         let mut out = Vec::new();
         for size in 1..=5.min(n) {
@@ -104,21 +104,30 @@ impl Lineup {
         let picked = scoring_cards(subset, hand_id, &self.rules, &counts);
 
         // Without jokers the cards score as listed and held cards are not counted.
+        // The held cards of an ordinary hand fit a fixed buffer; a larger hand's go on the heap.
         let mut order = [0u8; 5];
-        let mut held = [Card::default(); MAX_CARDS];
+        let mut held_fixed = [Card::default(); MAX_CARDS];
+        let mut held_large = Vec::new();
         let mut held_count = 0;
-        let played_bits = positions.iter().fold(0u16, |m, &p| m | 1 << p);
+        let large = hand.cards.len() > MAX_CARDS;
+        let played_bits = positions.iter().fold(0u32, |m, &p| m | 1 << p);
         if self.no_jokers {
             order[..n].copy_from_slice(positions);
         } else {
             self.play_order(hand.cards, positions, &mut order);
             for (i, card) in hand.cards.iter().enumerate() {
-                if played_bits & (1 << i) == 0 {
-                    held[held_count] = *card;
+                if played_bits & (1 << i) != 0 {
+                    continue;
+                }
+                if large {
+                    held_large.push(*card);
+                } else {
+                    held_fixed[held_count] = *card;
                     held_count += 1;
                 }
             }
         }
+        let held: &[Card] = if large { &held_large } else { &held_fixed[..held_count] };
 
         let variants = self.has_before_phase();
         let mut cards = [Card::default(); 5];
@@ -147,7 +156,7 @@ impl Lineup {
             played_count: n,
             scoring: &scoring[..picked.len()],
             in_scoring,
-            held: &held[..held_count],
+            held,
             gold: &gold[..n],
             plain: &plain[..n],
         };
@@ -169,7 +178,7 @@ impl Lineup {
             .iter()
             .filter(move |(size, _)| (limits.min_select..=limits.max_select).contains(&(*size as usize)))
             .filter(move |(size, positions)| {
-                let bits = positions[..*size as usize].iter().fold(0u16, |m, &p| m | 1 << p);
+                let bits = positions[..*size as usize].iter().fold(0u32, |m, &p| m | 1 << p);
                 bits & limits.required_cards == limits.required_cards
             })
             .filter_map(move |(size, positions)| self.score_subset(hand, &positions[..*size as usize], limits))

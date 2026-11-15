@@ -26,6 +26,46 @@ def test_search_matches(typed):
         assert kernel_search_result(case, typed) == search_result(case, typed), seed
 
 
+def test_hands_over_sixteen_cards_match():
+    """Turtle Bean, Juggler and the hand-size vouchers take a hand past sixteen cards."""
+    import random
+
+    from tests.kernel_cases import _kernel_scorer, materialise
+
+    sizes = [17, 17, 18, 19, 20, 22]
+    high_position = 0
+    for seed in range(16):
+        case = random_case(seed, sizes)
+        size = len(case.hand)
+        if seed % 2:
+            # The forced card sits past the sixteenth place.
+            case.search["required_card_indices"] = {random.Random(seed).randrange(16, size)}
+            high_position += 1
+        typed = seed % 3 == 0
+        assert kernel_search_result(case, typed) == search_result(case, typed), (seed, size)
+        if seed < 6:
+            for python, kernel in score_pairs(case, typed):
+                assert kernel == python, (seed, size)
+    assert high_position >= 8
+
+    # The largest hand the kernel takes, and the discard sampling's batch call.
+    case = random_case(1, [32])
+    hand, jokers = materialise(case, typed=True)
+    scorer = _kernel_scorer(case, jokers)
+    found = scorer.best(hand)
+    assert found is not None and max(found[1]) < 32
+    assert scorer.best_totals([hand]) == [found[4]]
+
+
+def test_a_hand_past_the_limit_is_refused():
+    from tests.kernel_cases import _kernel_scorer, materialise
+
+    case = random_case(3, [33])
+    hand, jokers = materialise(case, typed=True)
+    with pytest.raises(ValueError, match="too many cards"):
+        _kernel_scorer(case, jokers).best(hand)
+
+
 def test_joker_pairs_match():
     keys = SCORING_KEYS[::9]
     for first in keys:

@@ -211,9 +211,12 @@ def _enrich(rng: random.Random, jokers: list[dict], money: int) -> None:
     })
 
 
-def random_case(seed: int) -> Case:
+HAND_SIZES = [1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 9, 9, 10]
+
+
+def random_case(seed: int, hand_sizes: list[int] = HAND_SIZES) -> Case:
     rng = random.Random(seed)
-    hand_size = rng.choice([1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 9, 9, 10])
+    hand_size = rng.choice(hand_sizes)
     plain_cards = rng.random() < 0.25
     # A third of the hands draw from few ranks or suits, so sets, flushes and
     # five of a kind turn up as often as junk.

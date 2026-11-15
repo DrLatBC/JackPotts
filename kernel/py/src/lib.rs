@@ -10,7 +10,7 @@ use jackpotts_kernel_core as core;
 use jackpotts_kernel_core::card::{unpack, Card, CARD_BYTES};
 use jackpotts_kernel_core::hands::{Rules, HAND_COUNT};
 use jackpotts_kernel_core::jokers::{Ability, Blind, JokerSpec, Level, Rolls, Surroundings};
-use jackpotts_kernel_core::lineup::{LineupSpec, Play, Step, MAX_CARDS};
+use jackpotts_kernel_core::lineup::{LineupSpec, Play, Step, MAX_CARDS, MAX_HAND};
 use jackpotts_kernel_core::search::{Constraints, Found, Hand};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -36,11 +36,17 @@ fn pack_card<'py>(
     PyBytes::new(py, &card.to_bytes())
 }
 
-fn cards(bytes: &[u8]) -> PyResult<Vec<Card>> {
-    if bytes.len() % CARD_BYTES != 0 || bytes.len() / CARD_BYTES > MAX_CARDS {
+/// Card records, `limit` at most.
+fn cards_within(bytes: &[u8], limit: usize) -> PyResult<Vec<Card>> {
+    if bytes.len() % CARD_BYTES != 0 || bytes.len() / CARD_BYTES > limit {
         return Err(PyValueError::new_err("not a whole number of card records, or too many cards"));
     }
     Ok(unpack(bytes))
+}
+
+/// A hand, or cards taken from one: its held cards, its Gold and plain variants.
+fn cards(bytes: &[u8]) -> PyResult<Vec<Card>> {
+    cards_within(bytes, MAX_HAND)
 }
 
 /// Dice drawn from the Python random generator the caller passed.
@@ -78,7 +84,7 @@ type FlagsTuple = (bool, bool, bool, bool, bool, bool, bool, bool);
 /// positions, scoring bits, held, gold, plain).
 type PlayTuple = (u8, PyBackedBytes, usize, PyBackedBytes, u16, PyBackedBytes, PyBackedBytes, PyBackedBytes);
 /// (hand id, played bits, scoring positions, chips, mult, total)
-type FoundTuple<'py> = (u8, u16, Bound<'py, PyBytes>, f64, f64, f64);
+type FoundTuple<'py> = (u8, u32, Bound<'py, PyBytes>, f64, f64, f64);
 
 fn found_tuple<'py>(py: Python<'py>, found: &Found) -> FoundTuple<'py> {
     let scoring = PyBytes::new(py, &found.scoring[..found.scoring_len as usize]);
@@ -104,8 +110,8 @@ impl Lineup {
         plain: &[u8],
         run: impl FnOnce(&Play) -> T,
     ) -> PyResult<T> {
-        let all = cards(played_and_extra)?;
-        let (held, gold, plain) = (cards(held)?, cards(gold)?, cards(plain)?);
+        let all = cards_within(played_and_extra, MAX_CARDS)?;
+        let (held, gold, plain) = (cards(held)?, cards_within(gold, MAX_CARDS)?, cards_within(plain, MAX_CARDS)?);
         let bad_position = scoring.iter().any(|&p| p as usize >= all.len());
         let bad_variants = self.inner.has_before_phase() && (gold.len() != all.len() || plain.len() != all.len());
         if hand_id as usize >= HAND_COUNT || played_count > all.len() || bad_position || bad_variants {
@@ -121,7 +127,7 @@ fn limits(
     max_select: usize,
     required_hand: Option<u8>,
     excluded_hands: u16,
-    required_cards: u16,
+    required_cards: u32,
     affinity: Option<Vec<f64>>,
 ) -> PyResult<Constraints> {
     let affinity = match affinity {
@@ -288,7 +294,7 @@ impl Lineup {
         max_select: usize,
         required_hand: Option<u8>,
         excluded_hands: u16,
-        required_cards: u16,
+        required_cards: u32,
         affinity: Option<Vec<f64>>,
     ) -> PyResult<Vec<FoundTuple<'py>>> {
         let (hand, gold, plain) = (cards(hand)?, cards(gold)?, cards(plain)?);
@@ -311,7 +317,7 @@ impl Lineup {
         max_select: usize,
         required_hand: Option<u8>,
         excluded_hands: u16,
-        required_cards: u16,
+        required_cards: u32,
         affinity: Option<Vec<f64>>,
     ) -> PyResult<Option<FoundTuple<'py>>> {
         let (hand, gold, plain) = (cards(hand)?, cards(gold)?, cards(plain)?);
@@ -332,7 +338,7 @@ impl Lineup {
         max_select: usize,
         required_hand: Option<u8>,
         excluded_hands: u16,
-        required_cards: u16,
+        required_cards: u32,
         affinity: Option<Vec<f64>>,
     ) -> PyResult<Vec<Option<f64>>> {
         let limits = limits(min_select, max_select, required_hand, excluded_hands, required_cards, affinity)?;

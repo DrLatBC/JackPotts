@@ -7,7 +7,10 @@ use crate::card::{Card, ENHANCED, FACE, GOLD, GOLD_SEAL, RED_SEAL, STEEL};
 use crate::hands::Rules;
 use crate::jokers::{card_effect, joker_effect, Blind, CardEffect, JokerSpec, Rolls, Scoring, Surroundings};
 
+/// The most cards one play can hold: the played cards, then scoring cards that were not played.
 pub const MAX_CARDS: usize = 16;
+/// The most cards a hand to search can hold: one bit per hand position in a `u32`.
+pub const MAX_HAND: usize = 32;
 
 /// One active joker's turn in the joker phase.
 #[derive(Clone, Debug, Default)]
