@@ -25,11 +25,12 @@ _CACHE_MAX = 64
 
 @dataclass(frozen=True)
 class Roster:
-    keys: frozenset[str]                         # every joker, debuffed included
     active: tuple[tuple[str, JokerLike], ...]    # (key, joker) per non-debuffed joker, in order
     active_keys: frozenset[str]
     resolved: tuple[tuple[str, JokerLike], ...]  # active, with Blueprint/Brainstorm as their copy target
-    baseball_xmult: float                        # Baseball Card's xmult, 0 when not owned
+    # One xmult per Baseball Card in effect (each copy by Blueprint/Brainstorm counts);
+    # every one of them multiplies after each Uncommon joker.
+    baseball_xmults: tuple[float, ...]
     # Further per-lineup facts, each built on first use by the code that reads it
     # (effect plan, held-card jokers, retrigger flags, per-card scoring steps).
     derived: dict = field(default_factory=dict, compare=False, repr=False)
@@ -65,11 +66,8 @@ def roster(jokers: list | None) -> Roster:
 def _build(joker_list: list) -> Roster:
     active = []
     resolved = []
-    baseball_xmult = None
     for i, j in enumerate(joker_list):
         k = joker_key(j)
-        if k == "j_baseball" and baseball_xmult is None:
-            baseball_xmult = _ability(j).get("extra", 1.5)
         if is_joker_debuffed(j):
             continue
         active.append((k, j))
@@ -85,9 +83,10 @@ def _build(joker_list: list) -> Roster:
             if tkey not in BLUEPRINT_INCOMPATIBLE:
                 resolved.append((tkey, target))
     return Roster(
-        keys=frozenset(joker_key(j) for j in joker_list),
         active=tuple(active),
         active_keys=frozenset(k for k, _ in active),
         resolved=tuple(resolved),
-        baseball_xmult=baseball_xmult or 0.0,
+        baseball_xmults=tuple(
+            _ability(j).get("extra", 1.5) for k, j in resolved if k == "j_baseball"
+        ),
     )

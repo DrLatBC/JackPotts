@@ -156,7 +156,7 @@ def retrigger_jokers(lineup: Roster) -> tuple[bool, bool, bool, bool, bool]:
     """Which retrigger jokers the lineup holds: (hack, sock_and_buskin, hanging_chad, dusk, seltzer)."""
     flags = lineup.derived.get("retrigger")
     if flags is None:
-        keys = lineup.keys
+        keys = lineup.active_keys
         flags = lineup.derived["retrigger"] = (
             "j_hack" in keys,
             "j_sock_and_buskin" in keys,

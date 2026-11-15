@@ -52,7 +52,7 @@ class PlayOrderer:
     ) -> None:
         if lineup is None:
             lineup = roster(jokers)
-        joker_keys = lineup.keys
+        joker_keys = lineup.active_keys
         plan = per_card_plan(
             lineup,
             smeared="j_smeared" in joker_keys,

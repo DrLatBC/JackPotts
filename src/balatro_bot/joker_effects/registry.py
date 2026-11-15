@@ -87,11 +87,11 @@ def _effect_plan(lineup: Roster) -> tuple:
     Edition numbers are None when the edition adds nothing: Foil gives chips and
     Holo gives mult before the joker's effect, Polychrome multiplies after it
     (Negative only adds a slot). effect is None for jokers that score nothing in
-    this phase. baseball marks Uncommon jokers when Baseball Card is owned.
+    this phase. baseball marks Uncommon jokers when a Baseball Card is in effect.
     """
     plan = lineup.derived.get("effect_plan")
     if plan is None:
-        baseball_xm = lineup.baseball_xmult
+        baseball_xm = lineup.baseball_xmults
         steps = []
         for key, joker in lineup.active:
             mod = _modifier(joker)
@@ -112,7 +112,7 @@ def _effect_plan(lineup: Roster) -> tuple:
     return plan
 
 
-def _apply_step(ctx: ScoreContext, step: tuple, baseball_xm: float) -> None:
+def _apply_step(ctx: ScoreContext, step: tuple, baseball_xms: tuple[float, ...]) -> None:
     """One joker's turn: pre-edition -> joker effect -> post-edition -> Baseball Card."""
     joker, effect, pre_chips, pre_mult, post_xmult, baseball = step
     if pre_chips is not None:
@@ -124,12 +124,13 @@ def _apply_step(ctx: ScoreContext, step: tuple, baseball_xm: float) -> None:
     if post_xmult is not None:
         ctx.mult *= post_xmult
     if baseball:
-        ctx.mult *= baseball_xm
+        for xmult in baseball_xms:
+            ctx.mult *= xmult
 
 
 def apply_joker_effects(ctx: ScoreContext) -> None:
     """Apply all owned joker effects to the scoring context, in order."""
-    baseball_xm = ctx.roster.baseball_xmult
+    baseball_xm = ctx.roster.baseball_xmults
     for step in _effect_plan(ctx.roster):
         _apply_step(ctx, step, baseball_xm)
 
@@ -140,7 +141,7 @@ def apply_joker_effects_detailed(ctx: ScoreContext) -> list[tuple[str, float, fl
     xmult_factor is the multiplicative ratio (e.g. 2.0 means mult was doubled).
     A value of 1.0 means no xmult was applied (change was additive only).
     """
-    baseball_xm = ctx.roster.baseball_xmult
+    baseball_xm = ctx.roster.baseball_xmults
     contributions: list[tuple[str, float, float, float]] = []
     for (key, _), step in zip(ctx.roster.active, _effect_plan(ctx.roster)):
         joker = step[0]

@@ -759,3 +759,44 @@ class TestBlueprintHeldCardPhase:
         )
         # Neither applies: mult stays at base 2
         assert result["pre_joker_mult"] == 2.0
+
+
+def _debuffed(j: dict) -> dict:
+    return {**j, "state": {"debuff": True}}
+
+
+class TestDebuffedAndCopiedJokers:
+    """A debuffed joker does nothing, whichever part of scoring would have used it."""
+
+    ACE = [card("A", "S")]
+    TWO = [card("2", "S")]
+
+    def test_blueprint_copies_nothing_from_a_debuffed_joker(self):
+        lineup = [joker("j_blueprint"), _debuffed(joker("j_joker"))]
+        assert score_hand("High Card", self.ACE, jokers=lineup) == score_hand("High Card", self.ACE, jokers=[])
+
+    def test_brainstorm_copies_nothing_from_a_debuffed_joker(self):
+        lineup = [_debuffed(joker("j_joker")), joker("j_brainstorm")]
+        assert score_hand("High Card", self.ACE, jokers=lineup) == score_hand("High Card", self.ACE, jokers=[])
+
+    def test_debuffed_hack_does_not_retrigger(self):
+        with_hack = [_debuffed(joker("j_hack")), joker("j_joker")]
+        assert (score_hand("High Card", self.TWO, jokers=with_hack)
+                == score_hand("High Card", self.TWO, jokers=[joker("j_joker")]))
+
+    def test_debuffed_baseball_card_does_not_multiply(self):
+        uncommon = joker("j_joker", rarity=2)
+        assert (score_hand("High Card", self.ACE, jokers=[_debuffed(joker("j_baseball")), uncommon])
+                == score_hand("High Card", self.ACE, jokers=[uncommon]))
+
+    def test_each_baseball_card_multiplies_an_uncommon_joker(self):
+        uncommon = joker("j_joker", rarity=2)
+        # High Card 5 chips x 1 mult, Ace +11 chips, Joker +4 mult: 16 chips x 5 mult.
+        assert score_hand("High Card", self.ACE, jokers=[joker("j_baseball"), uncommon]) == (16, 7.5, 120)
+        two = [joker("j_baseball"), joker("j_baseball"), uncommon]
+        assert score_hand("High Card", self.ACE, jokers=two) == (16, 11.25, 180)
+
+    def test_a_copied_baseball_card_multiplies_again(self):
+        uncommon = joker("j_joker", rarity=2)
+        copied = [joker("j_blueprint"), joker("j_baseball"), uncommon]
+        assert score_hand("High Card", self.ACE, jokers=copied) == (16, 11.25, 180)

@@ -106,8 +106,9 @@ SIMPLE_EFFECTS_TABLE: list[tuple[str, str, dict]] = [
     # j_runner — in complex.py (scores unconditionally + pre-scoring increment on Straight)
     # j_square — in complex.py (needs pre-scoring increment on 4-card plays)
     ("j_erosion",       "parsed_mult",  {"fallback": 8}),
-    # j_hiker — noop: Hiker permanently stamps +5 chips onto cards AFTER scoring.
-    # The accumulated bonus is already in each card's perma_bonus field.
+    # j_hiker — nothing in the joker phase. Earlier hands' bonus is in each card's
+    # perma_bonus; this hand's +5 per card counts from the card's second trigger on
+    # (per_card.py "all_chips").
     ("j_stone",         "parsed_chips", {"fallback": 25}),
     ("j_castle",        "parsed_chips", {"fallback": 15}),
     ("j_constellation", "parsed_xmult", {"fallback": 1.3}),
