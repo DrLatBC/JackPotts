@@ -260,6 +260,9 @@ def _pick_princess_name(taken: set[str]) -> str:
 _MIN_REPS = 5  # require at least 5 full repetitions to flag a cycle
 _MAX_PERIOD = 4  # check cycles of period 1, 2, 3, 4
 _STALL_TIMEOUT = 600  # seconds without a new action seq before declaring stuck
+# On the simulator a game never goes this long without an action, so a stuck bot
+# is restarted after a minute, not ten.
+_SIM_STALL_TIMEOUT = 60
 
 _ACTION_SEQ_RE = re.compile(r"\[#(\d+)\]")
 _GAME_OVER_RE = re.compile(r"Game over: (VICTORY|DEFEAT).*?seed=(\S+) ante=(\d+)")
@@ -422,7 +425,7 @@ class Slot:
     _LOG_PREFIX = re.compile(r"^\d{2}:\d{2}:\d{2} \S+ ")
     _ACTION_COUNTER = re.compile(r"\[#\d+\] ")
 
-    def poll_log_for_softlock(self) -> bool:
+    def poll_log_for_softlock(self, stall_timeout: float = _STALL_TIMEOUT) -> bool:
         if not self.log_file:
             return False
         try:
@@ -452,7 +455,7 @@ class Slot:
         # line of the loop unique).
         if (
             self.last_action_seq_time > 0
-            and time.time() - self.last_action_seq_time >= _STALL_TIMEOUT
+            and time.time() - self.last_action_seq_time >= stall_timeout
         ):
             return True
 
@@ -584,6 +587,7 @@ class Supervisor:
         self.stream = stream
         self.explore_rate = explore_rate
         self.sim_python = sim_python
+        self.stall_timeout = _SIM_STALL_TIMEOUT if sim_python else _STALL_TIMEOUT
         # Bots score with the compiled kernel (kernel/), which loads on CPython only.
         self.kernel = kernel
         on_pypy = bool(sim_python) and not self.kernel and os.path.exists(PYPY_PYTHON)
@@ -952,7 +956,8 @@ class Supervisor:
                 self.restart_slot(slot)
             return
 
-        if not self.stream and slot.state == "running" and slot.log_file and slot.poll_log_for_softlock():
+        if (not self.stream and slot.state == "running" and slot.log_file
+                and slot.poll_log_for_softlock(self.stall_timeout)):
             log.warning("%s (port %d): soft-lock detected — restarting", slot.name, slot.port)
             self.restart_slot(slot, reason="soft-lock detected")
             return
@@ -1040,7 +1045,7 @@ class Supervisor:
             "rate_per_hour": round(rate, 1),
             "eta_secs": eta_secs,
             "explore_rate": self.explore_rate,
-            "stall_secs": _STALL_TIMEOUT,
+            "stall_secs": self.stall_timeout,
             # The last RECENT_WINDOW finished games: how many, how many won, and the
             # ante each of the rest ended at.
             "recent": {"games": len(recent), "wins": sum(1 for g in recent if g[2]), "lost_at": lost_at},

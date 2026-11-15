@@ -391,3 +391,19 @@ def test_simulator_bots_stay_on_cpython_with_the_compiled_kernel(tmp_path, monke
     assert sim.pause_state()["kernel"] is True
     resumed = supervisor.Supervisor.from_pause_state(sim.pause_state(), sim_python="jackdaw-python")
     assert resumed.kernel and resumed.bot_python == supervisor.PYTHON
+
+
+def test_simulator_batches_restart_a_stuck_bot_after_a_minute(tmp_path, monkeypatch):
+    live = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None)
+    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python")
+    assert (live.stall_timeout, sim.stall_timeout) == (600, 60)
+    assert sim._status("running")["stall_secs"] == 60
+
+    slot = sim.slots[0]
+    log_path = tmp_path / "game.log"
+    log_path.write_text("16:15:09 [INFO] [#12] SHOP -> next_round() | done shopping\n", encoding="utf-8")
+    slot.log_file = log_path
+    assert not slot.poll_log_for_softlock(sim.stall_timeout)
+    slot.last_action_seq_time -= 90
+    assert slot.poll_log_for_softlock(sim.stall_timeout)
+    assert not slot.poll_log_for_softlock(live.stall_timeout)
