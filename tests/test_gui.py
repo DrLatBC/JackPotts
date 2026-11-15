@@ -32,6 +32,13 @@ def test_simulator_toggle_adds_sim_flag():
     assert gui.supervisor_command({**gui.DEFAULTS, "sim": True})[-1] == "--sim"
 
 
+def test_kernel_toggle_adds_kernel_flag():
+    assert "--kernel" not in gui.supervisor_command(gui.DEFAULTS)
+    assert gui.supervisor_command({**gui.DEFAULTS, "sim": True, "kernel": True})[-2:] == ["--sim", "--kernel"]
+    settings_without_the_key = {k: v for k, v in gui.DEFAULTS.items() if k != "kernel"}
+    assert "--kernel" not in gui.supervisor_command(settings_without_the_key)
+
+
 def test_status_of_a_live_supervisor_is_read(status_file):
     status_file.write_text(json.dumps({"phase": "running", "pid": os.getpid()}))
     assert gui.read_status()["phase"] == "running"
@@ -338,6 +345,8 @@ def test_simulator_bots_stay_on_cpython_with_the_compiled_kernel(tmp_path, monke
     pypy = tmp_path / "pypy.exe"
     pypy.write_text("")
     monkeypatch.setattr(supervisor, "PYPY_PYTHON", str(pypy))
-    monkeypatch.setenv("BALATRO_KERNEL", "rust")
-    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python")
+    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python", kernel=True)
     assert sim.bot_python == supervisor.PYTHON
+    assert sim.pause_state()["kernel"] is True
+    resumed = supervisor.Supervisor.from_pause_state(sim.pause_state(), sim_python="jackdaw-python")
+    assert resumed.kernel and resumed.bot_python == supervisor.PYTHON

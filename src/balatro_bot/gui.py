@@ -49,7 +49,7 @@ DECKS = [
 STAKES = ["WHITE", "RED", "GREEN", "BLACK", "BLUE", "PURPLE", "ORANGE", "GOLD"]
 
 DEFAULTS = {"instances": 6, "games": 2000, "deck": "BLUE", "stake": "WHITE",
-            "explore_instances": 2, "explore_rate": 0.15, "sim": False}
+            "explore_instances": 2, "explore_rate": 0.15, "sim": False, "kernel": False}
 
 # Dashboard palette
 BG = "#1a1a2e"
@@ -222,6 +222,8 @@ def supervisor_command(settings: dict) -> list[str]:
                 "--explore-rate", str(settings["explore_rate"])]
     if settings.get("sim"):
         cmd.append("--sim")
+    if settings.get("kernel"):
+        cmd.append("--kernel")
     return cmd
 
 
@@ -805,6 +807,7 @@ class ControlPanel:
             "explore_instances": tk.IntVar(value=s["explore_instances"]),
             "explore_rate": tk.DoubleVar(value=s["explore_rate"]),
             "sim": tk.BooleanVar(value=bool(s["sim"])),
+            "kernel": tk.BooleanVar(value=bool(s.get("kernel"))),
         }
         self.explore_rate_input = ttk.Spinbox(controls, from_=0.05, to=1.0, increment=0.05, width=5,
                                               format="%.2f", textvariable=self.vars["explore_rate"])
@@ -822,6 +825,8 @@ class ControlPanel:
             ("RATE", self.explore_rate_input),
             ("SIMULATOR", ttk.Checkbutton(controls, style="Card.TCheckbutton",
                                           variable=self.vars["sim"])),
+            ("KERNEL", ttk.Checkbutton(controls, style="Card.TCheckbutton",
+                                       variable=self.vars["kernel"])),
         ]
         self.inputs = []
         for col, (label, widget) in enumerate(fields):
@@ -971,6 +976,7 @@ class ControlPanel:
                 "explore_instances": int(self.vars["explore_instances"].get()),
                 "explore_rate": round(float(self.vars["explore_rate"].get()), 2),
                 "sim": bool(self.vars["sim"].get()),
+                "kernel": bool(self.vars["kernel"].get()),
             }
         except (tk.TclError, ValueError):
             raise ValueError("Instances, games and exploring must be whole numbers.")

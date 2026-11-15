@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import ctypes
+import importlib.util
 import json
 import logging
 import os
@@ -555,7 +556,7 @@ class Supervisor:
                  seed: str | None, verbose: bool = False,
                  stream: bool = False, explore_instances: int = 0,
                  explore_rate: float = 0.0, base_port: int = BASE_PORT,
-                 sim_python: str | None = None):
+                 sim_python: str | None = None, kernel: bool = False):
         taken: set[str] = set()
         slots = []
         for i in range(n):
@@ -575,8 +576,8 @@ class Supervisor:
         self.stream = stream
         self.explore_rate = explore_rate
         self.sim_python = sim_python
-        # The compiled kernel (BALATRO_KERNEL=rust) loads on CPython only.
-        self.kernel = os.environ.get("BALATRO_KERNEL", "").lower() == "rust"
+        # Bots score with the compiled kernel (kernel/), which loads on CPython only.
+        self.kernel = kernel
         on_pypy = bool(sim_python) and not self.kernel and os.path.exists(PYPY_PYTHON)
         self.bot_python = PYPY_PYTHON if on_pypy else PYTHON
         self.running = True
@@ -593,7 +594,7 @@ class Supervisor:
         return {
             "games": self.games, "decks": self.decks, "stake": self.stake, "seed": self.seed,
             "verbose": self.verbose, "explore_rate": self.explore_rate, "base_port": self.base_port,
-            "sim": bool(self.sim_python), "session_num": self.session_num,
+            "sim": bool(self.sim_python), "kernel": self.kernel, "session_num": self.session_num,
             "dashboard_batch_id": self.dashboard_batch_id,
             "elapsed": time.time() - self.session_start if self.session_start else 0.0,
             "slots": [{
@@ -608,7 +609,8 @@ class Supervisor:
     def from_pause_state(cls, state: dict, sim_python: str | None) -> Supervisor:
         sup = cls(n=0, games=state["games"], decks=state["decks"], stake=state["stake"],
                   seed=state["seed"], verbose=state["verbose"], explore_rate=state["explore_rate"],
-                  base_port=state["base_port"], sim_python=sim_python)
+                  base_port=state["base_port"], sim_python=sim_python,
+                  kernel=state.get("kernel", False))
         for s in state["slots"]:
             slot = Slot(port=s["port"], name=s["name"], deck=s["deck"], stake=s["stake"],
                         explore_rate=s["explore_rate"], restarts=s["restarts"],
@@ -814,6 +816,7 @@ class Supervisor:
         slot.ante, slot.blind = 0, ""
         slot.bot_proc = subprocess.Popen(
             cmd,
+            env={**os.environ, "BALATRO_KERNEL": "rust" if self.kernel else ""},
             creationflags=self._child_flags(),
         )
         slot.state = "running"
@@ -1092,6 +1095,9 @@ class Supervisor:
         print(f"  Mother Gothel is sending {len(to_start)} princesses to play Balatro")
         print(f"  ({names})\n")
         print(f"  Session {self.session_num}, {self.games} games each\n")
+        if self.kernel and not self.sim_python:
+            log.info("Bots score with the compiled kernel")
+            print("  Bots score with the compiled kernel\n")
         if self.sim_python:
             if self.kernel:
                 runtime = "CPython with the compiled kernel"
@@ -1301,6 +1307,8 @@ def main() -> None:
                         help=f"First instance's port (default: {BASE_PORT})")
     parser.add_argument("--sim", action="store_true",
                         help="Play on the Jackdaw simulator instead of Balatro")
+    parser.add_argument("--kernel", action="store_true",
+                        help="Score hands with the compiled kernel (kernel/); also on with BALATRO_KERNEL=rust")
     parser.add_argument("--resume", action="store_true",
                         help="Carry on the paused batch (other batch flags are ignored)")
     parser.add_argument("--finish-paused", action="store_true",
@@ -1317,6 +1325,11 @@ def main() -> None:
             parser.error("no paused batch to resume or finish")
         pause_state = saved["resume"]
         args.sim = pause_state["sim"]
+
+    kernel = args.kernel or os.environ.get("BALATRO_KERNEL", "").lower() == "rust"
+    if kernel and importlib.util.find_spec("jackpotts_kernel") is None:
+        parser.error("--kernel: the compiled kernel is not built into this environment "
+                     "(see docs/installation.md)")
 
     sim_python = None
     if args.sim:
@@ -1361,6 +1374,7 @@ def main() -> None:
             explore_rate=args.explore_rate,
             base_port=args.base_port,
             sim_python=sim_python,
+            kernel=kernel,
         )
 
     def on_sigint(sig, frame):

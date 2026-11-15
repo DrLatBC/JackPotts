@@ -70,7 +70,7 @@ Simulator batches (`--sim`) run their bots on [PyPy](https://pypy.org) when `.ve
 
 ## Optional: the compiled scoring kernel
 
-`kernel/` holds hand search and scoring in Rust. With `BALATRO_KERNEL=rust` in the environment the bot asks it instead of the Python scorer; the two give the same answers (`tests/test_kernel_differential.py`), the compiled one about 85 times faster per search. Without the variable nothing changes.
+`kernel/` holds hand search and scoring in Rust. With the control panel's KERNEL box ticked (or `--kernel` on the supervisor, or `BALATRO_KERNEL=rust` in the environment) the bot asks it instead of the Python scorer; the two give the same answers (`tests/test_kernel_differential.py`), the compiled one about 85 times faster per search. Otherwise nothing changes.
 
 It needs Rust (`winget install --id Rustlang.Rustup -e`) and, on Windows, Visual Studio's "Desktop development with C++" workload with a Windows SDK. Build it into the bot's environment from the repo root:
 
@@ -90,4 +90,4 @@ Rebuild after any change under `kernel/`. Checks:
 .venv\Scripts\python.exe scripts/kernel_mutations.py
 ```
 
-The first compares both scorers on generated hands, the second does the same over every joker with every card enhancement, and the third plants bugs in the kernel to confirm those comparisons notice. The kernel runs on CPython only: with `BALATRO_KERNEL=rust` set, the supervisor launches simulator bots from the normal environment instead of `.venv-pypy`, and the startup line says so.
+The first compares both scorers on generated hands, the second does the same over every joker with every card enhancement, and the third plants bugs in the kernel to confirm those comparisons notice. The kernel runs on CPython only: with it on, the supervisor launches simulator bots from the normal environment instead of `.venv-pypy`, and the startup line says so. A paused batch resumes with the setting it started with.
