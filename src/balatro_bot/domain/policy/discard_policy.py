@@ -135,6 +135,7 @@ def choose_discard(ctx: RoundContext) -> Action | None:
             jokers=ctx.jokers,
             required_hand=ctx.mouth_locked_hand or ctx.committed_hand_type,
             protection=ctx.card_protection,
+            forced_index=ctx.forced_card_idx,
         )
         best_chase = _best_chase(suggestions, ctx, play_ev)
         if best_chase is not None:
@@ -143,8 +144,8 @@ def choose_discard(ctx: RoundContext) -> Action | None:
         # Desperation cycle: extra cards in hand + hopeless outlook
         extra_count = len(ctx.hand_cards) - 5
         if extra_count > 0 and outlook == "hopeless":
-            extras = cards_not_in(ctx.hand_cards, set(ctx.best.card_indices), protection=ctx.card_protection)
-            to_discard = extras[:min(extra_count, ctx.discards_left, _discard_size_cap(ctx))]
+            extras = cards_not_in(ctx.hand_cards, ctx.kept_indices, protection=ctx.card_protection)
+            to_discard = ctx.discard_with_forced(extras, min(extra_count, ctx.discards_left, _discard_size_cap(ctx)))
             if to_discard:
                 return DiscardCards(
                     to_discard,
@@ -161,6 +162,7 @@ def choose_discard(ctx: RoundContext) -> Action | None:
         required_hand=ctx.mouth_locked_hand,
         deck_profile=ctx.deck_profile,
         protection=ctx.card_protection,
+        forced_index=ctx.forced_card_idx,
     )
 
     # Try EV-based chase first

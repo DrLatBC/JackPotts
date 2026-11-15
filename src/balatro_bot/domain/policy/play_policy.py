@@ -201,8 +201,9 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
     # discard junk to try to improve.
     if (ctx.best and ctx.best.total < ctx.chips_remaining
             and ctx.discards_left > 0 and len(ctx.best.card_indices) < 5):
-        keep = set(ctx.best.card_indices)
-        to_discard = cards_not_in(ctx.hand_cards, keep, protection=ctx.card_protection)[:min(_size_cap, ctx.discards_left)]
+        limit = min(_size_cap, ctx.discards_left)
+        to_discard = ctx.discard_with_forced(
+            cards_not_in(ctx.hand_cards, ctx.kept_indices, protection=ctx.card_protection), limit)
         if to_discard:
             return DiscardCards(to_discard, reason="last resort discard (hand too weak, searching for better)")
 
@@ -275,8 +276,10 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
 
 def choose_milk_play(ctx: RoundContext) -> Action | None:
     """If we can already win, exploit spare hands/discards to scale jokers."""
-    effective = ctx.best.total * ctx.score_discount if ctx.best else 0
-    if not ctx.best or effective < ctx.chips_remaining:
+    # Judged on the hand that is still there after a milk play or discard.
+    kept = ctx.kept_best
+    effective = kept.total * ctx.score_discount if kept else 0
+    if not kept or effective < ctx.chips_remaining:
         return None
 
     # The Mouth: milking plays a different hand type, which locks us out
@@ -324,7 +327,7 @@ def choose_milk_play(ctx: RoundContext) -> Action | None:
 
     # --- Phase 2: Mystic Summit — burn all discards ---
     if has_mystic and ctx.discards_left > 0 and not has_green:
-        keep = set(ctx.best.card_indices) if ctx.best else set()
+        keep = ctx.kept_indices
         burnable = [
             (i, rank_value(card_rank(ctx.hand_cards[i]) or "2"))
             for i in range(len(ctx.hand_cards)) if i not in keep
@@ -332,7 +335,7 @@ def choose_milk_play(ctx: RoundContext) -> Action | None:
         burnable.sort(key=lambda x: x[1])
         n = min(5, ctx.discards_left, len(burnable))
         if n > 0:
-            indices = [i for i, _ in burnable[:n]]
+            indices = ctx.discard_with_forced([i for i, _ in burnable], n)
             return DiscardCards(
                 indices,
                 reason=f"milk: burn {n} for Mystic Summit ({ctx.discards_left} discards left)",
@@ -359,7 +362,7 @@ def milk_discard(ctx: RoundContext, joker_keys: set,
         if jacks:
             n = min(len(jacks), ctx.discards_left, 5)
             return DiscardCards(
-                jacks[:n],
+                ctx.with_forced(jacks[:n]),
                 reason=f"milk: discard {n} Jack(s) for Hit the Road",
             )
 
@@ -367,13 +370,13 @@ def milk_discard(ctx: RoundContext, joker_keys: set,
     if any(k in active for k in ("j_castle", "j_yorick")):
         n = min(5, ctx.discards_left, len(ctx.hand_cards))
         if n > 0:
-            keep = set(ctx.best.card_indices) if ctx.best else set()
+            keep = ctx.kept_indices
             discardable = [
                 (i, rank_value(card_rank(ctx.hand_cards[i]) or "2"))
                 for i in range(len(ctx.hand_cards)) if i not in keep
             ]
             discardable.sort(key=lambda x: x[1])
-            indices = [i for i, _ in discardable[:n]]
+            indices = ctx.discard_with_forced([i for i, _ in discardable], n)
             if indices:
                 names = [k for k in ("j_castle", "j_yorick") if k in active]
                 return DiscardCards(
@@ -390,7 +393,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
     """Pick the optimal milk hand to play."""
     avoid_faces = "j_ride_the_bus" in joker_keys
     hands_after = ctx.hands_left - 1
-    keep = set(ctx.best.card_indices) if ctx.best else set()
+    keep = ctx.kept_indices
 
     # Build playable card list (weakest first, optionally avoiding faces)
     playable = []
@@ -413,7 +416,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
 
     # Square Joker: exactly 4 junk cards
     if "j_square" in play_scalers and len(junk) >= 4:
-        indices = sort_play_order([i for i, _ in junk[:4]], ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+        indices = sort_play_order(ctx.with_forced([i for i, _ in junk], 4), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         return PlayCards(
             indices,
             reason=f"milk: cycle 4 junk for Square (+4 chips) ({hands_after} hands left)",
@@ -429,7 +432,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if enhanced:
             required = enhanced[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = sort_play_order(ctx.with_forced([required] + filler), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -443,7 +446,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if twos:
             required = twos[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = sort_play_order(ctx.with_forced([required] + filler), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -457,7 +460,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if eights:
             required = eights[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = sort_play_order(ctx.with_forced([required] + filler), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -472,7 +475,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if faces:
             required = faces[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = sort_play_order([required] + filler, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = sort_play_order(ctx.with_forced([required] + filler), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -510,6 +513,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         candidates = enumerate_hands(
             ctx.hand_cards, ctx.hand_levels,
             jokers=ctx.jokers, joker_limit=len(ctx.jokers),
+            required_card_indices=ctx.required_cards,
         )
         for ht, jname in targets:
             match = next((c for c in candidates if c.hand_name == ht), None)
@@ -528,6 +532,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
                     ctx.hand_cards, ctx.hand_levels,
                     jokers=ctx.jokers, required_hand=ht,
                     deck_cards=ctx.deck_cards,
+                    forced_index=ctx.forced_card_idx,
                 )
                 if chases:
                     best = chases[0]
@@ -546,8 +551,8 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         generic.add("j_hiker")
 
     if generic:
-        dump = junk[:5] if junk else playable[:1]
-        indices = sort_play_order([i for i, _ in dump], ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+        dump = junk if junk else playable[:1]
+        indices = sort_play_order(ctx.with_forced([i for i, _ in dump]), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
         hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
         return PlayCards(
             indices,

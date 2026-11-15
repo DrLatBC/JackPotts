@@ -59,6 +59,40 @@ class RoundContext:
     debuffed_suit: str | None = None
     ox_most_played: str | None = None
     best_as_finisher: HandCandidate | None = None
+    best_without_forced: HandCandidate | None = None
+
+    @property
+    def kept_best(self) -> HandCandidate | None:
+        """The best hand still in hand after a play or discard spent on something else.
+        Cerulean Bell's forced card leaves with every play and discard, so there it is
+        the best hand that does not use that card."""
+        return self.best if self.forced_card_idx is None else self.best_without_forced
+
+    @property
+    def kept_indices(self) -> set[int]:
+        """Hand positions of ``kept_best``: the cards to hold back while cycling junk."""
+        kept = self.kept_best
+        return set(kept.card_indices) if kept else set()
+
+    @property
+    def required_cards(self) -> set[int] | None:
+        """The hand positions every play must contain, for a hand search."""
+        return None if self.forced_card_idx is None else {self.forced_card_idx}
+
+    def with_forced(self, indices: list[int], limit: int = 5) -> list[int]:
+        """The cards a play or discard of ``indices`` really selects: Cerulean Bell's
+        forced card first, then the given cards in order, ``limit`` at most."""
+        forced = self.forced_card_idx
+        if forced is None:
+            return list(indices)[:limit]
+        return ([forced] + [i for i in indices if i != forced])[:limit]
+
+    def discard_with_forced(self, indices: list[int], count: int) -> list[int]:
+        """A discard of the first ``count`` of ``indices``. The forced card goes out on
+        top of them, within the game's limit of five cards."""
+        if self.forced_card_idx is None:
+            return list(indices)[:count]
+        return self.with_forced(indices, min(count + 1, 5))
 
     @property
     def card_protection(self):
@@ -256,6 +290,28 @@ class RoundContext:
             if has_final_hand else None
         )
 
+        best_without_forced = None
+        if forced_card_idx is not None:
+            others = [i for i in range(len(hand_cards)) if i != forced_card_idx]
+            best_without_forced = best_hand(
+                [hand_cards[i] for i in others], hand_levels,
+                min_select=min_cards, jokers=jokers,
+                money=money, discards_left=discards_left,
+                hands_left=hands_left,
+                joker_limit=snapshot.joker_limit,
+                required_hand=effective_commit,
+                ancient_suit=ancient_suit,
+                excluded_hands=eye_used_hands,
+                deck_cards=deck_cards,
+                blind_name=effective_blind,
+                ox_most_played=ox_most_played,
+                idol_rank=idol_rank,
+                idol_suit=idol_suit,
+                hand_affinity=hand_affinity_dict,
+            )
+            if best_without_forced is not None:
+                best_without_forced.card_indices = [others[i] for i in best_without_forced.card_indices]
+
         return RoundContext(
             blind_score=blind_score,
             blind_name=effective_blind,
@@ -271,6 +327,7 @@ class RoundContext:
             committed_hand_type=committed_hand_type,
             score_discount=score_discount,
             forced_card_idx=forced_card_idx,
+            best_without_forced=best_without_forced,
             ancient_suit=ancient_suit,
             idol_rank=idol_rank,
             idol_suit=idol_suit,

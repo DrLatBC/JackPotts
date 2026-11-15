@@ -173,7 +173,9 @@ def build_round_plan(ctx: RoundContext) -> RoundPlan | None:
 
     # --- Phase 4: Safety gate ---
     # Project total output: milk hands contribute ~avg score, finisher at projected score.
-    avg_hand_score = best_now_score  # rough estimate for non-finisher hands
+    # Non-finisher hands are estimated at the hand that is still there after a milk play.
+    kept = ctx.kept_best
+    avg_hand_score = kept.total * ctx.score_discount if kept else 0
     if card_sharp_type and card_sharp_steps > 0:
         # Card Sharp setup + score: first play = base, second play = base * 3
         # This is spread across setup step (base) + the next hand (base * 3)
@@ -406,6 +408,7 @@ def _execute_setup(ctx: RoundContext, target_type: str | None) -> Action | None:
         jokers=ctx.jokers, joker_limit=len(ctx.jokers),
         hands_left=ctx.hands_left,
         excluded_hands=ctx.eye_used_hands,
+        required_card_indices=ctx.required_cards,
     )
     match = next((c for c in candidates if c.hand_name == target_type), None)
 
@@ -429,6 +432,7 @@ def _execute_setup(ctx: RoundContext, target_type: str | None) -> Action | None:
             ctx.hand_cards, ctx.hand_levels,
             jokers=ctx.jokers, required_hand=target_type,
             deck_cards=ctx.deck_cards,
+            forced_index=ctx.forced_card_idx,
         )
         if chases:
             best_chase = chases[0]
@@ -453,6 +457,7 @@ def _execute_score(ctx: RoundContext, target_type: str | None = None) -> Action 
             jokers=ctx.jokers, joker_limit=len(ctx.jokers),
             hands_left=ctx.hands_left,
             excluded_hands=ctx.eye_used_hands,
+            required_card_indices=ctx.required_cards,
         )
         type_match = next((c for c in candidates if c.hand_name == target_type), None)
         if type_match:
@@ -507,7 +512,7 @@ def _execute_milk(ctx: RoundContext) -> Action | None:
 
     # --- Mystic Summit: burn discards ---
     if has_mystic and ctx.discards_left > 0 and not has_green:
-        keep = set(ctx.best.card_indices) if ctx.best else set()
+        keep = ctx.kept_indices
         burnable = [
             (i, rank_value(card_rank(ctx.hand_cards[i]) or "2"))
             for i in range(len(ctx.hand_cards)) if i not in keep
@@ -515,7 +520,7 @@ def _execute_milk(ctx: RoundContext) -> Action | None:
         burnable.sort(key=lambda x: x[1])
         n = min(5, ctx.discards_left, len(burnable))
         if n > 0:
-            indices = [i for i, _ in burnable[:n]]
+            indices = ctx.discard_with_forced([i for i, _ in burnable], n)
             return DiscardCards(
                 indices,
                 reason=f"plan milk: burn {n} for Mystic Summit ({ctx.discards_left} discards left)",
@@ -545,7 +550,7 @@ def _execute_milk(ctx: RoundContext) -> Action | None:
 
 def _play_junk(ctx: RoundContext) -> Action | None:
     """Play the weakest possible hand as a throwaway."""
-    keep = set(ctx.best.card_indices) if ctx.best else set()
+    keep = ctx.kept_indices
     avoid_faces = any(joker_key(j) == "j_ride_the_bus" for j in ctx.jokers)
     eye_used = ctx.eye_used_hands or set()
 
@@ -564,20 +569,19 @@ def _play_junk(ctx: RoundContext) -> Action | None:
 
     # Junk = cards not in winning hand
     junk = [(i, rv) for i, rv in playable if i not in keep]
-    dump = junk[:5] if junk else playable[:1]
+    dump = ctx.with_forced([i for i, _ in (junk if junk else playable[:1])])
 
     if not dump:
         return None
 
-    indices = [i for i, _ in dump]
+    indices = dump
     hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
 
     # The Eye: don't play a hand type that's already been used
     if hand_name in eye_used:
         # Try smaller subsets to get a different type
         for size in range(len(dump) - 1, 0, -1):
-            sub = dump[:size]
-            sub_indices = [i for i, _ in sub]
+            sub_indices = dump[:size]
             sub_type = classify_hand([ctx.hand_cards[i] for i in sub_indices])
             if sub_type not in eye_used:
                 indices = sub_indices
@@ -620,8 +624,9 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
         return None
 
     # First: try to form it from junk cards (preserve best hand)
-    keep = set(ctx.best.card_indices) if ctx.best else set()
+    keep = ctx.kept_indices
     junk_indices = [i for i in range(len(ctx.hand_cards)) if i not in keep]
+    forced = ctx.forced_card_idx
 
     if junk_indices:
         from itertools import combinations
@@ -629,6 +634,8 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
         for size in range(min(5, len(junk_cards)), 0, -1):
             for combo in combinations(junk_cards, size):
                 indices = [i for i, _ in combo]
+                if forced is not None and forced not in indices:
+                    continue
                 cards = [c for _, c in combo]
                 if classify_hand(cards) == target:
                     indices = sort_play_order(
@@ -650,6 +657,7 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
         ctx.hand_cards, ctx.hand_levels,
         jokers=ctx.jokers, joker_limit=len(ctx.jokers),
         hands_left=ctx.hands_left,
+        required_card_indices=ctx.required_cards,
     )
     match = next((c for c in candidates if c.hand_name == target), None)
     if match:
@@ -744,8 +752,9 @@ def _burnt_first_discard(ctx: RoundContext) -> Action | None:
     # Find a subset of cards that classifies as the preferred hand type.
     # We want to discard UP TO 5 cards that form this hand type.
     # Try subsets from the non-best-hand cards first.
-    keep_best = set(ctx.best.card_indices) if ctx.best else set()
+    keep_best = ctx.kept_indices
     discardable = [i for i in range(len(ctx.hand_cards)) if i not in keep_best]
+    forced = ctx.forced_card_idx
 
     if not discardable:
         return None
@@ -754,6 +763,8 @@ def _burnt_first_discard(ctx: RoundContext) -> Action | None:
     from itertools import combinations
     for size in range(min(5, len(discardable)), 0, -1):
         for combo in combinations(discardable, size):
+            if forced is not None and forced not in combo:
+                continue
             cards = [ctx.hand_cards[i] for i in combo]
             hand_type = _classify(cards)
             if hand_type == preferred:
@@ -777,7 +788,7 @@ def _trading_first_discard(ctx: RoundContext) -> Action | None:
     if ctx.round_outlook not in ("comfortable", "won"):
         return None
 
-    keep = set(ctx.best.card_indices) if ctx.best else set()
+    keep = ctx.kept_indices
     discardable = [
         (i, rank_value(card_rank(ctx.hand_cards[i]) or "2"))
         for i in range(len(ctx.hand_cards)) if i not in keep
@@ -786,10 +797,9 @@ def _trading_first_discard(ctx: RoundContext) -> Action | None:
         return None
 
     discardable.sort(key=lambda x: x[1])
-    idx = discardable[0][0]
     log.info("Trading Card: discarding 1 junk card for $3")
     return DiscardCards(
-        [idx],
+        ctx.with_forced([discardable[0][0]], 1),
         reason="Trading Card: discard 1 junk for $3",
     )
 
@@ -805,7 +815,8 @@ def _is_comfortable_without_hand(ctx: RoundContext, margin: float = 1.1) -> bool
     """
     if ctx.chips_remaining <= 0:
         return True
-    effective = ctx.best.total * ctx.score_discount if ctx.best else 0
+    kept = ctx.kept_best
+    effective = kept.total * ctx.score_discount if kept else 0
     if effective <= 0:
         return False
     remaining_hands = ctx.hands_left - 1  # minus the hand we're spending
@@ -834,8 +845,12 @@ def _sixth_sense_solo(ctx: RoundContext) -> Action | None:
     if not _is_comfortable_without_hand(ctx, margin=0.95):
         return None
 
+    # A solo play against Cerulean Bell can only be the forced card.
+    forced = ctx.forced_card_idx
     six_idx = None
     for i, c in enumerate(ctx.hand_cards):
+        if forced is not None and i != forced:
+            continue
         r = card_rank(c)
         if r == "6":
             six_idx = i
@@ -914,6 +929,10 @@ def _dna_solo(ctx: RoundContext) -> Action | None:
             best_idx = i
 
     if best_idx is None:
+        return None
+    # A solo play against Cerulean Bell can only be the forced card: duplicate it
+    # only when it is the card worth duplicating.
+    if ctx.forced_card_idx is not None and best_idx != ctx.forced_card_idx:
         return None
 
     card = ctx.hand_cards[best_idx]

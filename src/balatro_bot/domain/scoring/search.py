@@ -359,12 +359,31 @@ def discard_candidates(
     required_hand: str | None = None,
     deck_profile=None,
     protection: CardProtection | None = None,
+    forced_index: int | None = None,
 ) -> list[ChaseCandidate]:
     """Suggest discard sets that improve toward better hands.
 
     Returns candidates in generation order — no ranking. Callers are expected
     to rank via expected-value scoring (Monte Carlo) in the policy layer.
+
+    ``forced_index`` is the hand card that leaves with any discard (Cerulean Bell):
+    no candidate keeps it and every candidate discards it, on top of ``max_discard``
+    other cards and within the game's limit of five.
     """
+    if forced_index is not None:
+        others = [i for i in range(len(hand_cards)) if i != forced_index]
+        found = discard_candidates(
+            [hand_cards[i] for i in others], hand_levels, max_select, min(max_discard, 4),
+            deck_cards, chips_remaining, jokers, required_hand, deck_profile, protection,
+        )
+        return [
+            c._replace(
+                discard_indices=[forced_index] + [others[i] for i in c.discard_indices],
+                keep_indices=[others[i] for i in c.keep_indices],
+            )
+            for c in found
+        ]
+
     bh = best_hand(hand_cards, hand_levels, max_select, jokers=jokers, required_hand=required_hand)
     if not bh:
         fallback = list(range(min(max_discard, len(hand_cards))))
