@@ -12,6 +12,7 @@ from balatro_bot.infrastructure.client import BalatroClient
 from balatro_bot.bot import run_bot, setup_logging, wait_for_server
 from balatro_bot.domain.policy import exploration
 from balatro_bot.engine import RuleEngine
+from balatro_bot.replays import ReplayWriter
 
 import logging
 log = logging.getLogger("balatro_bot")
@@ -94,11 +95,15 @@ def main() -> None:
     setup_logging(args.verbose, log_file=log_file, wins_file=wins_file,
                   scoring_file=scoring_file, stream_file=stream_file)
 
+    replays: ReplayWriter | None = None
     try:
         client = BalatroClient(host=args.host, port=args.port)
         engine = RuleEngine()
 
         wait_for_server(client)
+        # Simulator games are kept as replays beside the instance's logs.
+        if client.simulator:
+            replays = ReplayWriter(log_dir / f"replay_{next_num:03d}.jsonl.gz")
 
         wins = 0
         offset = args.games_offset
@@ -119,6 +124,7 @@ def main() -> None:
                 seed=args.seed,
                 stream_delay=args.stream_delay,
                 dashboard_batch_id=args.dashboard_batch_id,
+                replays=replays,
             )
             if won:
                 wins += 1
@@ -134,6 +140,9 @@ def main() -> None:
     except Exception:
         log.exception("FATAL: bot crashed")
         sys.exit(1)
+    finally:
+        if replays is not None:
+            replays.close()
 
 
 if __name__ == "__main__":

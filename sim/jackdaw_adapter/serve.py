@@ -9,6 +9,7 @@ The bot then runs unchanged: ``balatro-bot --port 12371 --start ...``.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import os
 import sys
@@ -19,6 +20,12 @@ from jackdaw.bridge import RPCError, SimBackend
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fork_view import augment  # noqa: E402
+
+
+try:
+    JACKDAW_VERSION = importlib.metadata.version("jackdaw")
+except importlib.metadata.PackageNotFoundError:
+    JACKDAW_VERSION = ""
 
 
 def handle(sim: SimBackend, body: bytes) -> dict:
@@ -34,6 +41,7 @@ def handle(sim: SimBackend, body: bytes) -> dict:
     if req.get("method") == "health" and isinstance(result, dict):
         # Tells the bot every response is the settled state, so it skips its pre-decision re-poll.
         result["simulator"] = "jackdaw"
+        result["simulator_version"] = JACKDAW_VERSION
     game = sim.game
     return {"jsonrpc": "2.0", "id": req.get("id"),
             "result": augment(result, game.to_dict() if game is not None else None)}

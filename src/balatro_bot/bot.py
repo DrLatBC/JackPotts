@@ -20,6 +20,7 @@ from balatro_bot.domain.policy.exploration import explorer
 from balatro_bot.domain.scoring.draws import seed_draws
 from balatro_bot.engine import RuleEngine
 from balatro_bot.infrastructure.client import BalatroClient
+from balatro_bot.replays import ReplayWriter, replay_record
 
 log =logging.getLogger("balatro_bot")
 _stream_log = logging.getLogger("balatro_stream")
@@ -56,6 +57,7 @@ class GameLoopState:
     joker_scaling: dict = field(default_factory=dict)  # {name: {chips, mult, xmult}}
     consumables_bought: list = field(default_factory=list)  # [{name, type, count}]
     action_log: list = field(default_factory=list)  # [{seq, game_state, action_type, ...}]
+    explored_actions: list = field(default_factory=list)  # positions in the replay's action list
     ante_snapshots: list = field(default_factory=list)  # [{ante, money, joker_roster, ...}]
     hand_scores: list = field(default_factory=list)  # [{seq, ante, hand_type, ...}]
     shop_events: list = field(default_factory=list)  # [{ante, event_type, item_name, ...}]
@@ -194,7 +196,9 @@ def wait_for_server(client: BalatroClient, timeout: float = 30.0) -> None:
     while time.time() - start < timeout:
         try:
             health = client.call("health")
-            client.responses_settled = isinstance(health, dict) and bool(health.get("simulator"))
+            simulator = health.get("simulator") if isinstance(health, dict) else None
+            client.responses_settled = bool(simulator)
+            client.simulator = f"{simulator} {health.get('simulator_version') or ''}".strip() if simulator else ""
             log.info("Connected to balatrobot API")
             return
         except Exception:
@@ -327,8 +331,13 @@ def run_bot(
     poll_interval: float = 0.2,
     stream_delay: float = 0.0,
     dashboard_batch_id: int | None = None,
+    replays: ReplayWriter | None = None,
 ) -> bool:
-    """Main bot loop. Returns True if the game was won."""
+    """Main bot loop. Returns True if the game was won.
+
+    With *replays*, a simulator game started here is saved as a replay, and the
+    dashboard then gets the game's summary without the detail the replay can rebuild.
+    """
     from balatro_bot.bot_logging import (
         build_play_snapshot, compute_played_hand_detail, detect_joker_changes,
         log_action, log_ante_transition, log_blind_transition, log_game_over,
@@ -360,6 +369,8 @@ def run_bot(
         else:
             raise RuntimeError("Failed to start game after 3 attempts")
         log.info("Started new game: deck=%s stake=%s seed=%s", deck, stake, state.get("seed"))
+        if replays is not None and client.simulator:
+            client.recording = [["start", {**start_params, "seed": state.get("seed")}]]
         _stream_log.info("New game — Seed: %s | Deck: %s", state.get("seed"), deck)
     else:
         state = client.call("gamestate")
@@ -587,6 +598,8 @@ def run_bot(
             if _decision is not None:
                 record_decision(gs, _decision, _decision_snapshot, game_state, method, params,
                                  _pre_money, state.get("money", 0))
+                if client.recording is not None and _decision.get("policy", "greedy") != "greedy":
+                    gs.explored_actions.append(len(client.recording) - 1)
             if method == "play":
                 gs.total_hands_played += 1
                 hand_name = getattr(action, "hand_name", "") or ""
@@ -871,6 +884,16 @@ def run_bot(
     if _win_handler:
         _win_handler.reset()
 
+    replayable = client.recording is not None
+    if replayable:
+        replays.write(replay_record(
+            actions=client.recording, explored=gs.explored_actions,
+            seed=state.get("seed", ""), deck=deck, stake=stake, simulator=client.simulator,
+            won=gs.actually_won, final_state=state, batch=dashboard_batch_id,
+            explore_rate=explorer().rate,
+        ))
+        client.recording = None
+
     # POST game data to dashboard
     if dashboard_batch_id:
         from balatro_bot import dashboard_client
@@ -898,7 +921,7 @@ def run_bot(
             "final_jokers": ", ".join(j.get("label", "?") for j in joker_cards),
             "total_hands": gs.total_hands_played,
             "total_discards": gs.total_discards_used,
-            "log_text": _captured_log_text,
+            "log_text": None if replayable else _captured_log_text,
             "rounds": gs.round_results,
             "jokers": [
                 {
@@ -918,18 +941,19 @@ def run_bot(
             ],
             "hand_types": dict(gs.hand_types_played),
             "consumables": gs.consumables_bought,
-            "actions_log": gs.action_log,
+            # A replayed game can rebuild its play-by-play, so only its summary is sent.
+            "actions_log": [] if replayable else gs.action_log,
             "ante_snapshots": gs.ante_snapshots,
-            "hand_scores": gs.hand_scores,
-            "shop_events": gs.shop_events,
+            "hand_scores": [] if replayable else gs.hand_scores,
+            "shop_events": [] if replayable else gs.shop_events,
             "earnings": state.get("earnings", []),
-            "shop_offers": gs.shop_offers,
-            "pack_offers": gs.pack_offers,
+            "shop_offers": [] if replayable else gs.shop_offers,
+            "pack_offers": [] if replayable else gs.pack_offers,
             "tags_seen": gs.tags_seen,
             "blind_decisions": gs.blind_decisions,
             "death_info": gs.death_info,
             "final_deck": _deck_comp,
-            "decisions": gs.decisions,
+            "decisions": [] if replayable else gs.decisions,
         })
 
     return gs.actually_won
