@@ -32,3 +32,8 @@ vm_dump.html
 # Headless sim spike: game source snapshot (not committed)
 sim/lua_src/
 sim/runtime/
+
+# Imitation model: its environment, the simulator wheel, converted examples and trained models
+.venv-rl/
+sim/wheels/
+rl/data/
