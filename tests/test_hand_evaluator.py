@@ -504,6 +504,17 @@ class TestSearchShortcuts:
                                   played_cards=played, held_cards=held if jokers else None,
                                   ) == (c.chips, c.mult, c.total)
 
+    def test_held_cards_score_left_to_right_in_a_nine_card_hand(self):
+        """A held Queen's +13 Mult lands before or after a held Steel card's X1.5 by position."""
+        hand = [card("2", "D"), card("Q", "H"), card("Q", "C"), card("3", "H"), card("5", "S"),
+                card("7", "C"), card("8", "D"), card("9", "H"), card("K", "S", "STEEL")]
+        jokers = [joker("j_shoot_the_moon")]
+        for c in enumerate_hands(hand, jokers=jokers):
+            held = [x for i, x in enumerate(hand) if i not in c.card_indices]
+            assert score_hand(c.hand_name, c.scoring_cards, jokers=jokers,
+                              played_cards=[hand[i] for i in c.card_indices], held_cards=held,
+                              ) == (c.chips, c.mult, c.total)
+
 
 if __name__ == "__main__":
     import pytest

@@ -64,13 +64,15 @@ _SUBSETS: dict[tuple[int, int, int], tuple] = {}
 
 
 def _subsets(n: int, min_select: int, max_select: int) -> tuple:
-    """Every play out of an n-card hand, smallest first: (played indices, held indices)."""
+    """Every play out of an n-card hand, smallest first: (played indices, held indices).
+
+    Held indices run left to right, the order the game scores held cards in.
+    """
     key = (n, min_select, max_select)
     subsets = _SUBSETS.get(key)
     if subsets is None:
-        everything = set(range(n))
         subsets = _SUBSETS[key] = tuple(
-            (indices, tuple(everything - set(indices)))
+            (indices, tuple(i for i in range(n) if i not in indices))
             for size in range(min_select, min(max_select, n) + 1)
             for indices in combinations(range(n), size)
         )
