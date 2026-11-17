@@ -37,12 +37,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from rl.evaluate import DECK, STAKE, eval_seed, play, summary
+from rl.evaluate import DECK, STAKE, eval_seed, model_file, play, summary
 from rl.model import VALUE_SCALE, Policy, Prepared, act
 from rl.selfplay import SelfPlay, advantages, same_seed_scores
 from rl.train import heads, load_model, save_model
 
-from balatro_bot.files import replace_file  # noqa: E402  (src is on the path once rl is imported)
+from balatro_bot.eval_compare import compare, describe  # noqa: E402  (src is on the path once rl is imported)
+from balatro_bot.files import replace_file  # noqa: E402
 
 DATA = Path(__file__).resolve().parent / "data"
 PPO = DATA / "ppo"
@@ -307,7 +308,8 @@ def fit_head(model: Policy, runs: np.ndarray, target: np.ndarray, *, steps: int,
 
 def starting_point(args, out: Path):
     """The policy a run carries on from: its latest checkpoint when resuming, else the
-    value-fitted start (``fit-value``), else the copy itself."""
+    value-fitted start (``fit-value``), else ``--start`` (a copy's name or any saved
+    policy's ``.pt`` path; ``model_file``). The drift penalty pulls toward that start."""
     if args.resume:
         return load_model(out / "latest.pt")
     if (out / "start.pt").exists():
@@ -315,7 +317,7 @@ def starting_point(args, out: Path):
     if not args.start:
         raise SystemExit(f"no {out / 'start.pt'}: pass --start <copy> or run fit-value first")
     out.mkdir(parents=True, exist_ok=True)
-    model, meta = load_model(DATA / "models" / f"{args.start}.pt")
+    model, meta = load_model(model_file(args.start))
     return model, {**meta, "copy": args.start}
 
 
@@ -326,16 +328,18 @@ def train(args) -> int:
         raise SystemExit(f"{log_path} exists: pass --resume to carry on, or pick another --run")
     status = claim(args.run)
     model, meta = starting_point(args, out)
-    copy, _ = load_model(DATA / "models" / f"{meta['copy']}.pt")
+    copy, _ = load_model(model_file(meta["copy"]))
     copy.eval()
     for p in copy.parameters():
         p.requires_grad_(False)
     state_path = out / "state.json"
-    state =json.loads(state_path.read_text()) if args.resume else {
+    state = json.loads(state_path.read_text()) if args.resume else {
         "updates": 0, "seconds": 0.0, "next_seed": 0, "steps": 0, "games": 0,
         "beta": args.beta, "fade_seconds": args.fade * args.hours * 3600,
         "next_eval": args.eval_every * 3600, "args": vars(args),
     }
+    if args.resume:
+        state["args"]["hours"] = args.hours  # a resume may give the run more hours
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     if args.resume and (out / "optim.pt").exists():
         opt.load_state_dict(torch.load(out / "optim.pt"))
@@ -419,9 +423,34 @@ def train(args) -> int:
             evaluate_and_report(model, out, state, eval_seeds, status)
             write_json(state_path, state)
     evaluate_and_report(model, out, state, eval_seeds, status)
+    if args.final_check:
+        final_check(model, copy, out, state, args.final_check, status)
     stop_path(args.run).unlink(missing_ok=True)
     report(status, phase="finished", doing="")
     return 0
+
+
+def final_check(model: Policy, start: Policy, out: Path, state: dict, n: int, status: dict) -> dict:
+    """The finished policy and the one the run started from, on the first ``n``
+    evaluation seeds, compared seed by seed. The start's games are kept in
+    ``check_start_<n>.json`` and played again only if that file is missing; the
+    finished policy's go to ``check_u<update>.json`` with the comparison."""
+    report(status, doing="checking")
+    seeds = [(eval_seed(i), DECK, STAKE) for i in range(1, n + 1)]
+    base_path = out / f"check_start_{n}.json"
+    if base_path.exists():
+        base = json.loads(base_path.read_text())["games"]
+    else:
+        base = play(start, seeds)
+        write_json(base_path, {"summary": summary(base), "games": base})
+    rows = play(model, seeds)
+    s = summary(rows)
+    s["update"] = state["updates"]
+    s["vs start"] = compare(rows, base)
+    write_json(out / f"check_u{state['updates']:05d}.json", {"summary": s, "games": rows})
+    print(f"check u{state['updates']}: {describe(s['vs start'])}", flush=True)
+    report(status, doing="", check={"update": state["updates"], **s["vs start"]})
+    return s
 
 
 def evaluate_and_report(model: Policy, out: Path, state: dict, seeds: list[str], status: dict) -> None:
@@ -577,6 +606,9 @@ def main() -> int:
     tr.add_argument("--max-grad", type=float, default=0.5)
     tr.add_argument("--eval-every", type=float, default=2.0, help="hours between evaluations (0: end only)")
     tr.add_argument("--eval-games", type=int, default=1000)
+    tr.add_argument("--final-check", type=int, default=0,
+                    help="at the end, the finished policy and its start on this many evaluation "
+                         "seeds, seed by seed (0: none)")
     args = ap.parse_args()
     torch.set_num_threads(args.threads)
     if not args.normal_priority:

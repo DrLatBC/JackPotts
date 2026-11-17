@@ -80,9 +80,47 @@ def test_resume_command_parses_back_to_the_saved_args():
         ap.add_argument("--" + key.replace("_", "-"), type=type(value))
     ap.add_argument("--normal-priority", action="store_true")
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--final-check", type=int)
     back = vars(ap.parse_args(cmd[4:]))
     assert back["start"] == "" and back["lr"] == 1e-05 and back["normal_priority"] and back["resume"]
     assert back["hours"] == 1.0 and back["games_per_step"] == 1024
+
+
+def test_resume_can_give_the_run_new_hours_and_adds_fixed_flags_it_lacks():
+    cmd = learning.resume_command({**SAVED_ARGS, "eval_games": 200}, hours=9.0)
+    flags = dict(zip(cmd[4:-1:2], cmd[5:-1:2]))
+    assert flags["--hours"] == "9.0"
+    assert flags["--final-check"] == "5000"  # the run was started without it
+    assert flags["--eval-games"] == "200"  # its own value wins over the panel's
+    assert cmd.count("--final-check") == 1 and cmd[-1] == "--resume"
+
+
+def test_a_finished_run_resumes_when_given_more_hours(rl_files):
+    _saved_run(rl_files, "done", seconds=3601, hours=1.0)
+    assert not learning.resumable("done")
+    assert not learning.resumable("done", 1.0)
+    assert learning.resumable("done", 9.0)
+    assert learning.hours_done("done") == pytest.approx(3601 / 3600)
+
+
+def test_a_run_starts_from_a_copy_or_a_runs_update_save(rl_files):
+    (rl_files / "rl" / "models" / "b187.pt").write_text("")
+    run = _saved_run(rl_files, "r1", seconds=10, hours=1.0)
+    for name in ("u00000.pt", "u00019.pt"):
+        (run / name).write_text("")
+    _saved_run(rl_files, "latest-only", seconds=10, hours=1.0)
+    assert learning.start_sources() == ["copy b187", "run r1"]
+    assert learning.start_saves("run r1") == ["u00019", "u00000"]  # never latest
+    assert learning.start_saves("copy b187") == ["b187"]
+    assert learning.start_arg("copy b187", "b187") == "b187"
+    for source, save in (("copy b187", "b187"), ("run r1", "u00019")):
+        assert learning.start_choice(learning.start_arg(source, save)) == (source, save)
+
+
+def test_a_start_under_the_repository_is_passed_as_a_relative_path(monkeypatch):
+    monkeypatch.setattr(learning, "RL_DATA", learning.BASE_DIR / "rl" / "data")
+    assert learning.start_arg("run s2-steps", "u00019") == "rl/data/ppo/s2-steps/u00019.pt"
+    assert learning.start_choice("rl/data/ppo/s2-steps/u00019.pt") == ("run s2-steps", "u00019")
 
 
 @pytest.mark.parametrize("name, ok", [("r1", True), ("s2-beta.03_b", True), ("", False),
@@ -196,9 +234,38 @@ def _log(run_dir, lines):
     (run_dir / "log.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines))
 
 
-def _eval(run_dir, update, win, ante):
+def _eval(run_dir, update, win, ante, games=()):
     summary = {"update": update, "win rate": win, "win rate +/-": 0.007, "mean final ante": ante}
-    (run_dir / f"eval_u{update:05d}.json").write_text(json.dumps({"summary": summary, "games": []}))
+    (run_dir / f"eval_u{update:05d}.json").write_text(json.dumps({"summary": summary, "games": list(games)}))
+
+
+def _games(antes):
+    return [{"seed": f"RLE-{i:06d}", "won": a == 9, "ante": a} for i, a in enumerate(antes, 1)]
+
+
+def test_the_newest_eval_is_compared_with_update_0_on_the_same_seeds(rl_files):
+    run = _saved_run(rl_files, "r1", seconds=10, hours=1.0)
+    _eval(run, 0, 0.0, 3.0, _games([3, 3, 3, 3]))
+    assert learning.eval_vs_start("r1") is None
+    _eval(run, 6, 0.25, 4.5, _games([3, 9, 3, 3]))
+    _eval(run, 11, 0.5, 5.0, _games([9, 9, 3, 3]))
+    vs = learning.eval_vs_start("r1")
+    assert vs["update"] == 11 and vs["seeds"] == 4
+    assert vs["win gain"] == 0.5 and vs["ante gain"] == 3.0
+    assert vs["won only here"] == 2 and vs["won only by base"] == 0
+    assert learning.run_overview("r1", None)["vs start"]["update"] == 11
+
+
+def test_a_runs_newest_check_shows_in_its_row_and_summary(rl_files):
+    run = _saved_run(rl_files, "r1", seconds=3601, hours=1.0)
+    for update, gain in ((10, 0.01), (19, 0.0444)):
+        summary = {"update": update, "vs start": {"seeds": 5000, "win rate": 0.0894, "base win rate": 0.045,
+                                                  "win gain": gain, "win gain +/-": 0.0043}}
+        (run / f"check_u{update:05d}.json").write_text(json.dumps({"summary": summary, "games": []}))
+    row = learning.run_overview("r1", None)
+    assert row["check"]["update"] == 19 and row["check"]["win gain"] == 0.0444
+    text = learning.training_summary({"update": 19, "hours": 1, "hours total": 1, "games": 10, **row})
+    assert "5,000-seed check 8.9% wins (+4.4 ± 0.4 on the start)" in text
 
 
 LINE = {"update": 3, "games": 3072, "points per finished game": 3.1, "agreement with copy": 0.95, "drift": 0.01}

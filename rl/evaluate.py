@@ -29,6 +29,16 @@ from rl.playback import env_view, make_env, no_legal_action, read_seeds
 from rl.train import HELDOUT, load_model
 
 DATA = Path(__file__).resolve().parent / "data"
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def model_file(name: str) -> Path:
+    """A copy by name (``rl/data/models/<name>.pt``) or any saved policy by its ``.pt``
+    path; a relative path is read from the repository root."""
+    if not name.endswith(".pt"):
+        return DATA / "models" / f"{name}.pt"
+    path = Path(name)
+    return path if path.is_absolute() else ROOT / path
 WIN_ANTE = 9
 MAX_STEPS = 3000
 PAST = (1, 2, 4, 6)
@@ -167,7 +177,7 @@ def main() -> int:
     if args.threads:
         torch.set_num_threads(args.threads)
 
-    path = Path(args.name) if args.name.endswith(".pt") else DATA / "models" / f"{args.name}.pt"
+    path = model_file(args.name)
     model, meta = load_model(path)
     if args.seeds:
         return evaluation_seeds(model, args, path)

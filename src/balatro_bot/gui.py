@@ -29,6 +29,7 @@ from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
 from balatro_bot import learning
+from balatro_bot.eval_compare import describe
 from balatro_bot.learning import pid_alive
 from balatro_bot.supervisor import (
     BASE_DIR, BASE_PORT, COMMANDS_DIR, LOG_DIR, MAX_INSTANCES, PAUSE_FILE, PORT_SPAN, PYTHON,
@@ -959,8 +960,10 @@ class RunList(tk.Canvas):
                                       width=0)
 
 
-def _stat_cards(parent: tk.Misc, specs, *, size: int = 13) -> tuple[dict, dict]:
-    """A row of stat cards: big value over a small caption. Returns their value vars and labels."""
+def _stat_cards(parent: tk.Misc, specs, *, size: int = 13, notes: dict | None = None) -> tuple[dict, dict]:
+    """A row of stat cards: big value over a small caption. Returns their value vars and
+    labels. With ``notes``, each card also gets a small line under its caption, its label
+    stored there by key."""
     values, labels = {}, {}
     for col, (key, name) in enumerate(specs):
         parent.columnconfigure(col, weight=1, uniform="card")
@@ -970,8 +973,20 @@ def _stat_cards(parent: tk.Misc, specs, *, size: int = 13) -> tuple[dict, dict]:
         lbl = tk.Label(card, textvariable=var, bg=CARD, fg=DIM, font=(FONT, size, "bold"), anchor="w")
         lbl.pack(anchor="w", fill="x")
         tk.Label(card, text=name, bg=CARD, fg=MUTED, font=(FONT, 8, "bold")).pack(anchor="w")
+        if notes is not None:
+            notes[key] = tk.Label(card, text="", bg=CARD, fg=MUTED, font=(FONT, 8))
+            notes[key].pack(anchor="w")
         values[key], labels[key] = var, lbl
     return values, labels
+
+
+def _gain_colour(gain: float, se: float) -> str:
+    """Green or red once a gain is more than two standard errors from nothing."""
+    if gain > 2 * se:
+        return GREEN
+    if gain < -2 * se:
+        return RED
+    return MUTED
 
 
 def _fill_cards(values: dict, labels: dict, shown: dict) -> None:
@@ -1012,18 +1027,24 @@ class TrainTab(tk.Frame):
         head.pack(fill="x")
         controls = ttk.Frame(head, style="Card.TFrame", padding=(px(12), px(8)))
         controls.pack(side="left", fill="y")
+        source, save = learning.start_choice(s["train_copy"])
         self.vars = {
             "train_run": tk.StringVar(value=""),
-            "train_copy": tk.StringVar(value=s["train_copy"]),
+            "train_source": tk.StringVar(value=source),
+            "train_save": tk.StringVar(value=save),
             "train_hours": tk.DoubleVar(value=s["train_hours"]),
             "train_beta": tk.DoubleVar(value=s["train_beta"]),
         }
+        self.source_input = ttk.Combobox(controls, values=learning.start_sources(), state="readonly", width=14,
+                                         textvariable=self.vars["train_source"])
+        self.save_input = ttk.Combobox(controls, state="readonly", width=9, textvariable=self.vars["train_save"])
+        self.hours_input = ttk.Spinbox(controls, from_=0.5, to=200, increment=0.5, width=5,
+                                       textvariable=self.vars["train_hours"])
         fields = [
             ("RUN", ttk.Entry(controls, width=14, textvariable=self.vars["train_run"])),
-            ("COPY", ttk.Combobox(controls, values=learning.copies(), state="readonly", width=10,
-                                  textvariable=self.vars["train_copy"])),
-            ("HOURS", ttk.Spinbox(controls, from_=0.5, to=200, increment=0.5, width=5,
-                                  textvariable=self.vars["train_hours"])),
+            ("START", self.source_input),
+            ("SAVE", self.save_input),
+            ("HOURS", self.hours_input),
             ("BETA", ttk.Spinbox(controls, from_=0, to=1, increment=0.01, width=5,
                                  textvariable=self.vars["train_beta"])),
         ]
@@ -1033,7 +1054,13 @@ class TrainTab(tk.Frame):
                 row=0, column=col, sticky="w", padx=(0, px(12)), pady=(0, px(3)))
             widget.grid(row=1, column=col, sticky="w", padx=(0, px(12)))
             self.inputs.append(widget)
+        tip(self.source_input, "A copy of the bot, or a run's saved update; the run is pulled toward it")
+        tip(self.hours_input, "The run's total hours; raise it on a run that has stopped or finished, then Resume")
         self.vars["train_run"].trace_add("write", lambda *_: self.refresh() if self.selected is None else None)
+        self.vars["train_source"].trace_add("write", lambda *_: self._sync_saves())
+        self.vars["train_hours"].trace_add("write", lambda *_: self._fill_head() if self.selected else None)
+        self._sync_saves()
+        self.shown_run: str | None = None
 
         buttons = tk.Frame(head, bg=BG)
         buttons.pack(side="left", fill="y", padx=(px(12), 0))
@@ -1064,9 +1091,14 @@ class TrainTab(tk.Frame):
 
         cards = tk.Frame(right, bg=BG)
         cards.pack(fill="x", pady=(px(10), 0))
+        self.card_notes: dict[str, tk.Label] = {}
         self.card_vals, self.card_labels = _stat_cards(cards, (
             ("update", "UPDATE"), ("hours", "HOURS"), ("games", "GAMES"), ("points", "POINTS"),
-            ("agreement", "AGREEMENT"), ("drift", "DRIFT"), ("eval", "EVAL WINS"), ("ante", "EVAL ANTE")))
+            ("agreement", "AGREEMENT"), ("drift", "DRIFT"), ("eval", "EVAL WINS"), ("ante", "EVAL ANTE")),
+            notes=self.card_notes)
+        for key in ("eval", "ante"):
+            tip(self.card_labels[key], self._vs_start_tip)
+            tip(self.card_notes[key], self._vs_start_tip)
 
         charts = tk.Frame(right, bg=BG)
         charts.pack(fill="both", expand=True, pady=(px(10), 0))
@@ -1095,17 +1127,31 @@ class TrainTab(tk.Frame):
         self.selected, self.pinned = name, True
         if name is None:
             s = load_settings()
+            source, save = learning.start_choice(s["train_copy"])
             self.vars["train_run"].set("")
-            self.vars["train_copy"].set(s["train_copy"])
+            self.vars["train_source"].set(source)
+            self.vars["train_save"].set(save)
             self.vars["train_hours"].set(s["train_hours"])
             self.vars["train_beta"].set(s["train_beta"])
         self.refresh()
+
+    def _sync_saves(self) -> None:
+        source = self.vars["train_source"].get()
+        saves = learning.start_saves(source) if source else []
+        self.save_input.configure(values=saves)
+        if self.vars["train_save"].get() not in saves:
+            self.vars["train_save"].set(saves[0] if saves else "")
+
+    def _hours(self) -> float | None:
+        try:
+            return float(self.vars["train_hours"].get())
+        except (tk.TclError, ValueError):
+            return None
 
     def _settings(self) -> dict:
         try:
             settings = {
                 "train_run": self.vars["train_run"].get().strip(),
-                "train_copy": self.vars["train_copy"].get(),
                 "train_hours": float(self.vars["train_hours"].get()),
                 "train_beta": float(self.vars["train_beta"].get()),
             }
@@ -1116,8 +1162,10 @@ class TrainTab(tk.Frame):
             raise ValueError("Name the run with letters, digits, - _ and . only.")
         if learning.run_taken(name) or name in self.playing:
             raise ValueError(f"{name} already exists. Pick it in the list to resume it, or use another name.")
-        if settings["train_copy"] not in learning.copies():
-            raise ValueError("Pick the copy to start from.")
+        source, save = self.vars["train_source"].get(), self.vars["train_save"].get()
+        if source not in learning.start_sources() or save not in learning.start_saves(source):
+            raise ValueError("Pick what the run starts from.")
+        settings["train_copy"] = learning.start_arg(source, save)
         if settings["train_hours"] <= 0:
             raise ValueError("Hours must be above 0.")
         if settings["train_beta"] < 0:
@@ -1145,14 +1193,15 @@ class TrainTab(tk.Frame):
         self._launched(learning.launch_training(learning.train_command(settings), run), run)
 
     def resume(self) -> None:
-        name = self.selected
-        if name is None or name in self.playing or not learning.resumable(name) or self.phase == "outside":
+        name, hours = self.selected, self._hours()
+        if (name is None or name in self.playing or hours is None or not learning.resumable(name, hours)
+                or self.phase == "outside"):
             return
         if not self._others_ok():
             return
         state = learning.run_state(name)
-        self._launched(learning.launch_training(learning.resume_command(state["args"]), name, append=True),
-                       name)
+        cmd = learning.resume_command(state["args"], hours)
+        self._launched(learning.launch_training(cmd, name, append=True), name)
 
     def _launched(self, proc: subprocess.Popen, run: str) -> None:
         self.proc, self.launched_at, self.launched_run, self.early = proc, time.time(), run, None
@@ -1222,18 +1271,31 @@ class TrainTab(tk.Frame):
     def _fill_head(self) -> None:
         row, phase = self.row, self.phase
         new = self.selected is None
-        if not new:
-            for key, value in (("train_run", row["run"]), ("train_copy", row.get("copy") or ""),
-                               ("train_hours", row.get("hours total") or 0), ("train_beta", row.get("beta") or 0)):
+        active = phase in learning.TRAIN_ACTIVE or phase == "outside"
+        # A run this window just launched has no settings to show until its first status.
+        if not new and row is not None and (row.get("copy") or phase != "starting"):
+            source, save = learning.start_choice(row.get("copy") or "")
+            shown = [("train_run", row["run"]), ("train_source", source), ("train_save", save),
+                     ("train_beta", row.get("beta") or 0)]
+            # Hours follow the run while it plays; on a run that has stopped they are the
+            # new total Resume gives it, so a refresh leaves what was typed.
+            if active or self.shown_run != row["run"]:
+                shown.append(("train_hours", row.get("hours total") or 0))
+            for key, value in shown:
                 if str(self.vars[key].get()) != str(value):
                     self.vars[key].set(value)
+            self.shown_run = row["run"]
+        else:
+            self.shown_run = None
         for w in self.inputs:
-            w.state(["!disabled"] if new else ["disabled"])
+            on = new or (w is self.hours_input and not active)
+            w.state(["!disabled"] if on else ["disabled"])
         name = self.vars["train_run"].get().strip()
         can_start = (new and learning.valid_run_name(name) and not learning.run_taken(name)
                      and name not in self.playing)
-        can_resume = (not new and phase in ("stopped", "failed") and self.selected not in self.playing
-                      and learning.resumable(self.selected))
+        hours = self._hours()
+        can_resume = (not new and phase in ("stopped", "failed", "finished") and self.selected not in self.playing
+                      and hours is not None and learning.resumable(self.selected, hours))
         for btn, on in ((self.start_btn, can_start), (self.resume_btn, can_resume),
                         (self.stop_btn, phase == "running")):
             btn.state(["!disabled"] if on else ["disabled"])
@@ -1246,11 +1308,12 @@ class TrainTab(tk.Frame):
         if self.selected is None:
             if name and learning.run_taken(name):
                 return f"{name} already exists: pick it in the list to see or resume it."
-            return "Name the run, pick the copy, then Start."
+            return "Name the run, pick where it starts, then Start."
         if phase == "starting" or row.get("doing") == "starting":
             return "Loading the model…"
         if phase == "running":
-            doing = "Evaluating" if row.get("doing") == "evaluating" else "Playing and learning"
+            doing = {"evaluating": "Evaluating", "checking": "Checking against the start, seed by seed"}.get(
+                row.get("doing"), "Playing and learning")
             return f"{doing}  ·  from {row.get('copy') or '?'}"
         if phase == "stopping":
             return "Stopping after this update; it saves first."
@@ -1261,7 +1324,19 @@ class TrainTab(tk.Frame):
         if phase == "stopped":
             return (f"Stopped at update {row.get('update', 0)}. Resume carries it on." if can_resume
                     else "Stopped before its first update.")
-        return f"Played its {row.get('hours total') or 0:g} h over {row.get('update', 0)} updates."
+        text = f"Played its {row.get('hours total') or 0:g} h over {row.get('update', 0)} updates."
+        check = row.get("check")
+        if check:
+            text += f"  Check at update {check['update']}: {describe(check)}."
+        text += ("  Resume carries it on to the new hours." if can_resume
+                 else "  Raise HOURS to carry it on with Resume.")
+        return text
+
+    def _vs_start_tip(self) -> str:
+        c = (self.row or {}).get("vs start")
+        if not c:
+            return "Against the start once the run has a second evaluation"
+        return f"Update {c['update']} against update 0 (the start): {describe(c)}"
 
     def _fill_cards(self) -> None:
         row, shown = self.row or {}, {}
@@ -1277,6 +1352,17 @@ class TrainTab(tk.Frame):
             if ev:
                 shown["eval"], shown["ante"] = _pct(ev["win rate"]), f"{ev['mean final ante']:.2f}"
         _fill_cards(self.card_vals, self.card_labels, shown)
+        vs = row.get("vs start") if "eval" in shown else None
+        if vs and vs["update"] != (row.get("eval") or {}).get("update"):
+            vs = None
+        for key, gain, se, text in (
+                ("eval", "win gain", "win gain +/-", lambda g: f"{g * 100:+.1f} vs u0"),
+                ("ante", "ante gain", "ante gain +/-", lambda g: f"{g:+.2f} vs u0")):
+            note = self.card_notes[key]
+            if vs:
+                note.configure(text=text(vs[gain]), fg=_gain_colour(vs[gain], vs[se]))
+            else:
+                note.configure(text="")
 
     def _fill_charts(self) -> None:
         data = self.history.of(self.selected) if self.selected else {"update": [], "points": [],

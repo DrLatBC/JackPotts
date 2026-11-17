@@ -14,6 +14,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from balatro_bot.eval_compare import compare
 from balatro_bot.stream import STREAM_DIR
 from balatro_bot.supervisor import BASE_DIR, LOG_DIR, PYTHON
 
@@ -22,7 +23,8 @@ RL_DATA = BASE_DIR / "rl" / "data"
 TRAIN_DIR = LOG_DIR / "training"
 # The train flags the panel doesn't show.
 TRAIN_FIXED = ["--games-per-step", "1024", "--plays", "4", "--seeds", "32", "--fade", "0",
-               "--eval-every", "0.5", "--eval-games", "1000", "--threads", "4"]
+               "--eval-every", "0.5", "--eval-games", "1000", "--final-check", "5000",
+               "--threads", "4"]
 TRAIN_ACTIVE = ("starting", "running", "stopping")
 RUN_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 # A run with no status file whose log changed this recently may still be playing from
@@ -84,11 +86,55 @@ def run_state(name: str) -> dict | None:
     return read_json(run_dir(name) / "state.json") if valid_run_name(name) else None
 
 
-def resumable(name: str) -> bool:
-    """True when the run saved progress and has hours left to play."""
+def resumable(name: str, hours: float | None = None) -> bool:
+    """True when the run saved progress and has hours left to play: of its own total,
+    or of ``hours`` when a resume gives it a new one."""
     state = run_state(name)
-    return (state is not None and (run_dir(name) / "latest.pt").exists()
-            and state["seconds"] < state["args"]["hours"] * 3600)
+    if state is None or not (run_dir(name) / "latest.pt").exists():
+        return False
+    total = state["args"]["hours"] if hours is None else hours
+    return state["seconds"] < total * 3600
+
+
+def hours_done(name: str) -> float:
+    state = run_state(name)
+    return state["seconds"] / 3600 if state else 0.0
+
+
+# ── What a run starts from ──
+
+
+def start_sources() -> list[str]:
+    """What a new run can start from: each copy, then each run with an update save,
+    newest first."""
+    sources = model_sources()
+    return ([s for s in sources if s.startswith("copy ")]
+            + [s for s in sources if s.startswith("run ") and start_saves(s)])
+
+
+def start_saves(source: str) -> list[str]:
+    """A source's saves a run can start from. A run's ``latest`` is left out: it changes
+    while that run plays, and the new run is pulled toward its start for as long as it
+    plays."""
+    return [c for c in checkpoints(source) if c != "latest"]
+
+
+def start_arg(source: str, save: str) -> str:
+    """``--start`` for a choice: a copy's name, or a save's path from the repository root."""
+    if source.startswith("copy "):
+        return source.split(" ", 1)[1]
+    path, _ = model_choice(source, save)
+    try:
+        return path.relative_to(BASE_DIR).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def start_choice(start: str) -> tuple[str, str]:
+    """The (source, save) a ``--start`` stands for: the inverse of start_arg."""
+    if not start.endswith(".pt"):
+        return f"copy {start}", start
+    return choice_of(start)
 
 
 def train_command(settings: dict) -> list[str]:
@@ -97,14 +143,23 @@ def train_command(settings: dict) -> list[str]:
             "--beta", str(settings["train_beta"]), *TRAIN_FIXED]
 
 
-def resume_command(saved_args: dict) -> list[str]:
+def _fixed_args() -> dict:
+    return {flag[2:].replace("-", "_"): value for flag, value in zip(TRAIN_FIXED[::2], TRAIN_FIXED[1::2])}
+
+
+def resume_command(saved_args: dict, hours: float | None = None) -> list[str]:
     """The run's own train command, rebuilt from the args its state.json saved, plus --resume.
 
     train reads every setting from its command line again on --resume; only progress
-    comes from state.json, so the original flags have to be passed back.
+    comes from state.json, so the original flags have to be passed back. ``hours`` is a
+    new total for the run. A fixed flag the run was started without (a run from an
+    older panel, or from a terminal) is added at the panel's value.
     """
+    args = {**_fixed_args(), **saved_args}
+    if hours is not None:
+        args["hours"] = hours
     cmd = [str(RL_PYTHONW), "-m", "rl.ppo", "train"]
-    for key, value in saved_args.items():
+    for key, value in args.items():
         if key in ("cmd", "resume"):
             continue
         flag = "--" + key.replace("_", "-")
@@ -184,8 +239,11 @@ def console_tail(run: str | None) -> str:
 def training_summary(status: dict) -> str:
     text = (f"update {status.get('update', 0)}  ·  {status.get('hours', 0):.2f} of "
             f"{status.get('hours total', 0):g} h  ·  {status.get('games', 0):,} games")
-    ev = status.get("eval")
-    if ev:
+    check, ev = status.get("check"), status.get("eval")
+    if check:
+        text += (f"  ·  {check['seeds']:,}-seed check {check['win rate']:.1%} wins "
+                 f"({check['win gain'] * 100:+.1f} ± {check['win gain +/-'] * 100:.1f} on the start)")
+    elif ev:
         text += f"  ·  eval {ev['win rate']:.1%} wins, ante {ev['mean final ante']:.2f}"
     return text
 
@@ -227,6 +285,41 @@ def last_eval(name: str) -> dict | None:
     return None if s is None else {k: s[k] for k in ("update", "win rate", "win rate +/-", "mean final ante")}
 
 
+_GAMES: dict[tuple[str, int], list] = {}
+
+
+def _eval_games(path: Path) -> list | None:
+    """An evaluation file's games; each file is read once."""
+    try:
+        key = (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        return None
+    if key not in _GAMES:
+        try:
+            _GAMES[key] = json.loads(path.read_text(encoding="utf-8"))["games"]
+        except (OSError, ValueError, KeyError):
+            return None
+    return _GAMES[key]
+
+
+def eval_vs_start(name: str) -> dict | None:
+    """The newest evaluation against update 0's (the policy the run started from) on the
+    same seeds, seed by seed; None before a second evaluation."""
+    evals = sorted(run_dir(name).glob("eval_u*.json"))
+    if len(evals) < 2 or evals[0].name != "eval_u00000.json":
+        return None
+    games, base = _eval_games(evals[-1]), _eval_games(evals[0])
+    c = compare(games, base) if games and base else None
+    return None if c is None else {"update": int(evals[-1].stem[6:]), **c}
+
+
+def last_check(name: str) -> dict | None:
+    """The newest final check (``rl.ppo --final-check``): the run against its start."""
+    checks = sorted(run_dir(name).glob("check_u*.json"))
+    s = _eval_summary(checks[-1]) if checks else None
+    return None if s is None or not s.get("vs start") else {"update": s["update"], **s["vs start"]}
+
+
 def run_overview(name: str, status: dict | None, now: float | None = None) -> dict | None:
     """One row of the run list: the run's status when it has one, else what its files
     say. None for a folder that holds no run."""
@@ -245,13 +338,15 @@ def run_overview(name: str, status: dict | None, now: float | None = None) -> di
         "games": state.get("games", line.get("games", 0)),
         "points per game": line.get("points per finished game"),
         "agreement": line.get("agreement with copy"), "drift": line.get("drift"),
-        "eval": last_eval(name), "updated": activity,
+        "eval": last_eval(name), "check": last_check(name), "updated": activity,
     }
     if status is not None:
         row.update({k: v for k, v in status.items() if v is not None})
         row["updated"] = max(activity, status.get("updated", 0))
         row["phase"] = training_phase(status, train_file(name, ".stop").exists())
+        row["vs start"] = eval_vs_start(name)
         return row
+    row["vs start"] = eval_vs_start(name)
     now = time.time() if now is None else now
     if args and state.get("seconds", 0) >= args.get("hours", 0) * 3600:
         row["phase"] = "finished"
