@@ -301,3 +301,9 @@ def post_batch_finish(batch_id: int, status: str = "finished") -> None:
 
 # Flush on process exit so no games are lost
 atexit.register(flush_games)
+
+
+def post_learning(path: str, payload: dict) -> Optional[dict]:
+    """One learning-run or stream send (``balatro_bot.learning_sync``); the reply says
+    what the dashboard holds, or None if it couldn't be reached."""
+    return _post(path, payload)

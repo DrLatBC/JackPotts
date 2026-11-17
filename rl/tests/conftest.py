@@ -3,6 +3,14 @@
 
 from __future__ import annotations
 
+import os
+
+# Tests never reach the live dashboard, including from atexit hooks that run after
+# pytest restores monkeypatched variables. Set empty rather than removed, because
+# balatro_bot.config fills unset keys from .env.local.
+os.environ["JACKPOTTS_URL"] = ""
+os.environ["JACKPOTTS_API_KEY"] = ""
+
 from pathlib import Path
 
 import pytest

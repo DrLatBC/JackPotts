@@ -31,6 +31,7 @@ from tkinter import messagebox, ttk
 from balatro_bot import learning
 from balatro_bot.eval_compare import describe
 from balatro_bot.learning import pid_alive
+from balatro_bot.learning_sync import Uploader as LearningUploader
 from balatro_bot.supervisor import (
     BASE_DIR, BASE_PORT, COMMANDS_DIR, LOG_DIR, MAX_INSTANCES, PAUSE_FILE, PORT_SPAN, PYTHON,
     STATUS_FILE, STOP_FILE,
@@ -2296,6 +2297,7 @@ def main() -> None:
     root = tk.Tk()
     root.iconbitmap(default=str(ICON_FILE))
     ControlPanel(root)
+    LearningUploader().start()
     root.mainloop()
 
 
