@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=480">
+<title>JackPotts Overlay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #121731;
+  --panel: #1b2245;
+  --line: #2c3566;
+  --chips: #3d8fe0;
+  --mult: #e5484d;
+  --gold: #f2b33d;
+  --text: #eef0f8;
+  --dim: #8c93b8;
+  --card: #f4f1e8;
+  --card-ink: #1d2140;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { width: 480px; height: 1080px; overflow: hidden; }
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: "Archivo", system-ui, sans-serif;
+  font-variation-settings: "wdth" 100;
+  font-size: 20px;
+  line-height: 1.3;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px 22px;
+}
+section { background: var(--panel); border-radius: 14px; padding: 18px 20px; }
+.quiet { color: var(--dim); }
+.narrow { font-stretch: 75%; font-variation-settings: "wdth" 75; }
+
+/* Outlook */
+#outlook-row { display: flex; align-items: flex-end; justify-content: space-between; }
+#outlook-label { font-size: 22px; font-weight: 600; }
+#outlook-num {
+  font-size: 76px; line-height: 0.9; font-weight: 900;
+  font-variation-settings: "wdth" 125; color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+#outlook-note { font-size: 15px; margin-top: 4px; }
+#graph { display: block; width: 100%; height: 150px; margin-top: 14px; }
+#where { display: flex; justify-content: space-between; margin-top: 10px; font-size: 18px; }
+#where b { font-weight: 700; }
+
+/* Considering */
+#considering { flex: 1; display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow: hidden; }
+#options { display: flex; flex-direction: column; gap: 18px; }
+#considering h2 { font-size: 22px; font-weight: 600; }
+.option { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; row-gap: 8px; align-items: baseline; }
+.option .what { font-weight: 700; font-size: 24px; }
+.option .what .hand { color: var(--chips); }
+.option .pct { font-weight: 800; font-size: 24px; font-variant-numeric: tabular-nums; }
+.option .bar { grid-column: 1 / -1; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.option .bar i { display: block; height: 100%; border-radius: 4px; background: var(--chips); }
+.option .sure { grid-column: 1 / -1; font-size: 15px; }
+.option.lead .what { font-size: 30px; }
+.option.lead .pct { font-size: 30px; color: var(--gold); }
+.option.lead .bar { height: 12px; border-radius: 6px; }
+.option.lead .bar i { background: var(--gold); }
+.option.alt { opacity: .8; }
+
+.fan { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.card {
+  width: 56px; height: 74px; border-radius: 8px; background: var(--card); color: var(--card-ink);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  font-weight: 800; box-shadow: 0 3px 0 #0a0d20;
+}
+.card .r { font-size: 26px; line-height: 1; font-variation-settings: "wdth" 80; }
+.card .s { font-size: 24px; line-height: 1.1; }
+.card.red { color: #c8313a; }
+.card.blank { background: var(--line); color: var(--dim); box-shadow: none; }
+.card.word .r { font-size: 14px; font-variation-settings: "wdth" 62; }
+.alt .fan .card { width: 34px; height: 46px; border-radius: 6px; box-shadow: 0 2px 0 #0a0d20; }
+.alt .fan .card .r { font-size: 16px; }
+.alt .fan .card .s { font-size: 14px; }
+.alt .fan .card.word .r { font-size: 10px; }
+.item {
+  grid-column: 1 / -1; justify-self: start; padding: 6px 12px; border-radius: 8px;
+  background: var(--line); font-weight: 700; font-size: 20px;
+}
+.lead .item { font-size: 24px; padding: 8px 14px; }
+
+/* Model and record */
+#model-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+#run { font-weight: 700; font-size: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#update { font-size: 18px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#gained { font-size: 16px; margin-top: 4px; color: var(--dim); }
+#gained.on {
+  justify-self: start; display: inline-block; padding: 2px 10px; border-radius: 6px;
+  background: var(--gold); color: var(--ink); font-weight: 800;
+}
+#record { display: flex; align-items: baseline; gap: 14px; margin-top: 14px; }
+#record .big { font-size: 34px; font-weight: 900; font-variation-settings: "wdth" 115; font-variant-numeric: tabular-nums; }
+#recent { display: flex; gap: 6px; margin-top: 12px; }
+.game {
+  width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
+  font-weight: 800; font-size: 16px; background: var(--line); color: var(--dim);
+}
+.game.won { background: var(--gold); color: var(--ink); }
+.game.lost { background: var(--mult); color: var(--text); }
+
+#waiting { flex: 1; display: none; align-items: center; justify-content: center; text-align: center; font-size: 24px; }
+body.idle #outlook, body.idle #considering, body.idle #model { display: none; }
+body.idle #waiting { display: flex; }
+
+</style>
+</head>
+<body class="idle">
+<div id="waiting" class="quiet">Waiting for the stream to start</div>
+
+<section id="outlook">
+  <div id="outlook-row">
+    <div id="outlook-label">Outlook</div>
+    <div id="outlook-num">–</div>
+  </div>
+  <div id="outlook-note" class="quiet">Bosses it expects to beat from here, plus 8 for a win</div>
+  <svg id="graph" viewBox="0 0 436 150" preserveAspectRatio="none" aria-label="Outlook over this run"></svg>
+  <div id="where"><span id="ante"></span><span id="blind" class="quiet"></span></div>
+</section>
+
+<section id="considering">
+  <h2>Considering</h2>
+  <div id="options"></div>
+</section>
+
+<section id="model">
+  <div id="model-line"><span id="run"></span><span id="update" class="quiet"></span></div>
+  <div id="gained"></div>
+  <div id="record"><span class="big" id="wins"></span><span class="quiet" id="games"></span></div>
+  <div id="recent"></div>
+</section>
+
+<script>
+const MAX_OUTLOOK = 16;
+const SHOWN = 0.01;
+const LEARNED_FOR = 20000;
+const $ = (id) => document.getElementById(id);
+let seenUpdates = null, learnedUntil = 0, learnedText = "";
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function cardTile(c) {
+  if (c.name) {
+    const t = el("div", "card word"); t.append(el("span", "r", c.name)); return t;
+  }
+  if (c.rank === "?") { const t = el("div", "card blank"); t.append(el("span", "r", "?")); return t; }
+  if (c.rank === "Stone") { const t = el("div", "card word"); t.append(el("span", "r", "Stone")); return t; }
+  const red = c.suit === "♥" || c.suit === "♦";
+  const t = el("div", "card" + (red ? " red" : ""));
+  t.append(el("span", "r", c.rank), el("span", "s", c.suit));
+  return t;
+}
+
+function itemName(item) {
+  return item.name || (item.suit ? item.rank + item.suit : item.rank);
+}
+
+function optionRow(o, lead) {
+  const row = el("div", "option " + (lead ? "lead" : "alt"));
+  const what = el("div", "what");
+  what.append(document.createTextNode(o.move));
+  if (o.item && !lead) what.append(document.createTextNode(" " + itemName(o.item)));
+  else if (o.hand) { what.append(document.createTextNode(" ")); what.append(el("span", "hand", o.hand)); }
+  else if (o.cards && !o.item) what.append(document.createTextNode(` ${o.cards.length} card${o.cards.length > 1 ? "s" : ""}`));
+  row.append(what, el("div", "pct", Math.round(o.p * 100) + "%"));
+  const bar = el("div", "bar"), fill = el("i");
+  fill.style.width = (o.p * 100).toFixed(1) + "%";
+  bar.append(fill); row.append(bar);
+  if (o.item && lead) row.append(el("div", "item", itemName(o.item)));
+  if (o.cards) {
+    const fan = el("div", "fan");
+    o.cards.forEach((c) => fan.append(cardTile(c)));
+    row.append(fan);
+  }
+  if (lead && (o.cards || o.item) && o.sure < 0.995) {
+    row.append(el("div", "sure quiet", `${Math.round(o.sure * 100)}% sure of ${o.cards ? "these cards" : "this one"}`));
+  }
+  return row;
+}
+
+let lastOptions = "";
+function drawOptions(list) {
+  const key = JSON.stringify(list);
+  if (key === lastOptions) return;
+  lastOptions = key;
+  const box = $("options");
+  box.replaceChildren();
+  const shown = (list || []).filter((o, i) => i === 0 || o.p >= SHOWN);
+  shown.forEach((o, i) => box.append(optionRow(o, i === 0)));
+  if (shown.length === 1) box.append(el("div", "quiet", "No close second"));
+}
+
+function drawGraph(history, now) {
+  const svg = $("graph");
+  const w = 436, h = 150, pad = 6;
+  const pts = (history || []).concat(now === undefined ? [] : [now]);
+  const y = (v) => h - pad - (Math.max(0, Math.min(MAX_OUTLOOK, v)) / MAX_OUTLOOK) * (h - 2 * pad);
+  let grid = "";
+  for (const v of [0, 8, 16]) {
+    grid += `<line x1="0" x2="${w}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+  }
+  if (pts.length < 2) { svg.innerHTML = grid; return; }
+  const x = (i) => (i / (pts.length - 1)) * w;
+  const line = pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const area = `0,${h} ${line} ${w},${h}`;
+  svg.innerHTML = grid +
+    `<polygon points="${area}" fill="var(--gold)" opacity="0.14"/>` +
+    `<polyline points="${line}" fill="none" stroke="var(--gold)" stroke-width="3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+}
+
+function drawModel(d) {
+  const parts = (d.model || "").split(/[\\/]/);
+  const stem = (parts[parts.length - 1] || "").replace(/\.pt$/, "");
+  const name = /^(latest|u\d+)$/.test(stem) ? parts[parts.length - 2] : stem;
+  $("run").textContent = name;
+  if (d.updates !== null && d.updates !== undefined) {
+    const gained = d["first updates"] !== null ? d.updates - d["first updates"] : 0;
+    $("update").textContent = `update ${d.updates.toLocaleString()}`;
+    if (seenUpdates !== null && d.updates > seenUpdates) {
+      learnedUntil = Date.now() + LEARNED_FOR;
+      learnedText = `New save loaded, ${(d.updates - seenUpdates).toLocaleString()} more updates`;
+    }
+    seenUpdates = d.updates;
+    const fresh = Date.now() < learnedUntil;
+    $("gained").classList.toggle("on", fresh);
+    $("gained").textContent = fresh ? learnedText
+      : gained > 0 ? `${gained.toLocaleString()} updates of learning this stream` : "";
+  } else {
+    $("update").textContent = d.checkpoint || "";
+  }
+  $("wins").textContent = `${d.wins} won`;
+  $("games").textContent = `of ${d.games} game${d.games === 1 ? "" : "s"} this stream`;
+  const recent = $("recent");
+  recent.replaceChildren();
+  (d.recent || []).filter((r) => r.outcome !== "stopped").slice().reverse().forEach((r) => {
+    const cls = r.outcome === "won" ? "won" : r.outcome === "lost" ? "lost" : "";
+    const dot = el("div", "game " + cls, r.outcome === "won" ? "W" : (r.ante ?? "–"));
+    dot.title = r.outcome;
+    recent.append(dot);
+  });
+}
+
+function draw(d) {
+  const g = d.game || {};
+  document.body.classList.remove("idle");
+  $("outlook-num").textContent = g.outlook === undefined ? "–" : g.outlook.toFixed(1);
+  drawGraph(g.history, g.outlook);
+  $("ante").innerHTML = g.ante ? `Ante <b>${g.ante}</b> of 8` : "";
+  $("blind").textContent = g["blind title"] ? `${g["blind title"]}  ${Number(g.blind).toLocaleString()} to beat` : "";
+  drawOptions(g.considering);
+  drawModel(d);
+}
+
+async function poll() {
+  try {
+    const status = await fetch("status.json", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (status && status.phase !== "running") {
+      document.body.classList.add("idle");
+      $("waiting").textContent = status.phase === "starting" ? "Opening the game" : "Waiting for the stream to start";
+    } else {
+      const r = await fetch("now.json", { cache: "no-store" });
+      if (r.ok) draw(await r.json());
+    }
+  } catch (e) { /* the next poll tries again */ }
+  setTimeout(poll, 500);
+}
+poll();
+</script>
+</body>
+</html>

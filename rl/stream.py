@@ -32,14 +32,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sim" / "jackdaw_ad
 from jackdaw.bridge import DivergenceError, LiveAdapter, LiveBackend, RPCError
 from jackdaw.core import IllegalActionError, NotPortedError, random_seed
 from jackdaw.engine import actions as A
+from jackdaw.engine.data import load as game_table
 from jackdaw.env.action_space import FREE_ACTION_TYPES, ActionType, factored_to_engine_action
 from jackdaw.env.balatro_env import _rust_view
 
 from rl import dataset
 from rl.convert import left_moves
 from rl.evaluate import WIN_ANTE
-from rl.features import MAX_FREE_MOVES, View, view_from
-from rl.model import Prepared, choose
+from rl.features import CONSUMABLE, ENTITY_LIST, HAND, JOKER, MAX_FREE_MOVES, PACK, SHOP, View, view_from
+from rl.model import Prepared, weigh
 from rl.ordering import bot_order, order_can_change
 from rl.train import load_model
 from balatro_bot.files import replace_file  # noqa: E402
@@ -88,6 +89,62 @@ def describe(action) -> str:
     return " ".join(parts)
 
 
+MOVES = {
+    ActionType.PlayHand: "Play", ActionType.Discard: "Discard", ActionType.SelectBlind: "Play blind",
+    ActionType.SkipBlind: "Skip blind", ActionType.CashOut: "Cash out", ActionType.Reroll: "Reroll",
+    ActionType.NextRound: "Leave shop", ActionType.SkipPack: "Skip pack", ActionType.BuyCard: "Buy",
+    ActionType.SellJoker: "Sell", ActionType.SellConsumable: "Sell", ActionType.UseConsumable: "Use",
+    ActionType.RedeemVoucher: "Redeem", ActionType.OpenBooster: "Open", ActionType.PickPackCard: "Take",
+    ActionType.SwapJokersLeft: "Move left", ActionType.SwapJokersRight: "Move right",
+    ActionType.SwapHandLeft: "Move left", ActionType.SwapHandRight: "Move right",
+    ActionType.SortHandRank: "Sort by rank", ActionType.SortHandSuit: "Sort by suit",
+    ActionType.RerollBoss: "Reroll boss", ActionType.BuyAndUse: "Buy and use",
+}
+SUITS = {"Spades": "♠", "Hearts": "♥", "Clubs": "♣", "Diamonds": "♦"}
+RANKS = {"Jack": "J", "Queen": "Q", "King": "K", "Ace": "A"}
+# Where each item list sits on the game; the shop's list is cards, vouchers, boosters.
+ITEM_AREAS = {HAND: ("hand",), JOKER: ("jokers",), CONSUMABLE: ("consumables",),
+              SHOP: ("shop_jokers", "shop_vouchers", "shop_boosters"), PACK: ("pack_cards",)}
+
+
+def title(key: str) -> str:
+    """The game's name for a center or blind key: ``Gros Michel``, ``The Hook``."""
+    table = game_table("blinds") if key.startswith("bl_") else game_table("centers")
+    return table.get(key, {}).get("name", key)
+
+
+def card_name(card) -> dict:
+    """A card as the overlay draws it: a playing card's rank and suit (``?`` face down),
+    else the item's name."""
+    if card.front is None:
+        return {"name": title(card.key)}
+    if card.face_down:
+        return {"rank": "?"}
+    if card.key == "m_stone":
+        return {"rank": "Stone"}
+    return {"rank": RANKS.get(card.rank, card.rank), "suit": SUITS[card.suit]}
+
+
+def option(factored, game) -> dict:
+    """A move the model weighed, named for the overlay: ``{"move": "Play", "hand":
+    "Two Pair", "cards": [...]}``, ``{"move": "Buy", "item": {...}}``."""
+    t = ActionType(factored.action_type)
+    out = {"move": MOVES[t]}
+    if factored.entity_target is not None and int(t) in ENTITY_LIST:
+        items, part = ENTITY_LIST[int(t)]
+        area = getattr(game, ITEM_AREAS[items][part])
+        if factored.entity_target < len(area):
+            out["item"] = card_name(area[factored.entity_target])
+    if factored.card_target and t not in (ActionType.SwapHandLeft, ActionType.SwapHandRight):
+        cards = [game.hand[i] for i in factored.card_target]
+        out["cards"] = [card_name(c) for c in cards]
+        if t == ActionType.PlayHand and not any(c.face_down for c in cards):
+            scored = game.scoring_cards(factored.card_target)
+            if scored is not None:
+                out["hand"] = scored[0]
+    return out
+
+
 class UpstreamView:
     """The live game with the JackPotts fork's extra gamestate fields taken out of every
     answer. The shadow speaks upstream balatrobot, so without this every card differs
@@ -115,6 +172,8 @@ class Player:
         self.seeds = iter(seeds) if seeds is not None else None
         self.model = None
         self.checkpoint = ""
+        self.updates: int | None = None
+        self.first_updates: int | None = None
         self.totals = {"games": 0, "wins": 0, "divergences": 0}
         self.recent: list[dict] = []
         self.now: dict = {}
@@ -132,7 +191,8 @@ class Player:
         self.now.update(changes)
         self.out.mkdir(parents=True, exist_ok=True)
         body = {"pid": os.getpid(), "updated": time.time(), "model": str(self.model_path),
-                "checkpoint": self.checkpoint, "game": self.now, **self.totals,
+                "checkpoint": self.checkpoint, "updates": self.updates,
+                "first updates": self.first_updates, "game": self.now, **self.totals,
                 "recent": self.recent}
         tmp = self.out / "now.tmp"
         try:
@@ -157,13 +217,23 @@ class Player:
         self.model = model
         updates = meta.get("updates")
         self.checkpoint = self.model_path.stem + (f" (update {updates})" if updates is not None else "")
+        self.updates = updates
+        if self.first_updates is None:
+            self.first_updates = updates
 
     def pick(self, free: bool, refused: set) -> object:
+        """The model's move, with what it weighed written for the overlay before the
+        move is made."""
         v = without(view(self.adapter.game, free), refused)
         if not v.mask.type_mask.any():
             return None
-        action = choose(self.model, Prepared(dataset.examples_of([v])))[0]
-        return action
+        w = weigh(self.model, Prepared(dataset.examples_of([v])))
+        game = self.adapter.game
+        self.write_now(outlook=round(w.value, 2), considering=[
+            {**option(a, game), "p": round(w.types[a.action_type], 3), "sure": round(p, 3)}
+            for a, p in w.options
+        ])
+        return w.options[0][0]
 
     # -- one game ---------------------------------------------------------------
 
@@ -187,12 +257,14 @@ class Player:
         g = self.adapter.game
         return {"ante": int(g.ante), "round": int(g.round), "money": int(g.dollars),
                 "chips": int(g.chips), "blind": int(g.blind.chips), "blind name": g.blind.key,
+                "blind title": title(g.blind.key),
                 "hands": int(g.hands_left), "discards": int(g.discards_left), "phase": str(g.phase)}
 
     def play_game(self) -> dict:
         self.load()
         seed = next(self.seeds) if self.seeds is not None else random_seed()
-        self.now = {"seed": seed, "deck": self.deck, "stake": self.stake, "steps": 0, "last": ""}
+        self.now = {"seed": seed, "deck": self.deck, "stake": self.stake, "steps": 0, "last": "",
+                    "history": []}
         result = {"seed": seed, "deck": self.deck, "stake": self.stake, "checkpoint": self.checkpoint}
         started = time.time()
         free_run, streak, refused = 0, 0, set()
@@ -225,6 +297,7 @@ class Player:
                 streak, refused = 0, set()
                 free_run = free_run + 1 if factored.action_type in FREE_ACTION_TYPES else 0
                 self.now["steps"] += 1
+                self.now["history"].append(self.now["outlook"])
                 if self.delay:
                     time.sleep(self.delay)
         except DivergenceError as e:

@@ -52,7 +52,7 @@ def launcher(tmp_path, monkeypatch):
 
     monkeypatch.setattr(stream.subprocess, "Popen", popen)
     args = Namespace(model="rl/data/ppo/r1/latest.pt", follow=True, deck="BLUE", stake="WHITE", delay=1.5,
-                     port=12340)
+                     port=12340, overlay_port=0)
     return tmp_path, procs, args
 
 
@@ -200,3 +200,41 @@ def test_replace_file_waits_out_a_reader(tmp_path, monkeypatch):
     refusals[0] = 999
     tmp.write_text("newer")
     assert not files.replace_file(tmp, target, tries=3) and target.read_text() == "new"
+
+
+def test_the_overlay_is_served_while_the_stream_runs(launcher, monkeypatch):
+    import urllib.request
+
+    tmp_path, procs, args = launcher
+    (tmp_path / "now.json").unlink(missing_ok=True)
+    seen = {}
+
+    def check():
+        url = status(tmp_path).get("overlay")
+        if url and "page" not in seen:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                seen["page"] = r.status
+            (tmp_path / "stop").touch()
+
+    procs["game"] = FakeProc()
+    procs["player"] = FakeProc(polls=5, each_poll=check)
+    monkeypatch.setattr(stream, "listening", lambda port: True)
+    assert stream.run(args) == 0
+    assert seen["page"] == 200
+    with pytest.raises(OSError):
+        urllib.request.urlopen(status(tmp_path)["overlay"], timeout=2)
+
+
+def test_a_taken_overlay_port_leaves_the_stream_running(launcher, monkeypatch):
+    tmp_path, procs, args = launcher
+    procs["game"] = FakeProc()
+    procs["player"] = FakeProc(polls=3, each_poll=(tmp_path / "stop").touch)
+    monkeypatch.setattr(stream, "listening", lambda port: True)
+
+    def taken(folder, port):
+        raise OSError("in use")
+
+    monkeypatch.setattr(stream.overlay, "serve", taken)
+    assert stream.run(args) == 0
+    s = status(tmp_path)
+    assert s["phase"] == "stopped" and "overlay" not in s and "in use" in s["overlay error"]

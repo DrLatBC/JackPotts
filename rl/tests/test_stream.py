@@ -242,3 +242,50 @@ def test_a_status_write_that_fails_never_ends_a_game(tmp_path, monkeypatch):
     p = player(tmp_path, seeds=SEEDS[:1])
     p.run(1)
     assert p.recent[0]["outcome"] in ("won", "lost")
+
+
+def test_weigh_leads_with_the_move_choose_picks(tmp_path):
+    from rl import dataset
+    from rl.model import Prepared, choose, weigh
+
+    p = player(tmp_path)
+    p.load()
+    p.adapter.start("BLUE", "WHITE", SEEDS[0])
+    for _ in range(30):
+        prep = Prepared(dataset.examples_of([stream.view(p.adapter.game, True)]))
+        w = weigh(p.model, prep)
+        assert w.options[0][0] == choose(p.model, prep)[0]
+        assert abs(sum(w.types.values()) - 1) < 1e-5
+        type_p = [w.types[a.action_type] for a, _ in w.options]
+        assert type_p == sorted(type_p, reverse=True)
+        assert all(0 < sure <= 1 for _, sure in w.options)
+        p.move(w.options[0][0])
+        if p.adapter.done:
+            break
+
+
+def test_now_json_shows_what_the_model_weighed(tmp_path):
+    p = player(tmp_path, seeds=SEEDS[:1])
+    p.run(1)
+    game = json.loads((tmp_path / "now.json").read_text(encoding="utf-8"))["game"]
+    assert len(game["history"]) == game["steps"]
+    assert isinstance(game["outlook"], float)
+    lead = game["considering"][0]
+    assert lead["move"] in stream.MOVES.values() and 0 < lead["p"] <= 1 and 0 < lead["sure"] <= 1
+
+
+def test_option_names_the_cards_hand_and_item(tmp_path):
+    from jackdaw.env.game_spec import FactoredAction
+
+    p = player(tmp_path)
+    p.adapter.start("BLUE", "WHITE", SEEDS[0])
+    p.adapter.step(A.SelectBlind())
+    p.adapter.request("add", {"key": "j_photograph"})
+    game = p.adapter.game
+    played = stream.option(FactoredAction(int(ActionType.PlayHand), card_target=(0, 1)), game)
+    assert played["move"] == "Play" and played["hand"] == game.scoring_cards((0, 1))[0]
+    first = game.hand[0]
+    assert played["cards"][0] == {"rank": stream.RANKS.get(first.rank, first.rank), "suit": stream.SUITS[first.suit]}
+    sold = stream.option(FactoredAction(int(ActionType.SellJoker), entity_target=0), game)
+    assert sold == {"move": "Sell", "item": {"name": "Photograph"}}
+    assert stream.title("bl_hook") == "The Hook"

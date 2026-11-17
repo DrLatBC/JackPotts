@@ -12,12 +12,14 @@ takes it:
   item list's tokens;
 - the hand cards it selects, by scoring every legal set of cards as a whole.
 
-``Prepared`` holds a set of examples in the layout the network batches from, and
-``choose`` picks the most likely legal action for each example.
+``Prepared`` holds a set of examples in the layout the network batches from,
+``choose`` picks the most likely legal action for each example, and ``weigh`` shows
+what the model weighed at one decision point.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import combinations
 
 import numpy as np
@@ -346,6 +348,14 @@ def act(model: Policy, prep: Prepared, idx: np.ndarray | None = None,
     t = prep.tokens(idx)
     run, tokens = model.encode(t)
     types, logp = _pick(model.type_logits(run, t["type_mask"]), generator)
+    actions, logp = _complete(model, prep, idx, run, tokens, types, logp, generator)
+    return actions, logp.numpy(), model.value(run).numpy() * VALUE_SCALE
+
+
+def _complete(model: Policy, prep: Prepared, idx, run, tokens, types: np.ndarray,
+              logp: torch.Tensor, generator: torch.Generator | None):
+    """Each row's action of type ``types[row]``: its item, then its cards. ``logp`` comes
+    in as the types' log-probabilities and goes out as the whole actions'."""
     entities = np.full(len(idx), -1, np.int64)
     position = np.full(len(idx), -1, np.int64)
     rows = np.flatnonzero(_TYPE_LIST[types] >= 0)
@@ -381,7 +391,40 @@ def act(model: Policy, prep: Prepared, idx: np.ndarray | None = None,
         )
         for row in range(len(idx))
     ]
-    return actions, logp.numpy(), model.value(run).numpy() * VALUE_SCALE
+    return actions, logp
+
+
+@dataclass
+class Weighed:
+    """What the model weighed at one decision point."""
+
+    value: float
+    """The points the rest of the game is expected to bring."""
+    types: dict[int, float]
+    """Every legal action type's probability."""
+    options: list[tuple[FactoredAction, float]]
+    """The likeliest action of each of the likeliest types, with the probability of its
+    item and cards given its type; the first is ``choose``'s pick."""
+
+
+@torch.no_grad()
+def weigh(model: Policy, prep: Prepared, i: int = 0, top: int = 3) -> Weighed:
+    """Example ``i`` as the model weighs it, with the options of its ``top`` likeliest
+    action types."""
+    t = prep.tokens(np.array([i]))
+    run, tokens = model.encode(t)
+    type_logp = torch.log_softmax(model.type_logits(run, t["type_mask"]), -1)[0]
+    probs = type_logp.exp()
+    order = torch.argsort(probs, descending=True, stable=True)
+    order = order[probs[order] > 0][:top].numpy()
+    k = len(order)
+    actions, logp = _complete(model, prep, np.full(k, i), run.expand(k, -1),
+                              tokens.expand(k, -1, -1), order, torch.zeros(k), None)
+    return Weighed(
+        value=float(model.value(run)[0]) * VALUE_SCALE,
+        types={int(ty): float(probs[ty]) for ty in torch.nonzero(probs > 0).flatten()},
+        options=[(a, float(p)) for a, p in zip(actions, logp.exp())],
+    )
 
 
 def choose(model: Policy, prep: Prepared, idx: np.ndarray | None = None) -> list[FactoredAction]:

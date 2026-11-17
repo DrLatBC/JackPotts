@@ -7,6 +7,8 @@ that port's own profile with everything unlocked (``unlock_all``), then runs ``r
 against it. Both children sit in this process's kill-on-exit job, so if the launcher
 dies the game closes with it. The control panel's Stream tab starts this.
 
+Serves the overlay (``balatro_bot.overlay``) for OBS on OVERLAY_PORT while it runs.
+
 Writes ``bot_log/model_stream/status.json`` (phase starting / running / stopping / stopped /
 failed, with pids and settings); the player writes ``now.json`` beside it. Creating
 ``bot_log/model_stream/stop`` ends the stream: the player stops between moves, then the game
@@ -27,6 +29,7 @@ import zipfile
 import zlib
 from pathlib import Path
 
+from balatro_bot import overlay
 from balatro_bot.files import replace_file
 from balatro_bot.supervisor import (
     BALATROBOT, BASE_DIR, LOG_DIR, LOVE_PATH, LOVELY_PATH, ensure_isolated_profile, graceful_kill,
@@ -141,6 +144,12 @@ def run(args) -> int:
               "stake": args.stake, "delay": args.delay, "port": args.port, "started": time.time()}
     STOP.unlink(missing_ok=True)
     (STREAM_DIR / "now.json").unlink(missing_ok=True)
+    try:
+        server = overlay.serve(STREAM_DIR, args.overlay_port)
+        status["overlay"] = f"http://localhost:{server.server_address[1]}/"
+    except OSError as e:
+        server = None
+        status["overlay error"] = f"overlay port {args.overlay_port} unavailable: {e}"
     write_status(status, doing="opening the game")
     tie_children_to_supervisor()
     kill_port_processes([args.port])
@@ -192,6 +201,9 @@ def run(args) -> int:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(player.pid)], capture_output=True)
         graceful_kill(game)
         STOP.unlink(missing_ok=True)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
 
 
 def main() -> int:
@@ -202,6 +214,7 @@ def main() -> int:
     ap.add_argument("--stake", default="WHITE")
     ap.add_argument("--delay", type=float, default=1.5)
     ap.add_argument("--port", type=int, default=STREAM_PORT)
+    ap.add_argument("--overlay-port", type=int, default=overlay.OVERLAY_PORT)
     args = ap.parse_args()
     try:
         return run(args)
