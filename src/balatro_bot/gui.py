@@ -303,6 +303,8 @@ _user32.RegisterClassW.restype = wintypes.ATOM
 ctypes.windll.kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 _user32.LoadImageW.restype = wintypes.HANDLE
 _user32.CreatePopupMenu.restype = wintypes.HMENU
+_user32.DestroyMenu.argtypes = [wintypes.HMENU]
+_user32.DestroyWindow.argtypes = _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 _user32.AppendMenuW.argtypes = [wintypes.HMENU, wintypes.UINT, ctypes.c_size_t, wintypes.LPCWSTR]
 _user32.TrackPopupMenu.argtypes = [
     wintypes.HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.LPVOID]
