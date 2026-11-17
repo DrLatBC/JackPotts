@@ -1,5 +1,54 @@
 # Release notes
 
+## v2.0.0 — 2026-11-17
+
+Jack Potts now has two players. The rule-based bot is joined by a model that started as a copy of it, then taught itself by playing the Jackdaw simulator. On 5,000 simulator seeds (Blue Deck, White Stake) it wins 33.8%, against about 14% for the bot over a 24,000-game batch. Around it: simulator batches at about 24,000 games an hour, a compiled Rust scoring kernel, and a desktop control panel for batches, learning runs and a live model stream.
+
+### The model
+
+- **Copy of the bot.** `rl.convert` turns simulator replays into examples and `rl.train` fits a transformer that picks the action type, its item and the set of hand cards. The first copy (`b187`, 24,000 bot games) wins 4.5% on the 5,000 evaluation seeds.
+- **Learning by playing.** `rl.ppo train` plays Jackdaw and learns from the results. A game earns one point per boss beaten plus a win bonus. *Same-seed* runs play each seed four times and judge every game against the others. *Branch* runs copy the game at a decision, play another move on the copy, and learn the move that did better at that state. Runs pick their deck, stake and win bonus.
+- **Progress, on the same 5,000 seeds:** 4.5% (copy) → 8.9% (after 1 hour) → 22.8% (a 9-hour run) → 33.8% (6 more hours), mean final ante 3.96 → 6.23.
+- **Model stream.** A saved model plays the real, visible game through balatrobot with a shadow Jackdaw run checking every move. An OBS overlay shows what the model weighed before each move.
+
+### Simulator and speed
+
+- Batches can run on [Jackdaw](https://github.com/TylerFlar/jackdaw-balatro), a Rust reimplementation of the game, with an adapter that serves the fields the balatrobot fork adds. Balatro's own Lua runs headless as the exact cross-check.
+- Simulator games are saved as compact replays (about 650 bytes a game); the dashboard gets their summaries.
+- Hand search and scoring are about 4x faster in Python (card and lineup facts built once). A compiled Rust kernel (`kernel/`) gives the same answers about 85 times faster per search. Simulator bots run on PyPy when the kernel is off.
+- Joker values are read from structured gamestate fields instead of description text.
+
+### Control panel
+
+`python -m balatro_bot.gui` (desktop shortcut "JackPotts"), a tray app that runs everything windowless:
+
+- **Batches**: start, pause, resume and stop batches of up to 100 instances. Add or remove instances mid-batch with their own deck and stake. Pick the simulator and the kernel. Live per-instance detail and games per minute. Some instances can explore runner-up shop plans and pack picks.
+- **Train**: start, stop, extend and compare learning runs. Each finished run is checked against its start, seed by seed.
+- **Stream**: run the model stream.
+- Batches run below normal priority and end with their supervisor, so the desktop stays usable and nothing is orphaned.
+
+### Bot play
+
+- Death keeps the better card (the right-hand one), in both the consumable and pack paths.
+- Cerulean Bell's forced card is in every play and discard the bot chooses, including when Death copies it.
+- Shop swaps run as one committed sell-then-buy plan; a queued buy never lands on full joker slots.
+- Planets no longer build a hand the bot never plays.
+- Scoring fixes: debuffed jokers score nothing in any phase, every Baseball Card multiplies, the Four Fingers flush suit follows the game, retrigger jokers and Blueprint/Brainstorm copy chains are counted in full, and held cards score left to right in large hands.
+- Pack soft-locks are broken by a forced skip and a stall watchdog. A stuck simulator bot restarts after a minute.
+
+### Dashboard and records
+
+- Every shop and pack decision is logged with its scored options; final hands, blind antes and pack jokers are recorded.
+- Failed game uploads are retried, 25 at a time.
+- Learning runs and the model stream are sent to the dashboard.
+
+### Project
+
+- `GLOSSARY.md` and architecture decision records in `docs/adr/`.
+- Tests: 454 → 842 (755 bot and panel, 87 for the model).
+
+---
+
 ## v1.1.0 — 2026-04-19
 
 Valuation refactor epic (#32). Eight phases folded the ad-hoc cascade of post-hoc floors, fallbacks, and patched-on adjustments in `evaluate_joker_value` into a single `SimContext` that carries everything the sim needs. Every new joker used to require its own patch layer; now it slots into a typed context that already knows about held cards, lifetime state, deck density, boss effects, and run-level observations.
