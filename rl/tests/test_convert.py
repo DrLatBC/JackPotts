@@ -53,11 +53,13 @@ def test_left_moves_reach_the_order():
 
 
 def test_selection_takes_the_forced_card_first():
-    assert selection([6, 7, 5], None, MAX_PLAY) == (5, 6, 7)
-    assert selection([3, 4, 6], 5, MAX_PLAY) == (3, 4, 5, 6)
+    assert selection([6, 7, 5], (), MAX_PLAY) == (5, 6, 7)
+    assert selection([3, 4, 6], [5], MAX_PLAY) == (3, 4, 5, 6)
     # Five cards without the forced one: the request's last card is left out.
-    assert selection([1, 3, 4, 6, 7], 0, MAX_PLAY) == (0, 1, 3, 4, 6)
-    assert selection([0, 1, 3, 5, 6], 5, MAX_PLAY) == (0, 1, 3, 5, 6)
+    assert selection([1, 3, 4, 6, 7], [0], MAX_PLAY) == (0, 1, 3, 4, 6)
+    assert selection([0, 1, 3, 5, 6], [5], MAX_PLAY) == (0, 1, 3, 5, 6)
+    # Death copied the forced card: both copies are forced, and two request cards go.
+    assert selection([2, 3, 4, 6, 7], [4, 5], MAX_PLAY) == (2, 3, 4, 5, 6)
 
 
 def test_exploring_games_and_repeated_seeds_are_left_out(records, tmp_path):

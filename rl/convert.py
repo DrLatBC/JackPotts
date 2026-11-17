@@ -85,19 +85,27 @@ def left_moves(perm: list[int]) -> list[int]:
     return moves
 
 
-def selection(cards, forced: int | None, limit: int | None = None) -> tuple[int, ...]:
-    """The cards a request selects: the forced card first, then the request's cards in
+def forced_cards(game) -> list[int]:
+    """The hand positions the bot interface keeps selected, in hand order: Cerulean
+    Bell's forced card, and any copy of it Death has made (the copy is forced too)."""
+    if get_action_mask(game).forced_card is None:
+        return []
+    return [i for i, card in enumerate(game.hand) if card.ability.get("forced_selection")]
+
+
+def selection(cards, forced=(), limit: int | None = None) -> tuple[int, ...]:
+    """The cards a request selects: the forced cards first, then the request's cards in
     order, up to ``limit``."""
-    picked = list(cards)
-    if forced is not None:
-        picked = [forced] + [c for c in picked if c != forced]
+    forced = list(forced)
+    picked = forced + [c for c in cards if c not in forced]
     if limit is not None:
         picked = picked[:limit]
     return tuple(sorted(picked))
 
 
-def to_engine(method: str, p: dict, forced: int | None):
-    """The engine action a recorded request performs (every request but ``rearrange``)."""
+def to_engine(method: str, p: dict, forced=()):
+    """The engine action a recorded request performs (every request but ``rearrange``).
+    ``forced`` is the hand positions the bot interface keeps selected (``forced_cards``)."""
     if method == "select":
         return A.SelectBlind()
     if method == "skip":
@@ -241,7 +249,7 @@ class _Converter:
             alt = game.clone()
         for at in moves:
             game.step(A.SwapHandLeft(at))
-        played = selection(range(k), get_action_mask(game).forced_card, MAX_PLAY)
+        played = selection(range(k), forced_cards(game), MAX_PLAY)
         chosen = tuple(sorted(perm[j] for j in played))
         game.step(A.PlayHand(played))
         if self.won:
@@ -284,9 +292,7 @@ class _Converter:
                 return 2
             self.reorder("hand", left_moves(p["hand"]))
             return 1
-        forced = None
-        if method in ("play", "discard", "use", "pack"):
-            forced = get_action_mask(game).forced_card
+        forced = forced_cards(game) if method in ("play", "discard", "use", "pack") else ()
         action = to_engine(method, p, forced)
         if not self.won:
             self.emit(engine_action_to_factored(action))
