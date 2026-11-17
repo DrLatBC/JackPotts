@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from jackdaw.engine import actions as A
-from jackdaw.env.balatro_env import BalatroEnvironment
+from jackdaw.env.balatro_env import BalatroEnvironment, _rust_view
 from jackdaw.env.game_interface import DirectAdapter
 
 from rl import dataset
@@ -41,6 +41,28 @@ def make_env(deck: str, stake: int, *, on_refusal: str = "raise", **kw) -> Balat
     return BalatroEnvironment(
         DirectAdapter, back_keys=[deck], stakes=[stake], on_refusal=on_refusal, **kw
     )
+
+
+def copy_env(env: BalatroEnvironment) -> tuple[BalatroEnvironment, dict]:
+    """An independent environment at the same point of the same run, and its step info.
+    Same state and the same random draws to come: played the same way, both end alike.
+
+    Built from the environment's private fields (Jackdaw 0.2.6), which have no public
+    copy; ``rl/tests/test_branch.py`` pins that a copy replays identically."""
+    new = BalatroEnvironment(
+        env._adapter_factory, back_keys=env._back_keys, stakes=env._stakes,
+        max_steps=env._max_steps, end_on_win=env._end_on_win,
+        max_free_moves=env.max_free_moves, on_refusal=env.on_refusal,
+    )
+    new._adapter._game = env._adapter.game.clone()
+    new._step_count, new._free_moves = env._step_count, env._free_moves
+    new.episode_length, new.episode_won, new.episode_ante = (
+        env.episode_length, env.episode_won, env.episode_ante)
+    game = new._adapter.game
+    obs, mask, state, splits = _rust_view(game._g.env_view(new._legality(), new._free_moves_allowed()))
+    new._state = state
+    return new, {"game": game, "state": state, "shop_splits": splits, "observation": obs,
+                 "action_mask": mask}
 
 
 def no_legal_action(info: dict) -> bool:

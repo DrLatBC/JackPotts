@@ -4,8 +4,9 @@ Many games run side by side. At each tick every game takes one step: the policy
 samples an action for each (``rl.model.act`` with a generator), plays come out in the
 bot's order (``rl.ordering``), and the step's points are counted.
 
-Points: one per boss beaten (an ante cleared) and ``WIN_BONUS`` more for the win, so a
-game is worth its final ante minus one, plus the bonus when won.
+Points: one per boss beaten (an ante cleared) and the win bonus (``WIN_BONUS`` unless a
+run sets its own) more for the win, so a game is worth its final ante minus one, plus the
+bonus when won.
 """
 
 from __future__ import annotations
@@ -27,9 +28,14 @@ from rl.playback import env_view, make_env, no_legal_action
 WIN_BONUS = 8.0
 
 
-def points(t: Transition) -> float:
+def points(t: Transition, win_bonus: float = WIN_BONUS) -> float:
     """The points one step earns."""
-    return float(t.boss_beaten) + (WIN_BONUS if t.run_won else 0.0)
+    return float(t.boss_beaten) + (win_bonus if t.run_won else 0.0)
+
+
+def game_points(result: dict, win_bonus: float = WIN_BONUS) -> float:
+    """The points a whole game earned, from its result: the sum of its steps' ``points``."""
+    return result["ante"] - 1 + (win_bonus if result["won"] else 0.0)
 
 
 def train_seed(run: str, n: int) -> str:
@@ -81,9 +87,11 @@ class SelfPlay:
     """Games on the training seeds ``train_seed(run, first), train_seed(run, first+1), ...``."""
 
     def __init__(self, run: str, *, seed: int = 0, first: int = 0,
-                 max_steps: int = MAX_STEPS) -> None:
+                 max_steps: int = MAX_STEPS, deck: str = DECK, stake: int = STAKE,
+                 win_bonus: float = WIN_BONUS) -> None:
         self.run = run
         self.max_steps = max_steps
+        self.deck, self.stake, self.win_bonus = deck, stake, win_bonus
         self.next_seed = first
         self.generator = torch.Generator().manual_seed(seed)
         self.slots: list[dict] = []
@@ -93,7 +101,7 @@ class SelfPlay:
         if seed is None:
             seed = train_seed(self.run, self.next_seed)
             self.next_seed += 1
-        env = make_env(DECK, STAKE, on_refusal="truncate", max_steps=self.max_steps)
+        env = make_env(self.deck, self.stake, on_refusal="truncate", max_steps=self.max_steps)
         _, _, info = env.reset(seed=seed)
         return {"seed": seed, "env": env, "info": info, "steps": 0, "points": 0.0}
 
@@ -112,7 +120,8 @@ class SelfPlay:
                 played = replace(
                     action, card_target=put_in_order(slot["info"]["game"], action.card_target))
             _, terminated, truncated, _, info = slot["env"].step(played)
-            reward[k] = points(Transition.from_step(played, terminated, truncated, info))
+            reward[k] = points(Transition.from_step(played, terminated, truncated, info),
+                               self.win_bonus)
             slot["info"] = info
             slot["steps"] += 1
             slot["points"] += float(reward[k])
@@ -128,7 +137,7 @@ class SelfPlay:
             self.slots.append(self._new_game())
         n = len(self.slots)
         writer = dataset.ShardWriter()
-        writer.start_game("", "", DECK, STAKE)
+        writer.start_game("", "", self.deck, self.stake)
         logp = np.zeros((ticks, n), np.float32)
         value = np.zeros((ticks, n), np.float32)
         reward = np.zeros((ticks, n), np.float32)
@@ -158,7 +167,7 @@ class SelfPlay:
         ``k * repeat`` to ``k * repeat + repeat - 1`` share a seed); only the policy's
         draws differ between them."""
         writer = dataset.ShardWriter()
-        writer.start_game("", "", DECK, STAKE)
+        writer.start_game("", "", self.deck, self.stake)
         self.slots = []
         game_of_slot: list[int] = []
         rewards: list[np.ndarray] = []

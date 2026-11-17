@@ -19,6 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
+from jackdaw.bridge.backend import DECK_FROM_BOT, STAKE_FROM_BOT
 from jackdaw.core.game import IllegalActionError
 from jackdaw.env.action_space import ActionType
 
@@ -43,7 +44,13 @@ WIN_ANTE = 9
 MAX_STEPS = 3000
 PAST = (1, 2, 4, 6)
 DECK, STAKE = "b_blue", 1
-"""What learning by playing plays on: Blue deck, White stake."""
+"""What learning by playing plays on unless a run picks its own: Blue deck, White stake."""
+DECK_NAMES, STAKE_NAMES = list(DECK_FROM_BOT), list(STAKE_FROM_BOT)
+
+
+def game_setup(deck: str, stake: str) -> tuple[str, int]:
+    """The engine's deck key and stake number for the panel's names (``"BLUE"``, ``"WHITE"``)."""
+    return DECK_FROM_BOT[deck.upper()], STAKE_FROM_BOT[stake.upper()]
 
 
 def eval_seed(n: int) -> str:

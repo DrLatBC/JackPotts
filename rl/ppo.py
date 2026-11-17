@@ -11,6 +11,16 @@ of the copy. Either way the policy then learns for ``--passes`` passes; or, with
 ``--games-per-step``, takes one step on the gradient of that many games, sized by how far
 it moves the policy (``one_step``).
 
+With ``--branch-rate`` moves are judged one at a time instead (``rl.branch``): main lines
+play greedily, a share of their decisions is played again on a copy of the game with a
+drawn move, and each decision whose two lines end differently teaches the better move
+over the worse. One step per ``--decisions-per-step`` such decisions, measured on the
+main lines' states. There is no drift penalty in this mode: ``--target-change`` alone
+limits each step.
+
+``--deck`` and ``--stake`` (the panel's names) set what the run plays and is evaluated on;
+``--win-bonus`` the points a win adds on top of one per boss beaten.
+
 Each step's points (``rl.selfplay.points``) are reduced by the drift penalty: ``beta``
 times how much more likely the playing policy found its move than the copy does
 (log-probabilities). ``beta`` falls linearly to zero over the first ``--fade`` share
@@ -37,9 +47,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from rl.evaluate import DECK, STAKE, eval_seed, model_file, play, summary
+from rl.branch import BranchPlay, tally
+from rl.evaluate import (DECK, DECK_NAMES, STAKE, STAKE_NAMES, eval_seed, game_setup, model_file,
+                         play, summary)
 from rl.model import VALUE_SCALE, Policy, Prepared, act
-from rl.selfplay import SelfPlay, advantages, same_seed_scores
+from rl.selfplay import WIN_BONUS, SelfPlay, advantages, same_seed_scores
 from rl.train import heads, load_model, save_model
 
 from balatro_bot.eval_compare import compare, describe  # noqa: E402  (src is on the path once rl is imported)
@@ -343,9 +355,17 @@ def train(args) -> int:
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     if args.resume and (out / "optim.pt").exists():
         opt.load_state_dict(torch.load(out / "optim.pt"))
-    games = SelfPlay(args.run, seed=args.seed + state["updates"], first=state["next_seed"])
+    setup = game_setup(args.deck, args.stake)
+    deck, stake = setup
+    if args.branch_rate:
+        games = BranchPlay(args.run, seed=args.seed + state["updates"], first=state["next_seed"],
+                           deck=deck, stake=stake, win_bonus=args.win_bonus,
+                           rate=args.branch_rate, draws=args.draws)
+    else:
+        games = SelfPlay(args.run, seed=args.seed + state["updates"], first=state["next_seed"],
+                         deck=deck, stake=stake, win_bonus=args.win_bonus)
     rng = np.random.default_rng(args.seed + state["updates"])
-    eval_seeds = [eval_seed(i) for i in range(1, args.eval_games + 1)]
+    eval_seeds = [(eval_seed(i), deck, stake) for i in range(1, args.eval_games + 1)]
     report(status, copy=meta["copy"], beta=state["beta"], doing="playing",
            **progress(state, args), **last_numbers(log_path), **last_eval(out))
     if not args.resume and args.eval_every:
@@ -360,7 +380,21 @@ def train(args) -> int:
         t0 = time.perf_counter()
         beta = state["beta"] if state["fade_seconds"] <= 0 else \
             state["beta"] * max(0.0, 1.0 - state["seconds"] / state["fade_seconds"])
-        if args.plays > 1:
+        check = None
+        if args.branch_rate:
+            batch = games.play(model, args.decisions_per_step)
+            t1 = time.perf_counter()
+            prep, check_prep = Prepared(batch.examples), Prepared(batch.states)
+            check = (check_prep, batch.state_logp)
+            drift = batch.state_logp - copy_logp(copy, check_prep)
+            adv, old_logp, finished = batch.adv, batch.logp, batch.finished
+            counts = tally(batch.decisions)
+            whole = counts["all"]
+            extra = {"tied share": whole["tied"] / max(whole["n"], 1),
+                     "rejoined share": whole["joined"] / max(whole["n"], 1)}
+            with (out / "decisions.jsonl").open("a") as f:
+                f.write(json.dumps({"update": state["updates"] + 1, **counts}) + "\n")
+        elif args.plays > 1:
             total = args.games_per_step or args.seeds * args.plays
             played = games.whole_games(model, total, parallel=args.seeds * args.plays,
                                        repeat=args.plays)
@@ -381,8 +415,8 @@ def train(args) -> int:
             old_logp, finished = r.logp, r.finished
             extra = {"value explained": explained(ret, r.value)}
         norm = (adv - adv.mean()) / (adv.std() + 1e-8)
-        if args.games_per_step:
-            stats = one_step(model, opt, prep, old_logp, norm, state, args, rng)
+        if args.games_per_step or args.branch_rate:
+            stats = one_step(model, opt, prep, old_logp, norm, state, args, rng, check=check)
         else:
             stats = update(model, opt, prep, old_logp, norm, ret, learn_args, rng)
         t2 = time.perf_counter()
@@ -401,9 +435,13 @@ def train(args) -> int:
             "mean final ante": float(np.mean([g["ante"] for g in finished])) if finished else None,
             "cut short": [g["cut"] for g in finished if g["cut"]],
             "drift": float(drift.mean()),
-            "agreement with copy": agreement(model, copy, prep, 1024, rng),
+            "agreement with copy": agreement(model, copy, prep if check is None else check[0],
+                                             1024, rng),
             "play s": t1 - t0, "learn s": t2 - t1, **extra, **stats,
         }
+        if args.branch_rate:
+            line.update({"decisions": whole["n"], "untied": whole["main better"] + whole["drawn better"],
+                         "main better": whole["main better"], "drawn better": whole["drawn better"]})
         with log_path.open("a") as f:
             f.write(json.dumps(line) + "\n")
         shown = " ".join(f"{k.split()[0]} {v:.2f}" for k, v in extra.items())
@@ -424,19 +462,20 @@ def train(args) -> int:
             write_json(state_path, state)
     evaluate_and_report(model, out, state, eval_seeds, status)
     if args.final_check:
-        final_check(model, copy, out, state, args.final_check, status)
+        final_check(model, copy, out, state, args.final_check, status, setup)
     stop_path(args.run).unlink(missing_ok=True)
     report(status, phase="finished", doing="")
     return 0
 
 
-def final_check(model: Policy, start: Policy, out: Path, state: dict, n: int, status: dict) -> dict:
+def final_check(model: Policy, start: Policy, out: Path, state: dict, n: int, status: dict,
+                setup: tuple[str, int] = (DECK, STAKE)) -> dict:
     """The finished policy and the one the run started from, on the first ``n``
     evaluation seeds, compared seed by seed. The start's games are kept in
     ``check_start_<n>.json`` and played again only if that file is missing; the
     finished policy's go to ``check_u<update>.json`` with the comparison."""
     report(status, doing="checking")
-    seeds = [(eval_seed(i), DECK, STAKE) for i in range(1, n + 1)]
+    seeds = [(eval_seed(i), *setup) for i in range(1, n + 1)]
     base_path = out / f"check_start_{n}.json"
     if base_path.exists():
         base = json.loads(base_path.read_text())["games"]
@@ -453,7 +492,8 @@ def final_check(model: Policy, start: Policy, out: Path, state: dict, n: int, st
     return s
 
 
-def evaluate_and_report(model: Policy, out: Path, state: dict, seeds: list[str], status: dict) -> None:
+def evaluate_and_report(model: Policy, out: Path, state: dict, seeds: list[tuple[str, str, int]],
+                        status: dict) -> None:
     report(status, doing="evaluating")
     report(status, doing="playing", **eval_numbers(evaluate(model, out, state, seeds)))
 
@@ -493,7 +533,7 @@ def update(model: Policy, opt, prep: Prepared, old_logp, adv, ret, args, rng) ->
 
 
 def one_step(model: Policy, opt, prep: Prepared, old_logp, adv, state: dict, args, rng,
-             tries: int = 5) -> dict:
+             tries: int = 5, check: tuple[Prepared, np.ndarray] | None = None) -> dict:
     """One optimiser step on the policy gradient of the whole batch, sized so the policy
     moves by about ``args.target_change`` on the batch's own moves.
 
@@ -501,7 +541,9 @@ def one_step(model: Policy, opt, prep: Prepared, old_logp, adv, state: dict, arg
     new over old probability: an estimate of KL(old || new) that is never negative. A
     step that moves more than twice the target is undone and retried at half the
     learning rate; the next step's rate is scaled by sqrt(target / change), within
-    0.5x to 2x, since the change grows with the square of the step."""
+    0.5x to 2x, since the change grows with the square of the step. ``check`` (examples
+    and their stored moves' log-probabilities) measures the change on other states than
+    the ones the step learns from."""
     model.train()
     adv_t = torch.from_numpy(adv.astype(np.float32))
     opt.zero_grad(set_to_none=True)
@@ -515,8 +557,9 @@ def one_step(model: Policy, opt, prep: Prepared, old_logp, adv, state: dict, arg
     grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad))
     model.eval()
 
-    sample = np.sort(rng.choice(prep.n, min(args.change_sample, prep.n), replace=False))
-    old = torch.from_numpy(old_logp[sample])
+    on, on_logp = check if check is not None else (prep, old_logp)
+    sample = np.sort(rng.choice(on.n, min(args.change_sample, on.n), replace=False))
+    old = torch.from_numpy(on_logp[sample])
     saved_model = {k: v.clone() for k, v in model.state_dict().items()}
     saved_opt = copy_state(opt.state_dict())
     lr = state.setdefault("step lr", args.lr)
@@ -525,7 +568,7 @@ def one_step(model: Policy, opt, prep: Prepared, old_logp, adv, state: dict, arg
             group["lr"] = lr
         opt.step()
         with torch.no_grad():
-            new, ent, _ = scored(model, prep, sample)
+            new, ent, _ = scored(model, on, sample)
             log_r = new - old
             change = float(((log_r.exp() - 1) - log_r).mean())
         if change <= 2 * args.target_change or attempt == tries:
@@ -548,10 +591,10 @@ def copy_state(d):
     return d
 
 
-def evaluate(model: Policy, out: Path, state: dict, seeds: list[str]) -> dict:
-    """The most likely action on the evaluation seeds; saved per update number."""
+def evaluate(model: Policy, out: Path, state: dict, seeds: list[tuple[str, str, int]]) -> dict:
+    """The most likely action on the evaluation ``(seed, deck, stake)``s; saved per update number."""
     started = time.perf_counter()
-    rows = play(model, [(s, DECK, STAKE) for s in seeds])
+    rows = play(model, seeds)
     s = summary(rows)
     s["seconds"] = time.perf_counter() - started
     s["update"] = state["updates"]
@@ -592,6 +635,17 @@ def main() -> int:
                     help="how far one step may move the policy on its batch (KL estimate)")
     tr.add_argument("--change-sample", type=int, default=4096,
                     help="stored moves the change is measured on")
+    tr.add_argument("--branch-rate", type=float, default=0.0,
+                    help="judge moves by branches (rl.branch): the share of main-line steps a "
+                         "drawn move is tried at (0: same-seed or value training)")
+    tr.add_argument("--decisions-per-step", type=int, default=500,
+                    help="with --branch-rate: untied decisions behind each optimiser step")
+    tr.add_argument("--draws", type=int, default=4,
+                    help="with --branch-rate: draws per tried step looking for another move")
+    tr.add_argument("--deck", default="BLUE", choices=DECK_NAMES, type=str.upper)
+    tr.add_argument("--stake", default="WHITE", choices=STAKE_NAMES, type=str.upper)
+    tr.add_argument("--win-bonus", type=float, default=WIN_BONUS,
+                    help="points a win adds on top of one per boss beaten")
     tr.add_argument("--resume", action="store_true")
     tr.add_argument("--beta", type=float, default=0.1, help="starting drift penalty")
     tr.add_argument("--fade", type=float, default=0.5,
