@@ -1035,9 +1035,13 @@ class TrainTab(tk.Frame):
             "train_hours": tk.DoubleVar(value=s["train_hours"]),
             "train_beta": tk.DoubleVar(value=s["train_beta"]),
         }
+        # The lists are read again each time one opens: runs and their saves appear while the panel is open.
         self.source_input = ttk.Combobox(controls, values=learning.start_sources(), state="readonly", width=14,
-                                         textvariable=self.vars["train_source"])
-        self.save_input = ttk.Combobox(controls, state="readonly", width=9, textvariable=self.vars["train_save"])
+                                         textvariable=self.vars["train_source"],
+                                         postcommand=lambda: self.source_input.configure(
+                                             values=learning.start_sources()))
+        self.save_input = ttk.Combobox(controls, state="readonly", width=9, textvariable=self.vars["train_save"],
+                                       postcommand=lambda: self._sync_saves())
         self.hours_input = ttk.Spinbox(controls, from_=0.5, to=200, increment=0.5, width=5,
                                        textvariable=self.vars["train_hours"])
         fields = [
@@ -1474,9 +1478,12 @@ class StreamTab(tk.Frame):
             "stream_delay": tk.DoubleVar(value=s["stream_delay"]),
         }
         self.source_input = ttk.Combobox(controls, values=sources, state="readonly", width=18,
-                                         textvariable=self.vars["stream_source"])
+                                         textvariable=self.vars["stream_source"],
+                                         postcommand=lambda: self.source_input.configure(
+                                             values=learning.model_sources()))
         self.save_input = ttk.Combobox(controls, state="readonly", width=10,
-                                       textvariable=self.vars["stream_checkpoint"])
+                                       textvariable=self.vars["stream_checkpoint"],
+                                       postcommand=lambda: self._sync_saves())
         fields = [
             ("MODEL", self.source_input),
             ("SAVE", self.save_input),
