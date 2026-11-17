@@ -1080,9 +1080,8 @@ class TrainTab(tk.Frame):
         tip(method_input, "Same seed: each game is scored against the other plays of its seed.\n"
                           "Branches: single decisions are replayed on a copy of the game and the "
                           "better move is learned.")
-        tip(self.beta_input, "How hard the run is pulled toward its start (same seed only)")
+        tip(self.beta_input, "How hard the run is pulled toward its start")
         tip(bonus_input, "Points a win adds on top of 1 per boss beaten")
-        self.vars["train_method"].trace_add("write", lambda *_: self._fill_head())
         self.vars["train_run"].trace_add("write", lambda *_: self.refresh() if self.selected is None else None)
         self.vars["train_source"].trace_add("write", lambda *_: self._sync_saves())
         self.vars["train_hours"].trace_add("write", lambda *_: self._fill_head() if self.selected else None)
@@ -1325,9 +1324,8 @@ class TrainTab(tk.Frame):
             self.shown_run = row["run"]
         else:
             self.shown_run = None
-        same_seed = self.vars["train_method"].get() == "SAME SEED"
         for w in self.inputs:
-            on = (new and (w is not self.beta_input or same_seed)) or (w is self.hours_input and not active)
+            on = new or (w is self.hours_input and not active)
             w.state(["!disabled"] if on else ["disabled"])
         name = self.vars["train_run"].get().strip()
         can_start = (new and learning.valid_run_name(name) and not learning.run_taken(name)

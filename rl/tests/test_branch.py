@@ -138,3 +138,28 @@ def test_a_short_branch_run_writes_its_log_decisions_and_status(model, tmp_path,
     state = json.loads((out / "state.json").read_text())
     assert state["args"]["deck"] == "RED" and state["args"]["win_bonus"] == 16.0
     assert json.loads((tmp_path / "training" / "br.json").read_text())["phase"] == "finished"
+
+
+def test_the_pull_alone_moves_the_policy_toward_its_start(model, batch):
+    import copy
+    from argparse import Namespace
+
+    torch.manual_seed(1)
+    start = Policy(width=32, layers=1).eval()
+    policy = copy.deepcopy(model)
+    check = Prepared(batch.states)
+    start_logp = ppo.copy_logp(start, check)
+
+    def away():
+        with torch.no_grad():
+            log_q = torch.from_numpy(start_logp) - scored(policy, check, np.arange(check.n))[0]
+        return float((log_q.exp() - 1 - log_q).mean())
+
+    before = away()
+    opt = torch.optim.Adam(policy.parameters(), lr=1e-3)
+    args = Namespace(batch=512, max_grad=0.5, change_sample=4096, target_change=0.05, lr=1e-3)
+    stats = ppo.one_step(policy, opt, Prepared(batch.examples), batch.logp, np.zeros(len(batch.adv)),
+                         {}, args, np.random.default_rng(0), check=(check, batch.state_logp),
+                         pull=(start_logp, 1.0))
+    assert stats["away from start"] == pytest.approx(before, rel=1e-4)
+    assert away() < before

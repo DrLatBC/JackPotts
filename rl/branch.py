@@ -13,8 +13,9 @@ about as much as a step).
 
 Each decision that did not tie gives two examples at its state: the main line's move with
 half the difference as its advantage, the drawn move with minus half. The main-line states
-draws were tried at are kept too, with the main line's move, so a learning step can be
-measured on states it was not trained on (``rl.ppo.one_step``).
+draws were tried at are kept too, each with the first move drawn there (a sample of the
+policy, as self-play's moves are), so a learning step can be measured on states it was
+not trained on and held near its start there (``rl.ppo.one_step``).
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ class Batch:
     """Per example, in points: plus half the decision's difference for the main line's
     move, minus half for the drawn one."""
     states: dataset.Examples
-    """The main-line states draws were tried at, each with the main line's move."""
+    """The main-line states draws were tried at, each with the first move drawn there."""
     state_logp: np.ndarray
     finished: list[dict]
     """The main lines that ended during the call."""
@@ -113,9 +114,9 @@ class BranchPlay:
         greedy, glogp, _ = act(model, prep)
         tried = [k for k, line in enumerate(self.lines)
                  if line["role"] == "main" and self.rng.random() < self.rate]
+        drawn, first = self._draw(model, prep, tried, greedy)
         for k in tried:
-            self._states.append((views[k], greedy[k], float(glogp[k])))
-        drawn = self._draw(model, prep, tried, greedy)
+            self._states.append((views[k], *first[k]))
         spawned, still = [], []
         for k, line in enumerate(self.lines):
             move = greedy[k]
@@ -128,9 +129,11 @@ class BranchPlay:
                 still.append(line)
         self.lines = [line for line in still if not self._joined(line)] + spawned
 
-    def _draw(self, model: Policy, prep: Prepared, tried: list[int], greedy) -> dict:
-        """Per tried slot, a drawn move other than the most likely one, if one came up."""
+    def _draw(self, model: Policy, prep: Prepared, tried: list[int], greedy) -> tuple[dict, dict]:
+        """Per tried slot, a drawn move other than the most likely one, if one came up; and
+        the first move drawn there, whatever it was."""
         found: dict[int, tuple[FactoredAction, float]] = {}
+        first: dict[int, tuple[FactoredAction, float]] = {}
         left = list(tried)
         for _ in range(self.draws):
             if not left:
@@ -138,12 +141,13 @@ class BranchPlay:
             moves, logp, _ = act(model, prep, np.asarray(left), generator=self.generator)
             again = []
             for k, move, lp in zip(left, moves, logp):
+                first.setdefault(k, (move, float(lp)))
                 if same_move(move, greedy[k]):
                     again.append(k)
                 else:
                     found[k] = (move, float(lp))
             left = again
-        return found
+        return found, first
 
     def _branch(self, main: dict, view, move, move_logp: float, alt, alt_logp: float) -> dict:
         g = main["info"]["game"]

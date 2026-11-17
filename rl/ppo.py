@@ -15,8 +15,9 @@ With ``--branch-rate`` moves are judged one at a time instead (``rl.branch``): m
 play greedily, a share of their decisions is played again on a copy of the game with a
 drawn move, and each decision whose two lines end differently teaches the better move
 over the worse. One step per ``--decisions-per-step`` such decisions, measured on the
-main lines' states. There is no drift penalty in this mode: ``--target-change`` alone
-limits each step.
+main lines' states, on moves drawn from the policy. Instead of the drift penalty on
+points, each step's loss carries ``beta`` times an estimate of how far the policy has moved
+from its start on those states (``one_step``'s ``pull``).
 
 ``--deck`` and ``--stake`` (the panel's names) set what the run plays and is evaluated on;
 ``--win-bonus`` the points a win adds on top of one per boss beaten.
@@ -382,13 +383,15 @@ def train(args) -> int:
         t0 = time.perf_counter()
         beta = state["beta"] if state["fade_seconds"] <= 0 else \
             state["beta"] * max(0.0, 1.0 - state["seconds"] / state["fade_seconds"])
-        check = None
+        check = pull = None
         if args.branch_rate:
             batch = games.play(model, args.decisions_per_step)
             t1 = time.perf_counter()
             prep, check_prep = Prepared(batch.examples), Prepared(batch.states)
             check = (check_prep, batch.state_logp)
-            drift = batch.state_logp - copy_logp(copy, check_prep)
+            start_logp = copy_logp(copy, check_prep)
+            pull = (start_logp, beta)
+            drift = batch.state_logp - start_logp
             adv, old_logp, finished = batch.adv, batch.logp, batch.finished
             counts = tally(batch.decisions)
             whole = counts["all"]
@@ -418,7 +421,7 @@ def train(args) -> int:
             extra = {"value explained": explained(ret, r.value)}
         norm = (adv - adv.mean()) / (adv.std() + 1e-8)
         if args.games_per_step or args.branch_rate:
-            stats = one_step(model, opt, prep, old_logp, norm, state, args, rng, check=check)
+            stats = one_step(model, opt, prep, old_logp, norm, state, args, rng, check=check, pull=pull)
         else:
             stats = update(model, opt, prep, old_logp, norm, ret, learn_args, rng)
         t2 = time.perf_counter()
@@ -535,7 +538,8 @@ def update(model: Policy, opt, prep: Prepared, old_logp, adv, ret, args, rng) ->
 
 
 def one_step(model: Policy, opt, prep: Prepared, old_logp, adv, state: dict, args, rng,
-             tries: int = 5, check: tuple[Prepared, np.ndarray] | None = None) -> dict:
+             tries: int = 5, check: tuple[Prepared, np.ndarray] | None = None,
+             pull: tuple[np.ndarray, float] | None = None) -> dict:
     """One optimiser step on the policy gradient of the whole batch, sized so the policy
     moves by about ``args.target_change`` on the batch's own moves.
 
@@ -545,7 +549,13 @@ def one_step(model: Policy, opt, prep: Prepared, old_logp, adv, state: dict, arg
     learning rate; the next step's rate is scaled by sqrt(target / change), within
     0.5x to 2x, since the change grows with the square of the step. ``check`` (examples
     and their stored moves' log-probabilities) measures the change on other states than
-    the ones the step learns from."""
+    the ones the step learns from.
+
+    ``pull`` (the start's log-probabilities of ``check``'s moves, and a weight) adds the
+    weight times an estimate of KL(policy || start) on those states to the loss: the mean
+    of q - 1 - log q, q being the start's probability of the move over the policy's. It is
+    zero where the policy matches its start and grows as it moves away, so it holds the
+    policy near its start where the advantages say nothing."""
     model.train()
     adv_t = torch.from_numpy(adv.astype(np.float32))
     opt.zero_grad(set_to_none=True)
@@ -556,6 +566,17 @@ def one_step(model: Policy, opt, prep: Prepared, old_logp, adv, state: dict, arg
         loss = -(adv_t[torch.from_numpy(idx)] * logp).sum() / prep.n
         loss.backward()
         loss_sum += loss.item()
+    held = 0.0
+    if pull is not None:
+        start_logp, weight = pull
+        on = check[0]
+        for at in range(0, on.n, args.batch):
+            idx = np.arange(at, min(at + args.batch, on.n))
+            logp, _, _ = scored(model, on, idx)
+            log_q = torch.from_numpy(start_logp[idx]) - logp
+            away = (log_q.exp() - 1 - log_q).sum() / on.n
+            (weight * away).backward()
+            held += away.item()
     grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad))
     model.eval()
 
@@ -579,8 +600,11 @@ def one_step(model: Policy, opt, prep: Prepared, old_logp, adv, state: dict, arg
         opt.load_state_dict(copy_state(saved_opt))
         lr *= 0.5
     state["step lr"] = lr * float(np.clip(np.sqrt(args.target_change / max(change, 1e-12)), 0.5, 2.0))
-    return {"policy loss": loss_sum, "entropy": float(ent.mean()), "change": change,
-            "lr": lr, "tries": attempt, "grad norm": grad_norm}
+    out = {"policy loss": loss_sum, "entropy": float(ent.mean()), "change": change,
+           "lr": lr, "tries": attempt, "grad norm": grad_norm}
+    if pull is not None:
+        out["away from start"] = held
+    return out
 
 
 def copy_state(d):
@@ -640,7 +664,7 @@ def main() -> int:
     tr.add_argument("--branch-rate", type=float, default=0.0,
                     help="judge moves by branches (rl.branch): the share of main-line steps a "
                          "drawn move is tried at (0: same-seed or value training)")
-    tr.add_argument("--decisions-per-step", type=int, default=500,
+    tr.add_argument("--decisions-per-step", type=int, default=2000,
                     help="with --branch-rate: untied decisions behind each optimiser step")
     tr.add_argument("--draws", type=int, default=4,
                     help="with --branch-rate: draws per tried step looking for another move")

@@ -22,10 +22,11 @@ RL_PYTHONW = BASE_DIR / ".venv-rl" / "Scripts" / "pythonw.exe"
 RL_DATA = BASE_DIR / "rl" / "data"
 TRAIN_DIR = LOG_DIR / "training"
 # The train flags the panel doesn't show: every run's, then each method's own.
-TRAIN_FIXED = ["--eval-every", "0.5", "--eval-games", "1000", "--final-check", "5000", "--threads", "4"]
+TRAIN_FIXED = ["--fade", "0", "--eval-every", "0.5", "--eval-games", "1000", "--final-check", "5000",
+               "--threads", "4"]
 METHOD_FIXED = {
-    "SAME SEED": ["--games-per-step", "1024", "--plays", "4", "--seeds", "32", "--fade", "0"],
-    "BRANCHES": ["--branch-rate", "0.05", "--decisions-per-step", "500"],
+    "SAME SEED": ["--games-per-step", "1024", "--plays", "4", "--seeds", "32"],
+    "BRANCHES": ["--branch-rate", "0.05", "--decisions-per-step", "2000"],
 }
 METHODS = list(METHOD_FIXED)
 TRAIN_ACTIVE = ("starting", "running", "stopping")
@@ -141,8 +142,7 @@ def start_choice(start: str) -> tuple[str, str]:
 
 
 def train_command(settings: dict) -> list[str]:
-    """A new run: the panel's fields, then the fixed flags of every run and of its method.
-    Beta is passed either way; a branch run has no drift penalty and leaves it unused."""
+    """A new run: the panel's fields, then the fixed flags of every run and of its method."""
     return [str(RL_PYTHONW), "-m", "rl.ppo", "train", "--run", settings["train_run"],
             "--start", settings["train_copy"], "--hours", str(settings["train_hours"]),
             "--beta", str(settings["train_beta"]), "--win-bonus", str(settings["train_bonus"]),

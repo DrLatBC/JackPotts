@@ -55,7 +55,8 @@ def test_a_branch_run_gets_the_branch_flags_and_its_deck_stake_and_bonus():
     cmd = learning.train_command({**SETTINGS, "train_method": "BRANCHES", "train_bonus": 16.0,
                                   "train_deck": "RED", "train_stake": "BLACK"})
     flags = dict(zip(cmd[4::2], cmd[5::2]))
-    assert flags["--branch-rate"] == "0.05" and flags["--decisions-per-step"] == "500"
+    assert flags["--branch-rate"] == "0.05" and flags["--decisions-per-step"] == "2000"
+    assert flags["--fade"] == "0"
     assert (flags["--win-bonus"], flags["--deck"], flags["--stake"]) == ("16.0", "RED", "BLACK")
     assert "--plays" not in cmd and "--games-per-step" not in cmd
 
