@@ -9,7 +9,8 @@ import pytest
 
 from balatro_bot import learning
 
-SETTINGS = {"train_run": "r1", "train_copy": "b187", "train_hours": 1.0, "train_beta": 0.1}
+SETTINGS = {"train_run": "r1", "train_copy": "b187", "train_hours": 1.0, "train_beta": 0.1,
+            "train_method": "SAME SEED", "train_bonus": 8.0, "train_deck": "BLUE", "train_stake": "WHITE"}
 
 
 @pytest.fixture
@@ -38,14 +39,32 @@ def _saved_run(root, name, *, seconds, hours, log=True, latest=True):
     return run
 
 
-def test_train_command_passes_the_four_fields_and_the_fixed_flags():
+def test_train_command_passes_the_fields_and_the_fixed_flags():
     settings = {**SETTINGS, "train_run": "r1", "train_copy": "b187", "train_hours": 2.5, "train_beta": 0.03}
     cmd = learning.train_command(settings)
     assert cmd[0].endswith("pythonw.exe") and ".venv-rl" in cmd[0]
-    assert cmd[1:12] == ["-m", "rl.ppo", "train", "--run", "r1", "--start", "b187",
-                         "--hours", "2.5", "--beta", "0.03"]
-    assert cmd[12:] == learning.TRAIN_FIXED
+    assert cmd[1:18] == ["-m", "rl.ppo", "train", "--run", "r1", "--start", "b187",
+                         "--hours", "2.5", "--beta", "0.03", "--win-bonus", "8.0",
+                         "--deck", "BLUE", "--stake", "WHITE"]
+    assert cmd[18:] == learning.TRAIN_FIXED + learning.METHOD_FIXED["SAME SEED"]
     assert "--games-per-step" in cmd and cmd[cmd.index("--fade") + 1] == "0"
+    assert "--branch-rate" not in cmd
+
+
+def test_a_branch_run_gets_the_branch_flags_and_its_deck_stake_and_bonus():
+    cmd = learning.train_command({**SETTINGS, "train_method": "BRANCHES", "train_bonus": 16.0,
+                                  "train_deck": "RED", "train_stake": "BLACK"})
+    flags = dict(zip(cmd[4::2], cmd[5::2]))
+    assert flags["--branch-rate"] == "0.05" and flags["--decisions-per-step"] == "500"
+    assert (flags["--win-bonus"], flags["--deck"], flags["--stake"]) == ("16.0", "RED", "BLACK")
+    assert "--plays" not in cmd and "--games-per-step" not in cmd
+
+
+def test_a_runs_settings_come_from_its_saved_args_with_the_old_defaults():
+    got = learning.run_settings({"branch_rate": 0.05, "deck": "RED", "stake": "GOLD", "win_bonus": 16.0})
+    assert got == {"method": "BRANCHES", "deck": "RED", "stake": "GOLD", "win bonus": 16.0}
+    got = learning.run_settings({"plays": 4, "branch_rate": 0.0})
+    assert got == {"method": "SAME SEED", "deck": "BLUE", "stake": "WHITE", "win bonus": 8.0}
 
 
 SAVED_ARGS = {

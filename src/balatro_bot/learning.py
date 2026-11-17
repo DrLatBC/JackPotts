@@ -21,10 +21,13 @@ from balatro_bot.supervisor import BASE_DIR, LOG_DIR, PYTHON
 RL_PYTHONW = BASE_DIR / ".venv-rl" / "Scripts" / "pythonw.exe"
 RL_DATA = BASE_DIR / "rl" / "data"
 TRAIN_DIR = LOG_DIR / "training"
-# The train flags the panel doesn't show.
-TRAIN_FIXED = ["--games-per-step", "1024", "--plays", "4", "--seeds", "32", "--fade", "0",
-               "--eval-every", "0.5", "--eval-games", "1000", "--final-check", "5000",
-               "--threads", "4"]
+# The train flags the panel doesn't show: every run's, then each method's own.
+TRAIN_FIXED = ["--eval-every", "0.5", "--eval-games", "1000", "--final-check", "5000", "--threads", "4"]
+METHOD_FIXED = {
+    "SAME SEED": ["--games-per-step", "1024", "--plays", "4", "--seeds", "32", "--fade", "0"],
+    "BRANCHES": ["--branch-rate", "0.05", "--decisions-per-step", "500"],
+}
+METHODS = list(METHOD_FIXED)
 TRAIN_ACTIVE = ("starting", "running", "stopping")
 RUN_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 # A run with no status file whose log changed this recently may still be playing from
@@ -138,13 +141,29 @@ def start_choice(start: str) -> tuple[str, str]:
 
 
 def train_command(settings: dict) -> list[str]:
+    """A new run: the panel's fields, then the fixed flags of every run and of its method.
+    Beta is passed either way; a branch run has no drift penalty and leaves it unused."""
     return [str(RL_PYTHONW), "-m", "rl.ppo", "train", "--run", settings["train_run"],
             "--start", settings["train_copy"], "--hours", str(settings["train_hours"]),
-            "--beta", str(settings["train_beta"]), *TRAIN_FIXED]
+            "--beta", str(settings["train_beta"]), "--win-bonus", str(settings["train_bonus"]),
+            "--deck", settings["train_deck"], "--stake", settings["train_stake"],
+            *TRAIN_FIXED, *METHOD_FIXED[settings["train_method"]]]
 
 
 def _fixed_args() -> dict:
-    return {flag[2:].replace("-", "_"): value for flag, value in zip(TRAIN_FIXED[::2], TRAIN_FIXED[1::2])}
+    """The fixed flags a run from an older panel may lack. Runs from before the method
+    choice were all same-seed runs, so those flags fill in; a branch run saved all of its
+    own."""
+    fixed = TRAIN_FIXED + METHOD_FIXED["SAME SEED"]
+    return {flag[2:].replace("-", "_"): value for flag, value in zip(fixed[::2], fixed[1::2])}
+
+
+def run_settings(args: dict) -> dict:
+    """A run's method, deck, stake and win bonus from the args its state.json saved; a
+    run from before those options played same-seed on Blue/White with bonus 8."""
+    return {"method": "BRANCHES" if args.get("branch_rate") else "SAME SEED",
+            "deck": args.get("deck", "BLUE"), "stake": args.get("stake", "WHITE"),
+            "win bonus": args.get("win_bonus", 8.0)}
 
 
 def resume_command(saved_args: dict, hours: float | None = None) -> list[str]:
@@ -333,6 +352,7 @@ def run_overview(name: str, status: dict | None, now: float | None = None) -> di
     activity = max((p.stat().st_mtime for p in (log, state_path) if p.exists()), default=0.0)
     row = {
         "run": name, "copy": args.get("start") or None, "beta": state.get("beta"),
+        **(run_settings(args) if args else {}),
         "update": state.get("updates", line.get("update", 0)),
         "hours": state.get("seconds", 0.0) / 3600, "hours total": args.get("hours"),
         "games": state.get("games", line.get("games", 0)),

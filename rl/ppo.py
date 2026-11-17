@@ -367,7 +367,9 @@ def train(args) -> int:
     rng = np.random.default_rng(args.seed + state["updates"])
     eval_seeds = [(eval_seed(i), deck, stake) for i in range(1, args.eval_games + 1)]
     report(status, copy=meta["copy"], beta=state["beta"], doing="playing",
-           **progress(state, args), **last_numbers(log_path), **last_eval(out))
+           method="BRANCHES" if args.branch_rate else "SAME SEED", deck=args.deck, stake=args.stake,
+           **{"win bonus": args.win_bonus}, **progress(state, args), **last_numbers(log_path),
+           **last_eval(out))
     if not args.resume and args.eval_every:
         save_model(out / "latest.pt", model, model.config, {**meta, "updates": 0})
         evaluate_and_report(model, out, state, eval_seeds, status)

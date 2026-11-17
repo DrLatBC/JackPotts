@@ -54,6 +54,7 @@ STAKES = ["WHITE", "RED", "GREEN", "BLACK", "BLUE", "PURPLE", "ORANGE", "GOLD"]
 DEFAULTS = {"instances": 6, "games": 2000, "deck": "BLUE", "stake": "WHITE",
             "explore_instances": 2, "explore_rate": 0.15, "sim": False, "kernel": False,
             "train_run": "", "train_copy": "b187", "train_hours": 1.0, "train_beta": 0.1,
+            "train_method": "BRANCHES", "train_bonus": 16.0, "train_deck": "BLUE", "train_stake": "WHITE",
             "stream_source": "", "stream_checkpoint": "latest", "stream_deck": "BLUE",
             "stream_stake": "WHITE", "stream_delay": 1.5}
 
@@ -1034,6 +1035,10 @@ class TrainTab(tk.Frame):
             "train_save": tk.StringVar(value=save),
             "train_hours": tk.DoubleVar(value=s["train_hours"]),
             "train_beta": tk.DoubleVar(value=s["train_beta"]),
+            "train_method": tk.StringVar(value=s["train_method"]),
+            "train_bonus": tk.DoubleVar(value=s["train_bonus"]),
+            "train_deck": tk.StringVar(value=s["train_deck"]),
+            "train_stake": tk.StringVar(value=s["train_stake"]),
         }
         # The lists are read again each time one opens: runs and their saves appear while the panel is open.
         self.source_input = ttk.Combobox(controls, values=learning.start_sources(), state="readonly", width=14,
@@ -1044,22 +1049,37 @@ class TrainTab(tk.Frame):
                                        postcommand=lambda: self._sync_saves())
         self.hours_input = ttk.Spinbox(controls, from_=0.5, to=200, increment=0.5, width=5,
                                        textvariable=self.vars["train_hours"])
-        fields = [
-            ("RUN", ttk.Entry(controls, width=14, textvariable=self.vars["train_run"])),
-            ("START", self.source_input),
-            ("SAVE", self.save_input),
-            ("HOURS", self.hours_input),
-            ("BETA", ttk.Spinbox(controls, from_=0, to=1, increment=0.01, width=5,
-                                 textvariable=self.vars["train_beta"])),
+        method_input = ttk.Combobox(controls, values=learning.METHODS, state="readonly", width=11,
+                                    textvariable=self.vars["train_method"])
+        self.beta_input = ttk.Spinbox(controls, from_=0, to=1, increment=0.01, width=5,
+                                      textvariable=self.vars["train_beta"])
+        bonus_input = ttk.Spinbox(controls, from_=0, to=100, increment=1, width=5,
+                                  textvariable=self.vars["train_bonus"])
+        rows = [
+            [("RUN", ttk.Entry(controls, width=14, textvariable=self.vars["train_run"])),
+             ("START", self.source_input), ("SAVE", self.save_input), ("HOURS", self.hours_input)],
+            [("METHOD", method_input), ("BETA", self.beta_input), ("WIN BONUS", bonus_input),
+             ("DECK", ttk.Combobox(controls, values=DECKS, state="readonly", width=11,
+                                   textvariable=self.vars["train_deck"])),
+             ("STAKE", ttk.Combobox(controls, values=STAKES, state="readonly", width=8,
+                                    textvariable=self.vars["train_stake"]))],
         ]
         self.inputs = []
-        for col, (label, widget) in enumerate(fields):
-            ttk.Label(controls, text=label, style="Field.TLabel").grid(
-                row=0, column=col, sticky="w", padx=(0, px(12)), pady=(0, px(3)))
-            widget.grid(row=1, column=col, sticky="w", padx=(0, px(12)))
-            self.inputs.append(widget)
+        for r, fields in enumerate(rows):
+            for col, (label, widget) in enumerate(fields):
+                ttk.Label(controls, text=label, style="Field.TLabel").grid(
+                    row=2 * r, column=col, sticky="w", padx=(0, px(12)),
+                    pady=(px(8) if r else 0, px(3)))
+                widget.grid(row=2 * r + 1, column=col, sticky="w", padx=(0, px(12)))
+                self.inputs.append(widget)
         tip(self.source_input, "A copy of the bot, or a run's saved update; the run is pulled toward it")
         tip(self.hours_input, "The run's total hours; raise it on a run that has stopped or finished, then Resume")
+        tip(method_input, "Same seed: each game is scored against the other plays of its seed.\n"
+                          "Branches: single decisions are replayed on a copy of the game and the "
+                          "better move is learned.")
+        tip(self.beta_input, "How hard the run is pulled toward its start (same seed only)")
+        tip(bonus_input, "Points a win adds on top of 1 per boss beaten")
+        self.vars["train_method"].trace_add("write", lambda *_: self._fill_head())
         self.vars["train_run"].trace_add("write", lambda *_: self.refresh() if self.selected is None else None)
         self.vars["train_source"].trace_add("write", lambda *_: self._sync_saves())
         self.vars["train_hours"].trace_add("write", lambda *_: self._fill_head() if self.selected else None)
@@ -1135,8 +1155,8 @@ class TrainTab(tk.Frame):
             self.vars["train_run"].set("")
             self.vars["train_source"].set(source)
             self.vars["train_save"].set(save)
-            self.vars["train_hours"].set(s["train_hours"])
-            self.vars["train_beta"].set(s["train_beta"])
+            for key in ("train_hours", "train_beta", "train_method", "train_bonus", "train_deck", "train_stake"):
+                self.vars[key].set(s[key])
         self.refresh()
 
     def _sync_saves(self) -> None:
@@ -1158,9 +1178,13 @@ class TrainTab(tk.Frame):
                 "train_run": self.vars["train_run"].get().strip(),
                 "train_hours": float(self.vars["train_hours"].get()),
                 "train_beta": float(self.vars["train_beta"].get()),
+                "train_bonus": float(self.vars["train_bonus"].get()),
+                "train_method": self.vars["train_method"].get(),
+                "train_deck": self.vars["train_deck"].get(),
+                "train_stake": self.vars["train_stake"].get(),
             }
         except (tk.TclError, ValueError):
-            raise ValueError("Hours and beta must be numbers.")
+            raise ValueError("Hours, beta and win bonus must be numbers.")
         name = settings["train_run"]
         if not learning.valid_run_name(name):
             raise ValueError("Name the run with letters, digits, - _ and . only.")
@@ -1174,6 +1198,11 @@ class TrainTab(tk.Frame):
             raise ValueError("Hours must be above 0.")
         if settings["train_beta"] < 0:
             raise ValueError("Beta can't be negative.")
+        if settings["train_bonus"] < 0:
+            raise ValueError("Win bonus can't be negative.")
+        if (settings["train_method"] not in learning.METHODS or settings["train_deck"] not in DECKS
+                or settings["train_stake"] not in STAKES):
+            raise ValueError("Pick a method, deck and stake.")
         return settings
 
     def _others_ok(self) -> bool:
@@ -1281,6 +1310,8 @@ class TrainTab(tk.Frame):
             source, save = learning.start_choice(row.get("copy") or "")
             shown = [("train_run", row["run"]), ("train_source", source), ("train_save", save),
                      ("train_beta", row.get("beta") or 0)]
+            shown += [(f"train_{key.split()[-1]}", row[key])
+                      for key in ("method", "win bonus", "deck", "stake") if row.get(key) is not None]
             # Hours follow the run while it plays; on a run that has stopped they are the
             # new total Resume gives it, so a refresh leaves what was typed.
             if active or self.shown_run != row["run"]:
@@ -1291,8 +1322,9 @@ class TrainTab(tk.Frame):
             self.shown_run = row["run"]
         else:
             self.shown_run = None
+        same_seed = self.vars["train_method"].get() == "SAME SEED"
         for w in self.inputs:
-            on = new or (w is self.hours_input and not active)
+            on = (new and (w is not self.beta_input or same_seed)) or (w is self.hours_input and not active)
             w.state(["!disabled"] if on else ["disabled"])
         name = self.vars["train_run"].get().strip()
         can_start = (new and learning.valid_run_name(name) and not learning.run_taken(name)
