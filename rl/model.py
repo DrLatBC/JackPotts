@@ -49,6 +49,8 @@ from rl.features import (
 )
 
 MAX_SELECT = 5
+VALUE_SCALE = 8.0
+"""The value head predicts points / VALUE_SCALE, so its targets stay near 0 to 2."""
 BEST_HAND = 13
 """The column of a hand card's row that marks it as part of the best hand."""
 PLAY, DISCARD = int(ActionType.PlayHand), int(ActionType.Discard)
@@ -266,6 +268,7 @@ class Policy(nn.Module):
         self.set_score = nn.Sequential(
             nn.ReLU(), nn.Linear(width, width), nn.ReLU(), nn.Linear(width, 1)
         )
+        self.value_head = nn.Sequential(nn.Linear(width, width), nn.ReLU(), nn.Linear(width, 1))
 
     def encode(self, t: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """The run token and the item tokens after the transformer."""
@@ -276,6 +279,11 @@ class Policy(nn.Module):
         pad = torch.cat([torch.zeros_like(t["pad"][:, :1]), t["pad"]], 1)
         x = self.norm(self.encoder(x, src_key_padding_mask=pad))
         return x[:, 0], x[:, 1:]
+
+    def value(self, run: torch.Tensor) -> torch.Tensor:
+        """The points the rest of the game is expected to bring, divided by
+        ``VALUE_SCALE``."""
+        return self.value_head(run).squeeze(-1)
 
     def type_logits(self, run: torch.Tensor, type_mask: torch.Tensor) -> torch.Tensor:
         return self.type_head(run).masked_fill(~type_mask, -torch.inf)
@@ -316,14 +324,28 @@ def item_tokens(tokens: torch.Tensor, rows, position) -> torch.Tensor:
     return picked * (position >= 0)[:, None]
 
 
+def _pick(logits: torch.Tensor, generator: torch.Generator | None) -> tuple[np.ndarray, torch.Tensor]:
+    """Per row, the top choice, or one drawn in proportion to its probability when a
+    ``generator`` is given; with the chosen entry's log-probability."""
+    if generator is None:
+        chosen = logits.argmax(-1)
+    else:
+        chosen = torch.multinomial(torch.softmax(logits, -1), 1, generator=generator).squeeze(-1)
+    logp = torch.log_softmax(logits, -1).gather(-1, chosen[:, None]).squeeze(-1)
+    return chosen.numpy(), logp
+
+
 @torch.no_grad()
-def choose(model: Policy, prep: Prepared, idx: np.ndarray | None = None) -> list[FactoredAction]:
-    """The most likely legal action for each example: the type first, then the item
-    that type points at, then the cards."""
+def act(model: Policy, prep: Prepared, idx: np.ndarray | None = None,
+        generator: torch.Generator | None = None):
+    """An action for each example: the type first, then the item that type points at,
+    then the cards, each the most likely legal choice or, with a ``generator``, drawn
+    from the policy. Returns the actions, their log-probabilities and the value in
+    points."""
     idx = np.arange(prep.n) if idx is None else idx
     t = prep.tokens(idx)
     run, tokens = model.encode(t)
-    types = model.type_logits(run, t["type_mask"]).argmax(-1).numpy()
+    types, logp = _pick(model.type_logits(run, t["type_mask"]), generator)
     entities = np.full(len(idx), -1, np.int64)
     position = np.full(len(idx), -1, np.int64)
     rows = np.flatnonzero(_TYPE_LIST[types] >= 0)
@@ -334,7 +356,8 @@ def choose(model: Policy, prep: Prepared, idx: np.ndarray | None = None) -> list
         logits = model.entity_logits(
             run[rows], tokens[rows], torch.from_numpy(types[rows]), torch.from_numpy(mask)
         )
-        position[rows] = logits.argmax(-1).numpy()
+        position[rows], item_logp = _pick(logits, generator)
+        logp[rows] += item_logp
         entities[rows] = position[rows] - prep.entity_base(idx[rows], types[rows])
     cards: dict[int, tuple[int, ...]] = {}
     every = np.arange(len(idx))
@@ -346,9 +369,11 @@ def choose(model: Policy, prep: Prepared, idx: np.ndarray | None = None) -> list
             run[group], tokens[group, :n], torch.from_numpy(types[group]),
             item_tokens(tokens, group, position[group]), subsets, torch.from_numpy(legal),
         )
-        for row, best in zip(group, logits.argmax(-1).numpy()):
+        chosen, set_logp = _pick(logits, generator)
+        logp[group] += set_logp
+        for row, best in zip(group, chosen):
             cards[int(row)] = bits_to_cards(int(subsets.bits[best]))
-    return [
+    actions = [
         FactoredAction(
             action_type=int(types[row]),
             card_target=cards.get(row),
@@ -356,3 +381,9 @@ def choose(model: Policy, prep: Prepared, idx: np.ndarray | None = None) -> list
         )
         for row in range(len(idx))
     ]
+    return actions, logp.numpy(), model.value(run).numpy() * VALUE_SCALE
+
+
+def choose(model: Policy, prep: Prepared, idx: np.ndarray | None = None) -> list[FactoredAction]:
+    """The most likely legal action for each example."""
+    return act(model, prep, idx)[0]

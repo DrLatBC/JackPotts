@@ -43,6 +43,12 @@ def make_env(deck: str, stake: int, *, on_refusal: str = "raise", **kw) -> Balat
     )
 
 
+def no_legal_action(info: dict) -> bool:
+    """True at a decision point where the engine allows nothing, not even a skip (a
+    Tarot or Spectral pack left open on an empty hand): the game cannot go on."""
+    return not info["action_mask"].type_mask.any()
+
+
 def env_view(info: dict) -> View:
     """The view of the decision point an environment step or reset returned."""
     return view_from(

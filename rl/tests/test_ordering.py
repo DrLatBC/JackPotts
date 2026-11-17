@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from jackdaw.engine import actions as A
 from jackdaw.env.action_space import ActionType
 from jackdaw.env.game_spec import FactoredAction
 
+import random
+from itertools import combinations
+
 from rl import dataset
-from rl.ordering import bot_order, bot_state, put_in_order
+from rl.ordering import bot_order, bot_state, order_can_change, put_in_order
 from rl.playback import apply_pre, make_env
 
 
@@ -54,6 +58,45 @@ def test_the_rule_gives_the_order_the_bot_played_in(shard):
             same += bot_order(game, shard.action(i).card_target) == did
     assert plays > 100 and reordered >= 10
     assert same == plays
+
+
+def _order_holds(game, cards) -> bool:
+    """The quick check never says "hand order" where the full rule gives another."""
+    return order_can_change(game, cards) or bot_order(game, cards) == sorted(cards)
+
+
+def test_the_quick_check_agrees_with_the_full_rule(shard):
+    rng = random.Random(0)
+    checked = skipped = 0
+    for g in range(shard.n_games):
+        for i, game in _plays(shard, g):
+            hand = range(len(game.hand))
+            picks = [shard.action(i).card_target] + [
+                rng.choice(list(combinations(hand, k))) for k in (2, 3, 4, 5) if k <= len(game.hand)]
+            for cards in picks:
+                assert _order_holds(game, cards), (g, i, cards)
+                checked += 1
+                skipped += not order_can_change(game, cards)
+    assert checked > 400 and skipped > 0
+
+
+def test_the_quick_check_sees_glass_and_the_order_jokers(shard):
+    env = make_env("b_blue", 1)
+    _, _, info = env.reset(seed=str(shard["g_seed"][0]))
+    game = info["game"]
+    game.step(A.SelectBlind())
+    plain = (0, 1)
+    assert not order_can_change(game, plain)
+    game.debug_add("H_A", enhancement="m_glass")
+    glass = next(k for k, c in enumerate(game.hand) if c.key == "m_glass")
+    other = next(k for k in range(len(game.hand)) if k != glass)
+    assert order_can_change(game, (other, glass))
+    assert bot_order(game, sorted([glass, other]))[-1] == glass
+    plain = tuple(k for k in range(len(game.hand)) if k != glass)[:2]
+    assert not order_can_change(game, plain)
+    game.debug_add("j_triboulet")
+    assert order_can_change(game, (0, 1))
+    assert not order_can_change(game, (0,))
 
 
 def test_games_end_as_recorded_when_the_wrapper_orders_the_plays(shard):

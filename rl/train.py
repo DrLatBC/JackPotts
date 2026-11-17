@@ -72,7 +72,7 @@ def heads(model: Policy, prep: Prepared, idx: np.ndarray) -> dict:
     run, tokens = model.encode(t)
     types = prep.act_type[idx]
     out = {"type": (model.type_logits(run, t["type_mask"]), torch.from_numpy(types)),
-           "type_mask": t["type_mask"]}
+           "type_mask": t["type_mask"], "value": model.value(run)}
     entities = prep.act_entity[idx]
     position = np.full(len(idx), -1, np.int64)
     rows = np.flatnonzero((_TYPE_LIST[types] >= 0) & (entities >= 0))
@@ -212,7 +212,12 @@ def load_model(path: str | Path) -> tuple[Policy, dict]:
         raise ValueError(f"{path} was trained on jackdaw {saved['jackdaw']} action version "
                          f"{saved['action_version']}; this is {here}")
     model = Policy(**saved["config"])
-    model.load_state_dict(saved["state"])
+    # A policy trained only to copy the bot has no value head; it starts untrained.
+    missing, unexpected = model.load_state_dict(saved["state"], strict=False)
+    if unexpected or any(not k.startswith("value_head.") for k in missing):
+        raise ValueError(f"{path} does not fit this network: missing {missing}, "
+                         f"unexpected {unexpected}")
+    model.config = dict(saved["config"])
     model.eval()
     return model, saved["meta"]
 

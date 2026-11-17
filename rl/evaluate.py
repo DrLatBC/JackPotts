@@ -18,19 +18,28 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import torch
 from jackdaw.core.game import IllegalActionError
 from jackdaw.env.action_space import ActionType
 
 from rl import dataset
 from rl.model import Policy, Prepared, choose
 from rl.ordering import put_in_order
-from rl.playback import env_view, make_env, read_seeds
+from rl.playback import env_view, make_env, no_legal_action, read_seeds
 from rl.train import HELDOUT, load_model
 
 DATA = Path(__file__).resolve().parent / "data"
 WIN_ANTE = 9
 MAX_STEPS = 3000
 PAST = (1, 2, 4, 6)
+DECK, STAKE = "b_blue", 1
+"""What learning by playing plays on: Blue deck, White stake."""
+
+
+def eval_seed(n: int) -> str:
+    """The ``n``-th evaluation seed (from 1). The dash keeps these apart from the game's
+    own 8-character seeds and from training seeds."""
+    return f"RLE-{n:06d}"
 
 
 def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64,
@@ -61,6 +70,8 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
             except IllegalActionError as e:
                 terminated, truncated, info = False, True, slot["info"]
                 cut = f"refused: {e}"
+            if not (terminated or truncated) and no_legal_action(info):
+                truncated, cut = True, "no legal action"
             slot["info"] = info
             slot["steps"] += 1
             if not (terminated or truncated):
@@ -123,17 +134,43 @@ def table(model_rows: list[dict], bot_rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def evaluation_seeds(model: Policy, args, path: Path) -> int:
+    """Play the evaluation seeds ``RLE-000001...``; results saved beside the model."""
+    seeds = [eval_seed(i) for i in range(1, args.seeds + 1)]
+    started = time.perf_counter()
+    rows = play(model, [(s, DECK, STAKE) for s in seeds], parallel=args.parallel,
+                order_plays=not args.hand_order)
+    s = summary(rows)
+    s["seconds"] = time.perf_counter() - started
+    s["steps"] = sum(r["steps"] for r in rows)
+    print(json.dumps(s, indent=2))
+    out = path.with_name(f"{path.stem}_eval{args.seeds}.json")
+    out.write_text(json.dumps({"model": str(path), "summary": s, "games": rows}, indent=2))
+    print(f"saved {out}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--name", required=True, help="the model: rl/data/models/<name>.pt")
+    ap.add_argument("--name", required=True,
+                    help="the model: rl/data/models/<name>.pt, or a path to a .pt file")
     ap.add_argument("--shards", default=str(DATA / "shards"))
-    ap.add_argument("--games", type=int, default=0, help="play only this many held-out seeds")
+    ap.add_argument("--games", type=int, default=0, help="play only this many seeds")
     ap.add_argument("--parallel", type=int, default=64)
+    ap.add_argument("--threads", type=int, default=0, help="Torch threads (0: Torch's default)")
+    ap.add_argument("--seeds", type=int, default=0,
+                    help="play the first N evaluation seeds (Blue deck, White stake) instead "
+                         "of the held-out seeds; the bot has no results on them")
     ap.add_argument("--hand-order", action="store_true",
                     help="play the chosen cards in hand order, not the bot's play order")
     args = ap.parse_args()
+    if args.threads:
+        torch.set_num_threads(args.threads)
 
-    model, meta = load_model(DATA / "models" / f"{args.name}.pt")
+    path = Path(args.name) if args.name.endswith(".pt") else DATA / "models" / f"{args.name}.pt"
+    model, meta = load_model(path)
+    if args.seeds:
+        return evaluation_seeds(model, args, path)
     ex = dataset.load_shards(sorted(Path(args.shards).glob("shard_*.npz")))
     bot = bot_results(ex, read_seeds(HELDOUT))
     seeds = sorted(bot)[:args.games or None]
@@ -164,9 +201,9 @@ def main() -> int:
            "bot summary": summary(bot_rows), "cut short": cuts,
            "games": [{**r, "bot ante": b["ante"], "bot won": b["won"]}
                      for r, b in zip(rows, bot_rows)]}
-    path = DATA / "models" / f"{args.name}_eval{'_hand_order' if args.hand_order else ''}.json"
-    path.write_text(json.dumps(out, indent=2))
-    print(f"saved {path}")
+    saved = path.with_name(f"{path.stem}_eval{'_hand_order' if args.hand_order else ''}.json")
+    saved.write_text(json.dumps(out, indent=2))
+    print(f"saved {saved}")
     return 0
 
 
