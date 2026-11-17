@@ -28,6 +28,8 @@ from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
+from balatro_bot import learning
+from balatro_bot.learning import pid_alive
 from balatro_bot.supervisor import (
     BASE_DIR, BASE_PORT, COMMANDS_DIR, LOG_DIR, MAX_INSTANCES, PAUSE_FILE, PORT_SPAN, PYTHON,
     STATUS_FILE, STOP_FILE,
@@ -49,7 +51,11 @@ DECKS = [
 STAKES = ["WHITE", "RED", "GREEN", "BLACK", "BLUE", "PURPLE", "ORANGE", "GOLD"]
 
 DEFAULTS = {"instances": 6, "games": 2000, "deck": "BLUE", "stake": "WHITE",
-            "explore_instances": 2, "explore_rate": 0.15, "sim": False, "kernel": False}
+            "explore_instances": 2, "explore_rate": 0.15, "sim": False, "kernel": False,
+            "train_run": "", "train_copy": "b187", "train_hours": 1.0, "train_beta": 0.1,
+            "stream_source": "", "stream_checkpoint": "latest", "stream_deck": "BLUE",
+            "stream_stake": "WHITE", "stream_delay": 1.5}
+
 
 # Dashboard palette
 BG = "#1a1a2e"
@@ -73,8 +79,11 @@ STATE_COLOURS = {
 }
 PHASE_COLOURS = {"running": GREEN, "stopping": YELLOW, "pausing": YELLOW, "paused": GOLD, "starting": BLUE,
                  "outside": PURPLE, "idle": BORDER}
+TRAIN_COLOURS = {"idle": DIM, "starting": BLUE, "running": GREEN, "stopping": YELLOW,
+                 "stopped": MUTED, "finished": GOLD, "failed": RED, "outside": PURPLE}
 
 FONT = "Segoe UI"
+FULL_MIN = (1060, 660)  # the full view's smallest size, at 96 dpi
 
 # Screen pixels per 96-dpi pixel; set once the window exists. Sizes below are
 # written at 96 dpi and pass through px() so the panel stays sharp and in
@@ -84,20 +93,6 @@ _scale = 1.0
 
 def px(n: float) -> int:
     return int(round(n * _scale))
-
-
-def _pid_alive(pid: int) -> bool:
-    """True when a process with this pid is still running (Windows)."""
-    process_query_limited_information = 0x1000
-    still_active = 259
-    kernel32 = ctypes.windll.kernel32
-    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-    if not handle:
-        return False
-    code = ctypes.c_ulong()
-    ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-    kernel32.CloseHandle(handle)
-    return bool(ok) and code.value == still_active
 
 
 def read_status_file() -> dict | None:
@@ -111,7 +106,7 @@ def read_status_file() -> dict | None:
 def read_status() -> dict | None:
     """The supervisor's latest status, or None when no supervisor is alive."""
     status = read_status_file()
-    if status is None or status.get("phase") == "stopped" or not _pid_alive(int(status.get("pid", 0))):
+    if status is None or status.get("phase") == "stopped" or not pid_alive(int(status.get("pid", 0))):
         return None
     return status
 
@@ -174,10 +169,14 @@ def load_settings() -> dict:
     return {**DEFAULTS, **{k: v for k, v in saved.items() if k in DEFAULTS}}
 
 
+def save_settings(changes: dict) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps({**load_settings(), **changes}), encoding="utf-8")
+
+
 def launch_batch(settings: dict) -> None:
     """Start the supervisor windowless with these settings and remember them for the panel."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(settings), encoding="utf-8")
+    save_settings(settings)
     STOP_FILE.unlink(missing_ok=True)
     STATUS_FILE.unlink(missing_ok=True)
     _spawn_supervisor(supervisor_command(settings))
@@ -225,6 +224,11 @@ def supervisor_command(settings: dict) -> list[str]:
     if settings.get("kernel"):
         cmd.append("--kernel")
     return cmd
+
+
+def batch_active() -> bool:
+    """True while a batch is playing, from this panel or a terminal."""
+    return read_status() is not None or ports_in_use()
 
 
 def batch_summary(status: dict) -> str:
@@ -751,6 +755,876 @@ class RecentGames(tk.Canvas):
             y += self.row_h
 
 
+# ── Learning runs and the stream ──
+
+
+def _blend(a: str, b: str, t: float) -> str:
+    """The colour ``t`` of the way from ``a`` to ``b``."""
+    ca = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+    cb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(ca, cb))
+
+
+def _pct(v: float) -> str:
+    return f"{v:.1%}"
+
+
+def _num(digits: int):
+    return lambda v: f"{round(v, digits) + 0.0:.{digits}f}"  # + 0.0 turns -0.0 into 0.0
+
+
+class LineChart(tk.Canvas):
+    """One measure by update: a gold line (dots when there are few points), a recessive
+    grid, the latest value in the corner, and a crosshair with the value on hover.
+    ``band`` shades a ± range around each point."""
+
+    def __init__(self, master: tk.Misc, tooltip: Tooltip, title: str, fmt, **kw) -> None:
+        super().__init__(master, bg=CARD, highlightthickness=0, bd=0, **kw)
+        self.tooltip, self.title, self.fmt = tooltip, title, fmt
+        self.xs: list[float] = []
+        self.ys: list[float] = []
+        self.band: list[float] | None = None
+        self._pts: list[tuple[float, float]] = []
+        self._plot = (0, 0)
+        self.bind("<Configure>", lambda _e: self.redraw())
+        self.bind("<Motion>", self._motion)
+        self.bind("<Leave>", self._leave)
+
+    def set(self, xs, ys, band=None) -> None:
+        keep = [i for i, (x, y) in enumerate(zip(xs, ys)) if x is not None and y is not None]
+        new = ([xs[i] for i in keep], [ys[i] for i in keep], None if band is None else [band[i] for i in keep])
+        if new != (self.xs, self.ys, self.band):
+            self.xs, self.ys, self.band = new
+            self.redraw()
+
+    def redraw(self) -> None:
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        self._pts = []
+        if w < px(60) or h < px(60):
+            return
+        self.create_text(px(12), px(13), text=self.title, anchor="w", fill=MUTED, font=(FONT, 8, "bold"))
+        if not self.ys:
+            self.create_text(w / 2, h / 2 + px(6), text="No data yet", fill=DIM, font=(FONT, 9))
+            return
+        right_pad, top, bottom = px(14), px(30), h - px(20)
+        self.create_text(w - right_pad, px(13), text=self.fmt(self.ys[-1]), anchor="e", fill=TEXT,
+                         font=(FONT, 10, "bold"))
+        band = self.band or [0.0] * len(self.ys)
+        lo = min(y - b for y, b in zip(self.ys, band))
+        hi = max(y + b for y, b in zip(self.ys, band))
+        if hi - lo < 1e-12:
+            hi, lo = hi + max(abs(hi) * 0.05, 1e-6), lo - max(abs(lo) * 0.05, 1e-6)
+        margin = (hi - lo) * 0.08
+        lo, hi = lo - margin, hi + margin
+        label_w = max(tkfont.Font(family=FONT, size=7).measure(self.fmt(v)) for v in (lo, hi, (lo + hi) / 2))
+        left, right = px(16) + label_w, w - right_pad
+        x0, x1 = min(self.xs), max(self.xs)
+        span_x = (x1 - x0) or 1
+
+        def X(x):
+            return left + (x - x0) / span_x * (right - left) if x1 > x0 else (left + right) / 2
+
+        def Y(y):
+            return bottom - (y - lo) / (hi - lo) * (bottom - top)
+
+        for frac in (0.0, 0.5, 1.0):
+            value = lo + (hi - lo) * frac
+            self.create_line(left, Y(value), right, Y(value), fill=BORDER)
+            self.create_text(left - px(6), Y(value), text=self.fmt(value), anchor="e", fill=DIM,
+                             font=(FONT, 7))
+        self.create_text(left, bottom + px(4), text=f"u{x0:g}", anchor="nw", fill=DIM, font=(FONT, 7))
+        if x1 > x0:
+            self.create_text(right, bottom + px(4), text=f"u{x1:g}", anchor="ne", fill=DIM, font=(FONT, 7))
+        pts = [(X(x), Y(y)) for x, y in zip(self.xs, self.ys)]
+        if self.band:
+            shade = _blend(CARD, GOLD, 0.25)
+            upper = [(X(x), Y(y + b)) for x, y, b in zip(self.xs, self.ys, self.band)]
+            lower = [(X(x), Y(y - b)) for x, y, b in zip(self.xs, self.ys, self.band)]
+            if len(pts) > 1:
+                self.create_polygon(*[c for p in upper + lower[::-1] for c in p], fill=shade, outline="")
+            else:
+                self.create_line(upper[0][0], upper[0][1], lower[0][0], lower[0][1], fill=shade, width=px(6))
+        if len(pts) > 1:
+            self.create_line(*[c for p in pts for c in p], fill=GOLD, width=px(2), capstyle="round",
+                             joinstyle="round")
+        if len(pts) <= 30:
+            r = px(4)
+            for x, y in pts:
+                self.create_oval(x - r, y - r, x + r, y + r, fill=GOLD, outline=CARD, width=px(2))
+        self._pts, self._plot = pts, (top, bottom)
+
+    def _motion(self, e: tk.Event) -> None:
+        self.delete("hover")
+        if not self._pts:
+            return
+        i = min(range(len(self._pts)), key=lambda k: abs(self._pts[k][0] - e.x))
+        x, y = self._pts[i]
+        top, bottom = self._plot
+        self.create_line(x, top, x, bottom, fill=MUTED, dash=(2, 3), tags="hover")
+        r = px(5)
+        self.create_oval(x - r, y - r, x + r, y + r, fill=GOLD, outline=TEXT, width=1, tags="hover")
+        text = f"Update {self.xs[i]:g}: {self.fmt(self.ys[i])}"
+        if self.band:
+            text += f" ± {self.fmt(self.band[i])}"
+        self.tooltip.show(text, e.x_root, e.y_root)
+
+    def _leave(self, _e: tk.Event) -> None:
+        self.delete("hover")
+        self.tooltip.hide()
+
+
+class RunList(tk.Canvas):
+    """The learning runs, playing first, then the most recently active. The top row
+    starts a new one."""
+
+    ROW = 50
+
+    def __init__(self, master: tk.Misc, on_select, **kw) -> None:
+        super().__init__(master, bg=CARD, highlightthickness=0, bd=0, **kw)
+        self.on_select = on_select
+        self.rows: list[dict] = []
+        self.selected: str | None = None
+        self.offset = 0
+        self.hover = -1
+        self.bind("<Configure>", lambda _e: self.redraw())
+        self.bind("<Button-1>", self._click)
+        self.bind("<MouseWheel>", self._wheel)
+        self.bind("<Motion>", self._motion)
+        self.bind("<Leave>", self._motion)
+
+    def update_rows(self, rows: list[dict], selected: str | None) -> None:
+        self.rows, self.selected = rows, selected
+        self.redraw()
+
+    def _index(self, y: int) -> int:
+        return int((y + self.offset) // px(self.ROW))
+
+    def _wheel(self, e: tk.Event) -> None:
+        most = max(0, (len(self.rows) + 1) * px(self.ROW) - self.winfo_height())
+        self.offset = max(0, min(most, self.offset - int(e.delta / 120) * px(self.ROW)))
+        self.redraw()
+
+    def _motion(self, e: tk.Event) -> None:
+        inside = 0 <= e.x < self.winfo_width() and 0 <= e.y < self.winfo_height()
+        hover = self._index(e.y) if inside else -1
+        if hover != self.hover:
+            self.hover = hover
+            self.redraw()
+
+    def _click(self, e: tk.Event) -> None:
+        i = self._index(e.y)
+        if i == 0:
+            self.on_select(None)
+        elif i - 1 < len(self.rows):
+            self.on_select(self.rows[i - 1]["run"])
+
+    def redraw(self) -> None:
+        self.delete("all")
+        w, row_h = self.winfo_width(), px(self.ROW)
+        entries = [None] + self.rows
+        for i, row in enumerate(entries):
+            top = i * row_h - self.offset
+            if top + row_h < 0 or top > self.winfo_height():
+                continue
+            name = None if row is None else row["run"]
+            if name == self.selected:
+                self.create_rectangle(0, top, w, top + row_h, fill=CARD_HOVER, width=0)
+                self.create_rectangle(0, top, px(3), top + row_h, fill=GOLD, width=0)
+            elif i == self.hover:
+                self.create_rectangle(0, top, w, top + row_h, fill=_blend(CARD, CARD_HOVER, 0.5), width=0)
+            self.create_line(px(12), top + row_h, w - px(12), top + row_h, fill=BORDER)
+            if row is None:
+                self.create_text(px(16), top + row_h / 2, text="+   New run", anchor="w",
+                                 fill=GOLD if self.selected is None else TEXT, font=(FONT, 10, "bold"))
+                continue
+            phase = row["phase"]
+            r = px(4)
+            cy = top + px(17)
+            self.create_oval(px(16) - r, cy - r, px(16) + r, cy + r, fill=TRAIN_COLOURS.get(phase, MUTED),
+                             outline="")
+            self.create_text(px(28), cy, text=row["run"], anchor="w", fill=TEXT, font=(FONT, 10, "bold"))
+            total = row.get("hours total") or 0
+            sub = f"u{row.get('update', 0)}  ·  {row.get('hours', 0):.2f} / {total:g} h"
+            if row.get("eval"):
+                sub += f"  ·  {row['eval']['win rate']:.1%}"
+            self.create_text(px(28), top + px(35), text=sub, anchor="w", fill=MUTED, font=(FONT, 8))
+            if total:
+                bar_w = w - px(28) - px(14)
+                self.create_rectangle(px(28), top + row_h - px(5), px(28) + bar_w, top + row_h - px(3),
+                                      fill=BORDER, width=0)
+                done = max(px(2), int(bar_w * min(row.get("hours", 0) / total, 1)))
+                self.create_rectangle(px(28), top + row_h - px(5), px(28) + done, top + row_h - px(3),
+                                      fill=TRAIN_COLOURS.get(phase, MUTED) if phase in learning.TRAIN_ACTIVE else MUTED,
+                                      width=0)
+
+
+def _stat_cards(parent: tk.Misc, specs, *, size: int = 13) -> tuple[dict, dict]:
+    """A row of stat cards: big value over a small caption. Returns their value vars and labels."""
+    values, labels = {}, {}
+    for col, (key, name) in enumerate(specs):
+        parent.columnconfigure(col, weight=1, uniform="card")
+        card = tk.Frame(parent, bg=CARD, padx=px(14), pady=px(6))
+        card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else px(8), 0))
+        var = tk.StringVar(value="—")
+        lbl = tk.Label(card, textvariable=var, bg=CARD, fg=DIM, font=(FONT, size, "bold"), anchor="w")
+        lbl.pack(anchor="w", fill="x")
+        tk.Label(card, text=name, bg=CARD, fg=MUTED, font=(FONT, 8, "bold")).pack(anchor="w")
+        values[key], labels[key] = var, lbl
+    return values, labels
+
+
+def _fill_cards(values: dict, labels: dict, shown: dict) -> None:
+    for key, var in values.items():
+        var.set(shown.get(key, "—"))
+        labels[key].configure(fg=GOLD if key in shown else DIM)
+
+
+class TrainTab(tk.Frame):
+    """Learning runs: the run list, the chosen run's settings, controls and numbers, and
+    its charts by update."""
+
+    def __init__(self, master: tk.Misc, panel: "ControlPanel") -> None:
+        super().__init__(master, bg=BG)
+        self.panel = panel
+        self.history = learning.History()
+        self.rows: list[dict] = []
+        self.row: dict | None = None
+        self.selected: str | None = None
+        self.pinned = False
+        self.phase = "idle"
+        self.playing: set[str] = set()
+        # The run this window launched, until its first status shows.
+        self.proc: subprocess.Popen | None = None
+        self.launched_at = 0.0
+        self.launched_run: str | None = None
+        self.early: dict | None = None
+        self._build(load_settings())
+
+    def _build(self, s: dict) -> None:
+        tip = self.panel._tip
+        self.runs = RunList(self, self.select, width=px(250))
+        self.runs.pack(side="left", fill="y", padx=(px(12), 0), pady=(px(10), px(10)))
+        right = tk.Frame(self, bg=BG)
+        right.pack(side="left", fill="both", expand=True, padx=px(12), pady=(px(10), px(10)))
+
+        head = tk.Frame(right, bg=BG)
+        head.pack(fill="x")
+        controls = ttk.Frame(head, style="Card.TFrame", padding=(px(12), px(8)))
+        controls.pack(side="left", fill="y")
+        self.vars = {
+            "train_run": tk.StringVar(value=""),
+            "train_copy": tk.StringVar(value=s["train_copy"]),
+            "train_hours": tk.DoubleVar(value=s["train_hours"]),
+            "train_beta": tk.DoubleVar(value=s["train_beta"]),
+        }
+        fields = [
+            ("RUN", ttk.Entry(controls, width=14, textvariable=self.vars["train_run"])),
+            ("COPY", ttk.Combobox(controls, values=learning.copies(), state="readonly", width=10,
+                                  textvariable=self.vars["train_copy"])),
+            ("HOURS", ttk.Spinbox(controls, from_=0.5, to=200, increment=0.5, width=5,
+                                  textvariable=self.vars["train_hours"])),
+            ("BETA", ttk.Spinbox(controls, from_=0, to=1, increment=0.01, width=5,
+                                 textvariable=self.vars["train_beta"])),
+        ]
+        self.inputs = []
+        for col, (label, widget) in enumerate(fields):
+            ttk.Label(controls, text=label, style="Field.TLabel").grid(
+                row=0, column=col, sticky="w", padx=(0, px(12)), pady=(0, px(3)))
+            widget.grid(row=1, column=col, sticky="w", padx=(0, px(12)))
+            self.inputs.append(widget)
+        self.vars["train_run"].trace_add("write", lambda *_: self.refresh() if self.selected is None else None)
+
+        buttons = tk.Frame(head, bg=BG)
+        buttons.pack(side="left", fill="y", padx=(px(12), 0))
+        self.start_btn = ttk.Button(buttons, text="▶  Start", style="Start.TButton", width=8, command=self.start)
+        self.start_btn.pack(side="left", fill="y")
+        self.resume_btn = ttk.Button(buttons, text="↻  Resume", command=self.resume)
+        self.resume_btn.pack(side="left", fill="y", padx=(px(8), 0))
+        tip(self.resume_btn, "Carry the run on from its last update, with its own settings")
+        self.stop_btn = ttk.Button(buttons, text="■  Stop", style="Stop.TButton", command=self.stop)
+        self.stop_btn.pack(side="left", fill="y", padx=(px(8), 0))
+        tip(self.stop_btn, "Stop after the current update; Resume carries on")
+
+        state = tk.Frame(right, bg=BG)
+        state.pack(fill="x", before=head, pady=(0, px(8)))
+        line = tk.Frame(state, bg=BG)
+        line.pack(anchor="w")
+        self.dot = tk.Label(line, text="●", bg=BG, fg=DIM, font=(FONT, 12))
+        self.dot.pack(side="left")
+        self.state_text = tk.StringVar()
+        tk.Label(line, textvariable=self.state_text, bg=BG, fg=TEXT,
+                 font=(FONT, 11, "bold")).pack(side="left", padx=(px(6), 0))
+        self.note = tk.StringVar()
+        note = tk.Label(state, textvariable=self.note, bg=BG, fg=MUTED, font=(FONT, 9), anchor="w",
+                        justify="left")
+        note.pack(anchor="w", fill="x")
+        note.bind("<Configure>", lambda e: note.configure(wraplength=e.width))
+        tip(state, lambda: learning.console_tail(self.selected) or "No output yet")
+
+        cards = tk.Frame(right, bg=BG)
+        cards.pack(fill="x", pady=(px(10), 0))
+        self.card_vals, self.card_labels = _stat_cards(cards, (
+            ("update", "UPDATE"), ("hours", "HOURS"), ("games", "GAMES"), ("points", "POINTS"),
+            ("agreement", "AGREEMENT"), ("drift", "DRIFT"), ("eval", "EVAL WINS"), ("ante", "EVAL ANTE")))
+
+        charts = tk.Frame(right, bg=BG)
+        charts.pack(fill="both", expand=True, pady=(px(10), 0))
+        tooltip = self.panel.tooltip
+        self.charts = {
+            "points": LineChart(charts, tooltip, "POINTS PER GAME", _num(2)),
+            "agreement": LineChart(charts, tooltip, "AGREEMENT WITH THE COPY", _pct),
+            "drift": LineChart(charts, tooltip, "DRIFT FROM THE COPY", _num(4)),
+            "eval": LineChart(charts, tooltip, "EVAL WIN RATE", _pct),
+            "ante": LineChart(charts, tooltip, "EVAL MEAN FINAL ANTE", _num(2)),
+        }
+        for col in range(6):
+            charts.columnconfigure(col, weight=1, uniform="chart")
+        charts.rowconfigure(0, weight=1)
+        charts.rowconfigure(1, weight=1)
+        for i, key in enumerate(("points", "agreement", "drift")):
+            self.charts[key].grid(row=0, column=2 * i, columnspan=2, sticky="nsew",
+                                  padx=(0 if i == 0 else px(8), 0), pady=(0, px(8)))
+        for i, key in enumerate(("eval", "ante")):
+            self.charts[key].grid(row=1, column=3 * i, columnspan=3, sticky="nsew",
+                                  padx=(0 if i == 0 else px(8), 0))
+
+    # ── Actions ──
+
+    def select(self, name: str | None) -> None:
+        self.selected, self.pinned = name, True
+        if name is None:
+            s = load_settings()
+            self.vars["train_run"].set("")
+            self.vars["train_copy"].set(s["train_copy"])
+            self.vars["train_hours"].set(s["train_hours"])
+            self.vars["train_beta"].set(s["train_beta"])
+        self.refresh()
+
+    def _settings(self) -> dict:
+        try:
+            settings = {
+                "train_run": self.vars["train_run"].get().strip(),
+                "train_copy": self.vars["train_copy"].get(),
+                "train_hours": float(self.vars["train_hours"].get()),
+                "train_beta": float(self.vars["train_beta"].get()),
+            }
+        except (tk.TclError, ValueError):
+            raise ValueError("Hours and beta must be numbers.")
+        name = settings["train_run"]
+        if not learning.valid_run_name(name):
+            raise ValueError("Name the run with letters, digits, - _ and . only.")
+        if learning.run_taken(name) or name in self.playing:
+            raise ValueError(f"{name} already exists. Pick it in the list to resume it, or use another name.")
+        if settings["train_copy"] not in learning.copies():
+            raise ValueError("Pick the copy to start from.")
+        if settings["train_hours"] <= 0:
+            raise ValueError("Hours must be above 0.")
+        if settings["train_beta"] < 0:
+            raise ValueError("Beta can't be negative.")
+        return settings
+
+    def _others_ok(self) -> bool:
+        """Ask before adding a run to a batch or to another run already playing."""
+        if batch_active() and not self.panel._overlap_ok("A bot batch"):
+            return False
+        return not self.playing or self.panel._overlap_ok(f"Learning run {sorted(self.playing)[0]}")
+
+    def start(self) -> None:
+        if self.selected is not None:
+            return
+        try:
+            settings = self._settings()
+        except ValueError as e:
+            messagebox.showerror("JackPotts", str(e), parent=self.panel.root)
+            return
+        if not self._others_ok():
+            return
+        save_settings(settings)
+        run = settings["train_run"]
+        self._launched(learning.launch_training(learning.train_command(settings), run), run)
+
+    def resume(self) -> None:
+        name = self.selected
+        if name is None or name in self.playing or not learning.resumable(name) or self.phase == "outside":
+            return
+        if not self._others_ok():
+            return
+        state = learning.run_state(name)
+        self._launched(learning.launch_training(learning.resume_command(state["args"]), name, append=True),
+                       name)
+
+    def _launched(self, proc: subprocess.Popen, run: str) -> None:
+        self.proc, self.launched_at, self.launched_run, self.early = proc, time.time(), run, None
+        self.selected, self.pinned = run, True
+        self.refresh()
+
+    def stop(self) -> None:
+        if self.phase != "running":
+            return
+        if not messagebox.askyesno("JackPotts", f"Stop {self.selected} after this update? "
+                                   "It saves, and Resume carries it on.", parent=self.panel.root):
+            return
+        learning.train_file(self.selected, ".stop").touch()
+        self.refresh()
+
+    # ── Refresh ──
+
+    def refresh(self) -> None:
+        statuses = learning.read_trainings()
+        launched = statuses.get(self.launched_run) if self.launched_run else None
+        fresh = launched is not None and launched.get("updated", 0) >= self.launched_at
+        if self.proc is not None:
+            if fresh:
+                self.proc = None
+            elif self.proc.poll() is not None:
+                # Gone before its first status: torch missing, a bad flag and the like.
+                self.early = {"run": self.launched_run, "phase": "failed", "updated": time.time(),
+                              "error": learning.console_tail(self.launched_run)
+                              or f"Exited with code {self.proc.returncode}."}
+                self.proc = None
+        if self.early is not None:
+            if fresh:
+                self.early = None
+            else:
+                statuses[self.launched_run] = {**(launched or {}), **self.early}
+        if self.proc is not None:
+            statuses[self.launched_run] = {**(launched or {}), "run": self.launched_run, "phase": "starting",
+                                           "updated": time.time()}
+        self.rows = learning.list_runs(statuses)
+        by_name = {r["run"]: r for r in self.rows}
+        playing = {r["run"] for r in self.rows if r["phase"] in learning.TRAIN_ACTIVE}
+        self._notify(playing, by_name)
+        self.playing = playing
+
+        if not self.pinned or (self.selected is not None and self.selected not in by_name):
+            current = by_name.get(self.selected)
+            if current is None or current["phase"] not in learning.TRAIN_ACTIVE:
+                self.selected = next(iter(playing), None) if playing else (
+                    self.selected if current else (self.rows[0]["run"] if self.rows else None))
+        self.row = by_name.get(self.selected) if self.selected is not None else None
+        self.phase = self.row["phase"] if self.row else "idle"
+        self.runs.update_rows(self.rows, self.selected)
+        self._fill_head()
+        self._fill_cards()
+        if self.winfo_ismapped():
+            self._fill_charts()
+
+    def _notify(self, playing: set[str], by_name: dict) -> None:
+        """Once per run that stops playing: finished, stopped or failed."""
+        for name in self.playing - playing:
+            row = by_name.get(name)
+            if row is None:
+                continue
+            body = row.get("error") if row["phase"] == "failed" else learning.training_summary(row)
+            self.panel.tray.notify(f"Learning run {name} {row['phase']}", body or row["phase"])
+
+    def _fill_head(self) -> None:
+        row, phase = self.row, self.phase
+        new = self.selected is None
+        if not new:
+            for key, value in (("train_run", row["run"]), ("train_copy", row.get("copy") or ""),
+                               ("train_hours", row.get("hours total") or 0), ("train_beta", row.get("beta") or 0)):
+                if str(self.vars[key].get()) != str(value):
+                    self.vars[key].set(value)
+        for w in self.inputs:
+            w.state(["!disabled"] if new else ["disabled"])
+        name = self.vars["train_run"].get().strip()
+        can_start = (new and learning.valid_run_name(name) and not learning.run_taken(name)
+                     and name not in self.playing)
+        can_resume = (not new and phase in ("stopped", "failed") and self.selected not in self.playing
+                      and learning.resumable(self.selected))
+        for btn, on in ((self.start_btn, can_start), (self.resume_btn, can_resume),
+                        (self.stop_btn, phase == "running")):
+            btn.state(["!disabled"] if on else ["disabled"])
+        self.dot.configure(fg=TRAIN_COLOURS.get(phase, MUTED) if not new else GOLD)
+        self.state_text.set("New run" if new else f"{phase.capitalize()}  ·  {row['run']}")
+        self.note.set(self._note(name, can_resume))
+
+    def _note(self, name: str, can_resume: bool) -> str:
+        row, phase = self.row or {}, self.phase
+        if self.selected is None:
+            if name and learning.run_taken(name):
+                return f"{name} already exists: pick it in the list to see or resume it."
+            return "Name the run, pick the copy, then Start."
+        if phase == "starting" or row.get("doing") == "starting":
+            return "Loading the model…"
+        if phase == "running":
+            doing = "Evaluating" if row.get("doing") == "evaluating" else "Playing and learning"
+            return f"{doing}  ·  from {row.get('copy') or '?'}"
+        if phase == "stopping":
+            return "Stopping after this update; it saves first."
+        if phase == "failed":
+            return (row.get("error") or "Failed.") + ("  Resume carries it on." if can_resume else "")
+        if phase == "outside":
+            return "Its log changed in the last 10 minutes: it may still be playing from a terminal."
+        if phase == "stopped":
+            return (f"Stopped at update {row.get('update', 0)}. Resume carries it on." if can_resume
+                    else "Stopped before its first update.")
+        return f"Played its {row.get('hours total') or 0:g} h over {row.get('update', 0)} updates."
+
+    def _fill_cards(self) -> None:
+        row, shown = self.row or {}, {}
+        if self.row is not None and self.phase != "starting":
+            shown = {"update": f"{row.get('update', 0):,}", "games": f"{row.get('games', 0):,}"}
+            if row.get("hours total"):
+                shown["hours"] = f"{row.get('hours', 0):.2f} / {row['hours total']:g}"
+            for key, field, fmt in (("points", "points per game", _num(2)), ("agreement", "agreement", _pct),
+                                    ("drift", "drift", _num(4))):
+                if row.get(field) is not None:
+                    shown[key] = fmt(row[field])
+            ev = row.get("eval")
+            if ev:
+                shown["eval"], shown["ante"] = _pct(ev["win rate"]), f"{ev['mean final ante']:.2f}"
+        _fill_cards(self.card_vals, self.card_labels, shown)
+
+    def _fill_charts(self) -> None:
+        data = self.history.of(self.selected) if self.selected else {"update": [], "points": [],
+                                                                     "agreement": [], "drift": [], "evals": []}
+        for key in ("points", "agreement", "drift"):
+            self.charts[key].set(data["update"], data[key])
+        evals = data["evals"]
+        self.charts["eval"].set([e[0] for e in evals], [e[1] for e in evals], [e[2] for e in evals])
+        self.charts["ante"].set([e[0] for e in evals], [e[3] for e in evals])
+
+    def mini_line(self) -> tuple[str, str]:
+        """The compact view's line: (colour, text)."""
+        row = next((r for r in self.rows if r["phase"] in learning.TRAIN_ACTIVE), None)
+        if row is None:
+            return DIM, "No learning run playing"
+        text = f"{row['run']}   u{row.get('update', 0)}   {row.get('hours', 0):.2f} / {row.get('hours total') or 0:g} h"
+        if row.get("eval"):
+            text += f"   eval {row['eval']['win rate']:.1%}"
+        return TRAIN_COLOURS.get(row["phase"], MUTED), text
+
+
+STREAM_COLOURS = {"idle": DIM, "starting": BLUE, "running": GREEN, "stopping": YELLOW,
+                  "stopped": MUTED, "failed": RED}
+OUTCOME_COLOURS = {"won": GREEN, "lost": MUTED, "divergence": RED, "error": RED, "stuck": YELLOW,
+                   "not ported": YELLOW, "stopped": DIM}
+
+
+class RecentStream(tk.Canvas):
+    """The stream's latest games: outcome, where it ended, the seed and the save that played."""
+
+    ROW = 30
+
+    def __init__(self, master: tk.Misc, tooltip: Tooltip, **kw) -> None:
+        super().__init__(master, bg=CARD, highlightthickness=0, bd=0, **kw)
+        self.tooltip = tooltip
+        self.games: list[dict] = []
+        self.bind("<Configure>", lambda _e: self.redraw())
+        self.bind("<Motion>", self._motion)
+        self.bind("<Leave>", lambda _e: self.tooltip.hide())
+
+    def update_games(self, games: list[dict]) -> None:
+        if games != self.games:
+            self.games = games
+            self.redraw()
+
+    def redraw(self) -> None:
+        self.delete("all")
+        w = self.winfo_width()
+        self.create_text(px(14), px(16), text="RECENT GAMES", anchor="w", fill=MUTED, font=(FONT, 8, "bold"))
+        if not self.games:
+            self.create_text(w / 2, px(60), text="None yet", fill=DIM, font=(FONT, 10))
+            return
+        cols = (px(30), px(170), px(300), px(430))
+        for i, g in enumerate(self.games):
+            top = px(32) + i * px(self.ROW)
+            mid = top + px(self.ROW) / 2
+            r = px(4)
+            self.create_oval(px(16) - r, mid - r, px(16) + r, mid + r,
+                             fill=OUTCOME_COLOURS.get(g["outcome"], MUTED), outline="")
+            where = "won" if g["outcome"] == "won" else f"{g['outcome']}, ante {g.get('ante', '?')}"
+            self.create_text(cols[0], mid, text=where, anchor="w", fill=TEXT, font=(FONT, 10))
+            self.create_text(cols[1], mid, text=g.get("seed", ""), anchor="w", fill=MUTED, font=(FONT, 9))
+            self.create_text(cols[2], mid, text=g.get("checkpoint", ""), anchor="w", fill=MUTED, font=(FONT, 9))
+            self.create_text(cols[3], mid, text=f"{g.get('steps', 0)} moves", anchor="w", fill=DIM,
+                             font=(FONT, 9))
+            self.create_line(px(12), top + px(self.ROW), w - px(12), top + px(self.ROW), fill=BORDER)
+
+    def _motion(self, e: tk.Event) -> None:
+        i = int((e.y - px(32)) // px(self.ROW))
+        if 0 <= i < len(self.games) and e.y >= px(32):
+            g = self.games[i]
+            text = g.get("error") or f"{g['outcome']} in {g.get('seconds', 0):.0f}s"
+            if g.get("bundle"):
+                text += f"\n{g['bundle']}"
+            self.tooltip.show(text, e.x_root, e.y_root)
+        else:
+            self.tooltip.hide()
+
+
+class StreamTab(tk.Frame):
+    """The stream: a model playing the visible game. Pick the model and the run's save,
+    start it, and watch the game, the totals and the latest games."""
+
+    def __init__(self, master: tk.Misc, panel: "ControlPanel") -> None:
+        super().__init__(master, bg=BG)
+        self.panel = panel
+        self.status: dict | None = None
+        self.now: dict | None = None
+        self.phase = "idle"
+        self.proc: subprocess.Popen | None = None
+        self.launched_at = 0.0
+        self.early: dict | None = None
+        self.was_active = False
+        self._build(load_settings())
+
+    def _build(self, s: dict) -> None:
+        tip = self.panel._tip
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=px(12))
+        controls = ttk.Frame(head, style="Card.TFrame", padding=(px(12), px(8)))
+        controls.pack(side="left", fill="y")
+        sources = learning.model_sources()
+        source = s["stream_source"] if s["stream_source"] in sources else (sources[0] if sources else "")
+        self.vars = {
+            "stream_source": tk.StringVar(value=source),
+            "stream_checkpoint": tk.StringVar(value=s["stream_checkpoint"]),
+            "stream_deck": tk.StringVar(value=s["stream_deck"]),
+            "stream_stake": tk.StringVar(value=s["stream_stake"]),
+            "stream_delay": tk.DoubleVar(value=s["stream_delay"]),
+        }
+        self.source_input = ttk.Combobox(controls, values=sources, state="readonly", width=18,
+                                         textvariable=self.vars["stream_source"])
+        self.save_input = ttk.Combobox(controls, state="readonly", width=10,
+                                       textvariable=self.vars["stream_checkpoint"])
+        fields = [
+            ("MODEL", self.source_input),
+            ("SAVE", self.save_input),
+            ("DECK", ttk.Combobox(controls, values=DECKS, state="readonly", width=10,
+                                  textvariable=self.vars["stream_deck"])),
+            ("STAKE", ttk.Combobox(controls, values=STAKES, state="readonly", width=8,
+                                   textvariable=self.vars["stream_stake"])),
+            ("DELAY", ttk.Spinbox(controls, from_=0, to=10, increment=0.5, width=4,
+                                  textvariable=self.vars["stream_delay"])),
+        ]
+        self.inputs = []
+        for col, (label, widget) in enumerate(fields):
+            ttk.Label(controls, text=label, style="Field.TLabel").grid(
+                row=0, column=col, sticky="w", padx=(0, px(12)), pady=(0, px(3)))
+            widget.grid(row=1, column=col, sticky="w", padx=(0, px(12)))
+            self.inputs.append(widget)
+        tip(self.save_input, "latest follows the run: the stream reads it again before each game")
+        self.vars["stream_source"].trace_add("write", lambda *_: self._sync_saves())
+        self._sync_saves()
+
+        buttons = tk.Frame(head, bg=BG)
+        buttons.pack(side="left", fill="y", padx=(px(12), 0))
+        self.start_btn = ttk.Button(buttons, text="▶  Start", style="Start.TButton", width=8, command=self.start)
+        self.start_btn.pack(side="left", fill="y")
+        self.stop_btn = ttk.Button(buttons, text="■  Stop", style="Stop.TButton", command=self.stop)
+        self.stop_btn.pack(side="left", fill="y", padx=(px(8), 0))
+        tip(self.stop_btn, "Stop after the current move and close the game")
+
+        state = tk.Frame(self, bg=BG)
+        state.pack(fill="x", before=head, padx=px(12), pady=(px(10), px(8)))
+        line = tk.Frame(state, bg=BG)
+        line.pack(anchor="w")
+        self.dot = tk.Label(line, text="●", bg=BG, fg=DIM, font=(FONT, 12))
+        self.dot.pack(side="left")
+        self.state_text = tk.StringVar()
+        tk.Label(line, textvariable=self.state_text, bg=BG, fg=TEXT,
+                 font=(FONT, 11, "bold")).pack(side="left", padx=(px(6), 0))
+        self.note = tk.StringVar()
+        note = tk.Label(state, textvariable=self.note, bg=BG, fg=MUTED, font=(FONT, 9), anchor="w",
+                        justify="left")
+        note.pack(anchor="w", fill="x")
+        note.bind("<Configure>", lambda e: note.configure(wraplength=e.width))
+
+        game = tk.Frame(self, bg=CARD, padx=px(16), pady=px(12))
+        game.pack(fill="x", padx=px(12), pady=(px(10), 0))
+        self.game_title = tk.StringVar(value="—")
+        self.game_line = tk.StringVar()
+        self.game_sub = tk.StringVar()
+        tk.Label(game, textvariable=self.game_title, bg=CARD, fg=GOLD, font=(FONT, 18, "bold"),
+                 anchor="w").pack(anchor="w", fill="x")
+        tk.Label(game, textvariable=self.game_line, bg=CARD, fg=TEXT, font=(FONT, 11),
+                 anchor="w").pack(anchor="w", fill="x", pady=(px(2), 0))
+        tk.Label(game, textvariable=self.game_sub, bg=CARD, fg=MUTED, font=(FONT, 9),
+                 anchor="w").pack(anchor="w", fill="x", pady=(px(4), 0))
+        self.score_bar = tk.Canvas(game, bg=CARD, height=px(4), highlightthickness=0, bd=0)
+        self.score_bar.pack(fill="x", pady=(px(8), 0))
+
+        totals = tk.Frame(self, bg=BG)
+        totals.pack(fill="x", padx=px(12), pady=(px(10), 0))
+        self.card_vals, self.card_labels = _stat_cards(totals, (
+            ("games", "GAMES"), ("wins", "WINS"), ("rate", "WIN RATE"), ("divergences", "DIVERGENCES"),
+            ("save", "PLAYING")), size=15)
+
+        self.recent = RecentStream(self, self.panel.tooltip)
+        self.recent.pack(fill="both", expand=True, padx=px(12), pady=(px(10), px(10)))
+
+    def _sync_saves(self) -> None:
+        source = self.vars["stream_source"].get()
+        saves = learning.checkpoints(source) if source else []
+        self.save_input.configure(values=saves)
+        if self.vars["stream_checkpoint"].get() not in saves:
+            self.vars["stream_checkpoint"].set(saves[0] if saves else "")
+
+    # ── Actions ──
+
+    def _settings(self) -> dict:
+        try:
+            settings = {k: v.get() for k, v in self.vars.items()}
+            settings["stream_delay"] = float(settings["stream_delay"])
+        except (tk.TclError, ValueError):
+            raise ValueError("Delay must be a number of seconds.")
+        if not settings["stream_source"] or not settings["stream_checkpoint"]:
+            raise ValueError("Pick the model to play.")
+        path, _ = learning.model_choice(settings["stream_source"], settings["stream_checkpoint"])
+        if not path.exists():
+            raise ValueError(f"{path} is missing.")
+        if settings["stream_delay"] < 0:
+            raise ValueError("Delay can't be negative.")
+        return settings
+
+    def start(self) -> None:
+        if self.phase in ("starting", "running", "stopping"):
+            return
+        try:
+            settings = self._settings()
+        except ValueError as e:
+            messagebox.showerror("JackPotts", str(e), parent=self.panel.root)
+            return
+        if batch_active() and not self.panel._overlap_ok("A bot batch"):
+            return
+        save_settings(settings)
+        self.proc = learning.launch_stream(learning.stream_command(settings))
+        self.launched_at, self.early = time.time(), None
+        self.refresh()
+
+    def stop(self) -> None:
+        if self.phase not in ("starting", "running"):
+            return
+        learning.stream_file("stop").touch()
+        self.refresh()
+
+    # ── Refresh ──
+
+    def refresh(self) -> None:
+        status, now = learning.read_stream()
+        fresh = status is not None and status.get("updated", 0) >= self.launched_at
+        if self.proc is not None:
+            if fresh:
+                self.proc = None
+            elif self.proc.poll() is not None:
+                self.early = {"phase": "failed", "error": _last_line(learning.stream_file("launcher.log"))
+                              or f"Exited with code {self.proc.returncode}."}
+                self.proc = None
+        if self.early is not None:
+            if fresh:
+                self.early = None
+            else:
+                status = self.early
+        if self.proc is not None:
+            phase = "starting"
+        elif status is None:
+            phase = "idle"
+        else:
+            phase = status["phase"]
+            if phase == "running" and learning.stream_file("stop").exists():
+                phase = "stopping"
+        self.status, self.now, self.phase = status, now if phase != "idle" else None, phase
+        self._notify()
+
+        active = phase in ("starting", "running", "stopping")
+        if active and status and status.get("model"):
+            source, save = learning.choice_of(status["model"])
+            for key, value in (("stream_source", source), ("stream_checkpoint", save),
+                               ("stream_deck", status.get("deck")), ("stream_stake", status.get("stake")),
+                               ("stream_delay", status.get("delay"))):
+                if value is not None and str(self.vars[key].get()) != str(value):
+                    self.vars[key].set(value)
+        for w in self.inputs:
+            w.state(["disabled"] if active else ["!disabled"])
+        if not active:
+            self.source_input.state(["readonly"])
+            sources = learning.model_sources()
+            if list(self.source_input.cget("values")) != sources:
+                self.source_input.configure(values=sources)
+        self.start_btn.state(["disabled"] if active else ["!disabled"])
+        self.stop_btn.state(["!disabled"] if phase in ("starting", "running") else ["disabled"])
+        self.dot.configure(fg=STREAM_COLOURS.get(phase, MUTED))
+        self.state_text.set("Stream off" if phase == "idle" else f"Stream {phase}")
+        self.note.set(self._note(status or {}, now or {}))
+        self._fill_game(now if active or phase in ("stopped", "failed") else None)
+
+    def _notify(self) -> None:
+        """Once, when a stream ends on its own with an error. Divergences and stops the
+        panel asked for are on the tab, not in notifications."""
+        active = self.phase in ("starting", "running", "stopping")
+        if self.was_active and self.phase == "failed":
+            self.panel.tray.notify("Stream failed", (self.status or {}).get("error") or "")
+        self.was_active = active
+
+    def _note(self, status: dict, now: dict) -> str:
+        phase = self.phase
+        if phase == "idle":
+            return "Pick the model and its save, then Start. The game opens in its own window."
+        if phase == "starting":
+            return "Opening the game…"
+        if phase == "running":
+            return (f"Playing {now.get('checkpoint') or '…'}  ·  {status.get('deck', '')} deck, "
+                    f"{status.get('stake', '')} stake  ·  {status.get('delay', 0):g}s a move")
+        if phase == "stopping":
+            return "Stopping after this move, then closing the game."
+        if phase == "failed":
+            return status.get("error") or "Failed."
+        return status.get("note", "Stopped.").capitalize()
+
+    def _fill_game(self, now: dict | None) -> None:
+        self.score_bar.delete("all")
+        game = (now or {}).get("game") or {}
+        if not game:
+            self.game_title.set("No game")
+            self.game_line.set("")
+            self.game_sub.set("")
+            _fill_cards(self.card_vals, self.card_labels, {})
+            self.recent.update_games([])
+            return
+        # The game shown is one past those counted unless it is the last one counted.
+        last = (now.get("recent") or [{}])[0]
+        counted = last.get("seed") == game.get("seed") and last.get("outcome") != "stopped"
+        number = now.get("games", 0) + (0 if counted else 1)
+        self.game_title.set(f"Game {number}   ·   Ante {game.get('ante', '?')}   ·   Round {game.get('round', '?')}")
+        blind = game.get("blind") or 0
+        line = f"${game.get('money', 0)}"
+        if blind:
+            line += f"   ·   {game.get('chips', 0):,} / {blind:,} chips"
+        line += f"   ·   {game.get('hands', 0)} hands, {game.get('discards', 0)} discards"
+        self.game_line.set(line)
+        self.game_sub.set(f"seed {game.get('seed', '')}   ·   last: {game.get('last') or '—'}")
+        ControlPanel._bar(self.score_bar, game.get("chips", 0) / blind if blind else 0)
+        games, wins = now.get("games", 0), now.get("wins", 0)
+        shown = {"games": f"{games:,}", "wins": f"{wins:,}", "divergences": f"{now.get('divergences', 0):,}",
+                 "save": now.get("checkpoint") or "—"}
+        if games:
+            shown["rate"] = _pct(wins / games)
+        _fill_cards(self.card_vals, self.card_labels, shown)
+        self.recent.update_games(now.get("recent", []))
+
+    def mini_line(self) -> tuple[str, str]:
+        if self.phase == "idle":
+            return DIM, "Stream off"
+        now = self.now or {}
+        game = now.get("game") or {}
+        text = f"Stream {self.phase}"
+        if game:
+            text += f"   ante {game.get('ante', '?')}   {now.get('wins', 0)} / {now.get('games', 0)} won"
+        return STREAM_COLOURS.get(self.phase, MUTED), text
+
+
+def _last_line(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
+
+
 class ControlPanel:
     def __init__(self, root: tk.Tk) -> None:
         global _scale
@@ -764,11 +1638,12 @@ class ControlPanel:
         self.running = False
         self.paused: dict | None = None
         self.compact = False
-        self.full_geometry = f"{px(1180)}x{px(600)}"
+        self.full_geometry = f"{px(1180)}x{px(740)}"
         self.watched_session: int | None = None
+        self.tab = "train"
         root.title("JackPotts")
         root.configure(bg=BG)
-        root.minsize(px(1060), px(520))
+        root.minsize(px(FULL_MIN[0]), px(FULL_MIN[1]))
         root.geometry(self.full_geometry)
         self._style()
         self.tooltip = Tooltip(root)
@@ -807,6 +1682,8 @@ class ControlPanel:
                         background=CARD, arrowsize=px(11))
         style.map("TSpinbox", foreground=[("disabled", DIM)], fieldbackground=[("disabled", CARD)],
                   arrowcolor=[("disabled", DIM)])
+        style.configure("TEntry", foreground=TEXT, fieldbackground=BG, insertcolor=TEXT)
+        style.map("TEntry", foreground=[("disabled", DIM)], fieldbackground=[("disabled", CARD)])
         style.configure("TCombobox", arrowcolor=TEXT, foreground=TEXT, background=CARD)
         style.map("TCombobox", fieldbackground=[("disabled", CARD), ("readonly", BG)],
                   foreground=[("disabled", DIM), ("readonly", TEXT)], arrowcolor=[("disabled", DIM)])
@@ -832,9 +1709,60 @@ class ControlPanel:
         self.strip.pack(fill="x", side="top")
         self.full = ttk.Frame(self.root)
         self.full.pack(fill="both", expand=True)
-        self._build_full(self.full)
+        header = tk.Frame(self.full, bg=BG)
+        header.pack(fill="x", padx=px(12), pady=(px(8), 0))
+        self._build_tabs(header)
+        links = tk.Frame(header, bg=BG)
+        links.pack(side="right", fill="y")
+        for text, tip, cmd in (("⤡", "Compact", self.toggle_compact),
+                               ("☰", "Logs folder", lambda: os.startfile(LOG_DIR)),
+                               ("↗", "Dashboard", lambda: webbrowser.open(DASHBOARD_URL))):
+            b = ttk.Button(links, text=text, style="Icon.TButton", width=2, command=cmd)
+            b.pack(side="right", fill="y", padx=(px(6), 0))
+            self._tip(b, tip)
+        tk.Frame(self.full, bg=BORDER, height=1).pack(fill="x", padx=px(12))
+        pages = tk.Frame(self.full, bg=BG)
+        pages.pack(fill="both", expand=True)
+        self.pages = {"batches": ttk.Frame(pages)}
+        self._build_full(self.pages["batches"])
+        self.train = TrainTab(pages, self)
+        self.stream = StreamTab(pages, self)
+        self.pages["train"], self.pages["stream"] = self.train, self.stream
+        self.show_tab("train")
         self.mini = ttk.Frame(self.root)
         self._build_mini(self.mini)
+
+    def _build_tabs(self, header: tk.Frame) -> None:
+        """Train and Stream up front; Batches small at the end, there when it's wanted."""
+        self.tab_widgets = {}
+        for key, text, size in (("train", "Train", 12), ("stream", "Stream", 12), ("batches", "Batches", 9)):
+            tab = tk.Frame(header, bg=BG, cursor="hand2")
+            tab.pack(side="left", padx=(0, px(22)))
+            row = tk.Frame(tab, bg=BG)
+            row.pack(pady=(px(4), px(5)))
+            dot = tk.Label(row, text="●", bg=BG, fg=DIM, font=(FONT, 9))
+            dot.pack(side="left", padx=(0, px(6)))
+            label = tk.Label(row, text=text, bg=BG, fg=MUTED, font=(FONT, size, "bold"))
+            label.pack(side="left")
+            line = tk.Frame(tab, bg=BG, height=px(3))
+            line.pack(fill="x")
+            for w in (tab, row, dot, label):
+                w.bind("<Button-1>", lambda _e, k=key: self.show_tab(k))
+            self.tab_widgets[key] = (label, dot, line)
+
+    def show_tab(self, key: str) -> None:
+        self.tab = key
+        for name, page in self.pages.items():
+            if name == key:
+                page.pack(fill="both", expand=True)
+            else:
+                page.pack_forget()
+        for name, (label, _dot, line) in self.tab_widgets.items():
+            label.configure(fg=TEXT if name == key else MUTED)
+            line.configure(bg=GOLD if name == key else BG)
+        self.tooltip.hide()
+        if hasattr(self, "tray"):
+            self.refresh(reschedule=False)
 
     def _build_full(self, parent: ttk.Frame) -> None:
         s = load_settings()
@@ -890,15 +1818,6 @@ class ControlPanel:
         self.stop_btn = ttk.Button(buttons, text="■  Stop", style="Stop.TButton", command=self.stop)
         self.stop_btn.pack(side="left", fill="y", padx=(px(8), 0))
 
-        links = ttk.Frame(top)
-        links.pack(side="right", fill="y")
-        for text, tip, cmd in (("⤡", "Compact", self.toggle_compact),
-                               ("☰", "Logs folder", lambda: os.startfile(LOG_DIR)),
-                               ("↗", "Dashboard", lambda: webbrowser.open(DASHBOARD_URL))):
-            b = ttk.Button(links, text=text, style="Icon.TButton", width=2, command=cmd)
-            b.pack(side="right", fill="y", padx=(px(6), 0))
-            self._tip(b, tip)
-
         stats = ttk.Frame(parent)
         stats.pack(fill="x", padx=px(12), pady=(px(10), 0))
         self.stat_vals: dict[str, tk.StringVar] = {}
@@ -952,27 +1871,21 @@ class ControlPanel:
 
     def _build_mini(self, parent: ttk.Frame) -> None:
         head = tk.Frame(parent, bg=BG)
-        head.pack(fill="x", padx=px(10), pady=(px(8), 0))
-        self.mini_title = tk.StringVar(value="—")
-        tk.Label(head, textvariable=self.mini_title, bg=BG, fg=GOLD,
-                 font=(FONT, 13, "bold")).pack(side="left")
+        head.pack(fill="x", padx=px(10), pady=(px(8), px(2)))
+        tk.Label(head, text="JackPotts", bg=BG, fg=GOLD, font=(FONT, 12, "bold")).pack(side="left")
         expand = ttk.Button(head, text="⤢", style="Icon.TButton", width=2, command=self.toggle_compact)
         expand.pack(side="right")
         self._tip(expand, "Full view")
-        self.mini_stop = ttk.Button(head, text="■", style="IconStop.TButton", width=2, command=self.stop)
-        self.mini_pause = ttk.Button(head, text="‖", style="Icon.TButton", width=2, command=self.pause)
-        self.mini_start = ttk.Button(head, text="▶", style="IconStart.TButton", width=2, command=self.start)
-        for b, tip in ((self.mini_stop, "Stop"), (self.mini_pause, "Pause"),
-                       (self.mini_start, lambda: "Resume" if self.paused else "Start")):
-            b.pack(side="right", padx=(0, px(6)))
-            self._tip(b, tip)
-        self.mini_bar = tk.Canvas(parent, bg=BG, height=px(4), highlightthickness=0, bd=0)
-        self.mini_bar.pack(fill="x", padx=px(10), pady=(px(6), px(4)))
-        self.mini_line = tk.StringVar()
-        tk.Label(parent, textvariable=self.mini_line, bg=BG, fg=TEXT,
-                 font=(FONT, 10)).pack(anchor="w", padx=px(10))
-        self.mini_dots = tk.Canvas(parent, bg=BG, height=px(20), highlightthickness=0, bd=0)
-        self.mini_dots.pack(fill="x", padx=px(10), pady=(px(4), px(8)))
+        self.mini_lines = []
+        for _ in range(3):
+            row = tk.Frame(parent, bg=BG)
+            row.pack(fill="x", padx=px(10))
+            dot = tk.Label(row, text="●", bg=BG, fg=DIM, font=(FONT, 9))
+            dot.pack(side="left")
+            text = tk.StringVar()
+            tk.Label(row, textvariable=text, bg=BG, fg=TEXT, font=(FONT, 10), anchor="w").pack(
+                side="left", padx=(px(6), 0))
+            self.mini_lines.append((dot, text))
 
     def _tip(self, widget: tk.Widget, text) -> None:
         """Hover text for a widget; text may be a function, for tips that follow the panel's state."""
@@ -997,14 +1910,14 @@ class ControlPanel:
             self.full_geometry = self.root.geometry()
             self.full.pack_forget()
             self.mini.pack(fill="both", expand=True)
-            self.root.minsize(px(360), px(110))
-            self.root.geometry(f"{px(400)}x{px(118)}")
+            self.root.minsize(px(380), px(120))
+            self.root.geometry(f"{px(440)}x{px(124)}")
             self.root.attributes("-topmost", True)
         else:
             self.mini.pack_forget()
             self.full.pack(fill="both", expand=True)
             self.root.attributes("-topmost", False)
-            self.root.minsize(px(1060), px(520))
+            self.root.minsize(px(FULL_MIN[0]), px(FULL_MIN[1]))
             self.root.geometry(self.full_geometry)
         self.refresh(reschedule=False)
 
@@ -1043,6 +1956,10 @@ class ControlPanel:
     def start(self) -> None:
         """Start a batch, or resume the paused one."""
         if read_status() is not None or ports_in_use():
+            return
+        if self.train.playing and not self._overlap_ok("A learning run"):
+            return
+        if self.stream.phase in ("starting", "running", "stopping") and not self._overlap_ok("The stream"):
             return
         if paused_status(read_status_file()):
             resume_paused_batch()
@@ -1104,6 +2021,10 @@ class ControlPanel:
         slot["explore_rate"] = rate
         self.table.redraw()
 
+    def _overlap_ok(self, other: str) -> bool:
+        return messagebox.askyesno("JackPotts", f"{other} is running; both will be slower. Start anyway?",
+                                   parent=self.root)
+
     # ── Refresh ──
 
     def _watch_for_finish(self, status: dict | None, final: dict | None) -> None:
@@ -1141,14 +2062,11 @@ class ControlPanel:
         self._watch_for_finish(status, last)
 
         phase = self._phase(status, launching, outside)
-        self.strip.configure(bg=PHASE_COLOURS[phase])
 
         can_start = phase in ("idle", "paused")
         can_pause = phase in ("running", "starting")
         can_stop = phase in ("running", "starting", "paused")
-        for btn, on in ((self.start_btn, can_start), (self.mini_start, can_start),
-                        (self.pause_btn, can_pause), (self.mini_pause, can_pause),
-                        (self.stop_btn, can_stop), (self.mini_stop, can_stop)):
+        for btn, on in ((self.start_btn, can_start), (self.pause_btn, can_pause), (self.stop_btn, can_stop)):
             btn.state(["!disabled"] if on else ["disabled"])
         self.start_btn.configure(text="▶  Resume" if phase == "paused" else "▶  Start")
         slots = status["slots"] if status else []
@@ -1169,7 +2087,6 @@ class ControlPanel:
         self.feed.update_summary(shown.get("recent") if shown else None,
                                  shown.get("recent_wins") if shown else None)
         self._fill_stats(shown)
-        self._fill_mini(shown, phase)
         self.footer.set({
             "starting": "Starting the supervisor…",
             "outside": "A batch started outside this panel holds the instance ports. Stop it there first.",
@@ -1177,6 +2094,9 @@ class ControlPanel:
             "pausing": "Pausing: closing games. Counts are kept.",
             "paused": "Paused. Resume carries on with the same counts; Stop ends the batch.",
         }.get(phase, "Closing hides the panel to the tray. Batches keep running."))
+        self.train.refresh()
+        self.stream.refresh()
+        self._fill_header(phase, shown)
 
         if reschedule:
             self.root.after(REFRESH_MS, self.refresh)
@@ -1209,33 +2129,30 @@ class ControlPanel:
         if frac > 0:
             canvas.create_rectangle(0, 0, max(px(2), int(w * min(frac, 1))), h, fill=GOLD, width=0)
 
-    def _fill_mini(self, status: dict | None, phase: str) -> None:
-        self.mini_bar.delete("all")
-        self.mini_dots.delete("all")
+    def _fill_header(self, batch_phase: str, batch_status: dict | None) -> None:
+        """Each tab's dot, the strip in the shown tab's colour, and the compact view."""
+        colours = {
+            "train": self.train.mini_line()[0],
+            "stream": self.stream.mini_line()[0],
+            "batches": PHASE_COLOURS[batch_phase] if batch_phase != "idle" else DIM,
+        }
+        for key, (_label, dot, _line) in self.tab_widgets.items():
+            dot.configure(fg=colours[key])
+        shown = colours[self.tab]
+        self.strip.configure(bg=shown if shown != DIM else BORDER)
         if not self.compact:
             return
-        if status is None:
-            self.mini_title.set({"starting": "Starting…", "stopping": "Stopping…",
-                                 "outside": "Outside batch"}.get(phase, "Idle"))
-            self.mini_line.set("")
-            self._bar(self.mini_bar, 0)
-            return
-        completed, expected = status["completed"], status["total_expected"]
-        self.mini_title.set(f"#{status['session']}   {completed:,} / {expected:,}")
-        self.mini_line.set(f"{status['wins']} wins  {_win_pct(status['wins'], completed)}"
-                           f"   ·   {_fmt_eta(status['eta_secs'])}")
-        self._bar(self.mini_bar, completed / expected if expected else 0)
-        shown = [sl for sl in status["slots"] if sl["state"] != "removed"]
-        # Dots shrink to keep a big batch on one line.
-        step = max(3, min(px(18), (self.mini_dots.winfo_width() - px(4)) // max(1, len(shown))))
-        d = max(2, step * 2 // 3)
-        ring = px(2) if step >= px(12) else 1
-        top = px(4) + (px(12) - d) // 2
-        for i, s in enumerate(shown):
-            x = i * step + px(2)
-            fill = STATE_COLOURS.get(s["state"], MUTED)
-            outline = PURPLE if s.get("explore_active", s["explore_rate"]) else fill
-            self.mini_dots.create_oval(x, top, x + d, top + d, fill=fill, outline=outline, width=ring)
+        if batch_status is not None:
+            batch = (PHASE_COLOURS[batch_phase], f"Batch #{batch_status['session']}   "
+                     f"{batch_status['completed']:,} / {batch_status['total_expected']:,}   "
+                     f"{batch_status['wins']} wins")
+        else:
+            batch = (PHASE_COLOURS[batch_phase] if batch_phase != "idle" else DIM,
+                     {"idle": "No batch"}.get(batch_phase, f"Batch {batch_phase}"))
+        for (dot, text), (colour, line) in zip(self.mini_lines,
+                                               (self.train.mini_line(), self.stream.mini_line(), batch)):
+            dot.configure(fg=colour)
+            text.set(line)
 
 
 def main() -> None:

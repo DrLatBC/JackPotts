@@ -38,6 +38,12 @@ SUIT_LETTER = {"Spades": "S", "Hearts": "H", "Clubs": "C", "Diamonds": "D"}
 RANK_ENUM = {"10": "T", "Jack": "J", "Queen": "Q", "King": "K", "Ace": "A",
              **{str(n): str(n) for n in range(2, 10)}}
 
+# The fields the fork adds: under each card's value and modifier, under round, and at the top.
+CARD_VALUE_FIELDS = ("ability", "rarity")
+MODIFIER_NUMBERS = ("edition_mult", "edition_chips", "edition_x_mult", "enhancement_x_mult")
+ROUND_FIELDS = ("most_played_poker_hand", "ancient_suit", "idol_card")
+TOP_FIELDS = ("counters", "earnings")
+
 # Ability keys the fork copies when present (gamestate.lua extract_card_value).
 COPIED_KEYS = ("driver_tally", "steel_tally", "stone_tally", "nine_tally", "loyalty_remaining",
                "yorick_discards", "caino_xmult", "invis_rounds", "to_do_poker_hand")
@@ -174,4 +180,26 @@ def augment(view: Any, snap: dict | None) -> Any:
     if isinstance(rnd, dict):
         rnd.update(fork_round(snap))
     view["counters"] = fork_counters(snap)
+    return view
+
+
+def strip(view: Any) -> Any:
+    """Take the fork-only fields out of a gamestate view, in place: what upstream
+    balatrobot sends, which is what Jackdaw's lockstep compares the live game against."""
+    if not isinstance(view, dict):
+        return view
+    for view_area in AREAS:
+        area = view.get(view_area)
+        if not isinstance(area, dict):
+            continue
+        for card in area.get("cards") or []:
+            for part, fields in (("value", CARD_VALUE_FIELDS), ("modifier", MODIFIER_NUMBERS)):
+                if isinstance(card.get(part), dict):
+                    for field in fields:
+                        card[part].pop(field, None)
+    if isinstance(view.get("round"), dict):
+        for field in ROUND_FIELDS:
+            view["round"].pop(field, None)
+    for field in TOP_FIELDS:
+        view.pop(field, None)
     return view

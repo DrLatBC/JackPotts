@@ -1,0 +1,379 @@
+"""Learning runs and the stream, as files and processes: what the control panel reads,
+the commands it launches, and nothing that needs Tk or torch.
+
+Learning runs are ``rl.ppo train`` (``rl/data/ppo/<run>/``, with per-run status, stop
+and console files in ``bot_log/training/``). The stream is ``balatro_bot.stream``
+(``bot_log/model_stream/``): the visible game played by a model.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import json
+import subprocess
+import time
+from pathlib import Path
+
+from balatro_bot.stream import STREAM_DIR
+from balatro_bot.supervisor import BASE_DIR, LOG_DIR, PYTHON
+
+RL_PYTHONW = BASE_DIR / ".venv-rl" / "Scripts" / "pythonw.exe"
+RL_DATA = BASE_DIR / "rl" / "data"
+TRAIN_DIR = LOG_DIR / "training"
+# The train flags the panel doesn't show.
+TRAIN_FIXED = ["--games-per-step", "1024", "--plays", "4", "--seeds", "32", "--fade", "0",
+               "--eval-every", "0.5", "--eval-games", "1000", "--threads", "4"]
+TRAIN_ACTIVE = ("starting", "running", "stopping")
+RUN_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+# A run with no status file whose log changed this recently may still be playing from
+# a terminal on code older than the status file; the panel won't offer to resume it.
+OUTSIDE_SECS = 600
+
+
+def pid_alive(pid: int) -> bool:
+    """True when a process with this pid is still running (Windows)."""
+    process_query_limited_information = 0x1000
+    still_active = 259
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return False
+    code = ctypes.c_ulong()
+    ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+    kernel32.CloseHandle(handle)
+    return bool(ok) and code.value == still_active
+
+
+def run_dir(name: str) -> Path:
+    return RL_DATA / "ppo" / name
+
+
+def copies() -> list[str]:
+    """The copies of the bot a run can start from."""
+    return sorted(p.stem for p in (RL_DATA / "models").glob("*.pt"))
+
+
+def valid_run_name(name: str) -> bool:
+    return bool(name) and set(name) <= RUN_NAME_CHARS and name.strip(".") != ""
+
+
+def run_taken(name: str) -> bool:
+    """True when a run of this name has finished an update; train refuses to start it again."""
+    return valid_run_name(name) and (run_dir(name) / "log.jsonl").exists()
+
+
+_LAST_GOOD: dict[Path, dict] = {}
+
+
+def read_json(path: Path) -> dict | None:
+    """A JSON file another process rewrites while the panel reads. None once it is gone;
+    the last good copy when this read lands on a write (Windows refuses the read while
+    the writer swaps the file in)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        _LAST_GOOD.pop(path, None)
+        return None
+    except (OSError, ValueError):
+        return _LAST_GOOD.get(path)
+    _LAST_GOOD[path] = data
+    return data
+
+
+def run_state(name: str) -> dict | None:
+    return read_json(run_dir(name) / "state.json") if valid_run_name(name) else None
+
+
+def resumable(name: str) -> bool:
+    """True when the run saved progress and has hours left to play."""
+    state = run_state(name)
+    return (state is not None and (run_dir(name) / "latest.pt").exists()
+            and state["seconds"] < state["args"]["hours"] * 3600)
+
+
+def train_command(settings: dict) -> list[str]:
+    return [str(RL_PYTHONW), "-m", "rl.ppo", "train", "--run", settings["train_run"],
+            "--start", settings["train_copy"], "--hours", str(settings["train_hours"]),
+            "--beta", str(settings["train_beta"]), *TRAIN_FIXED]
+
+
+def resume_command(saved_args: dict) -> list[str]:
+    """The run's own train command, rebuilt from the args its state.json saved, plus --resume.
+
+    train reads every setting from its command line again on --resume; only progress
+    comes from state.json, so the original flags have to be passed back.
+    """
+    cmd = [str(RL_PYTHONW), "-m", "rl.ppo", "train"]
+    for key, value in saved_args.items():
+        if key in ("cmd", "resume"):
+            continue
+        flag = "--" + key.replace("_", "-")
+        if isinstance(value, bool):
+            cmd += [flag] if value else []
+        else:
+            cmd += [flag, str(value)]
+    return cmd + ["--resume"]
+
+
+def train_file(run: str, suffix: str) -> Path:
+    """A run's status (.json), stop request (.stop) or console output (.log)."""
+    return TRAIN_DIR / f"{run}{suffix}"
+
+
+def launch_training(cmd: list[str], run: str, append: bool = False) -> subprocess.Popen:
+    """Start rl.ppo windowless; it outlives the panel."""
+    TRAIN_DIR.mkdir(parents=True, exist_ok=True)
+    train_file(run, ".stop").unlink(missing_ok=True)
+    with open(train_file(run, ".log"), "a" if append else "w", encoding="utf-8") as out:
+        return subprocess.Popen(
+            cmd,
+            cwd=str(BASE_DIR),
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+
+
+def read_trainings() -> dict[str, dict]:
+    """Every learning run's last status by name; a run whose process is gone without
+    saying so reads as failed."""
+    statuses = {}
+    for path in TRAIN_DIR.glob("*.json"):
+        status = read_json(path)
+        if status is None:
+            continue
+        if status.get("phase") == "running" and not pid_alive(int(status.get("pid", 0))):
+            status = {**status, "phase": "failed", "error": "The process ended without saving its status."}
+        statuses[path.stem] = status
+    return statuses
+
+
+def follow(statuses: dict[str, dict], current: str | None) -> str | None:
+    """The run the panel shows: the current one while it plays, else the newest run that
+    plays, else the current one, else the newest."""
+    def newest(runs):
+        return max(runs, key=lambda r: statuses[r].get("updated", 0))
+
+    if current in statuses and statuses[current]["phase"] == "running":
+        return current
+    playing = [r for r, s in statuses.items() if s["phase"] == "running"]
+    if playing:
+        return newest(playing)
+    if current in statuses or not statuses:
+        return current
+    return newest(statuses)
+
+
+def training_phase(status: dict | None, stop_asked: bool) -> str:
+    if status is None:
+        return "idle"
+    if status["phase"] == "running" and stop_asked:
+        return "stopping"
+    return status["phase"]
+
+
+def console_tail(run: str | None) -> str:
+    """The last line the run printed."""
+    try:
+        lines = train_file(run, ".log").read_text(encoding="utf-8", errors="replace").splitlines()
+    except (OSError, TypeError):
+        return ""
+    return next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
+
+
+def training_summary(status: dict) -> str:
+    text = (f"update {status.get('update', 0)}  ·  {status.get('hours', 0):.2f} of "
+            f"{status.get('hours total', 0):g} h  ·  {status.get('games', 0):,} games")
+    ev = status.get("eval")
+    if ev:
+        text += f"  ·  eval {ev['win rate']:.1%} wins, ante {ev['mean final ante']:.2f}"
+    return text
+
+
+# ── The run list and its history ──
+
+
+_EVALS: dict[tuple[str, int], dict] = {}
+
+
+def _last_line(path: Path) -> dict:
+    try:
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 16384))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+        return json.loads(lines[-1]) if lines else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _eval_summary(path: Path) -> dict | None:
+    """An evaluation file's summary; each file is read once (they hold every game)."""
+    try:
+        key = (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        return None
+    if key not in _EVALS:
+        try:
+            _EVALS[key] = json.loads(path.read_text(encoding="utf-8"))["summary"]
+        except (OSError, ValueError, KeyError):
+            return None
+    return _EVALS[key]
+
+
+def last_eval(name: str) -> dict | None:
+    evals = sorted(run_dir(name).glob("eval_u*.json"))
+    s = _eval_summary(evals[-1]) if evals else None
+    return None if s is None else {k: s[k] for k in ("update", "win rate", "win rate +/-", "mean final ante")}
+
+
+def run_overview(name: str, status: dict | None, now: float | None = None) -> dict | None:
+    """One row of the run list: the run's status when it has one, else what its files
+    say. None for a folder that holds no run."""
+    folder = run_dir(name)
+    log, state_path = folder / "log.jsonl", folder / "state.json"
+    if status is None and not log.exists() and not state_path.exists():
+        return None
+    state = run_state(name) or {}
+    args = state.get("args", {})
+    line = _last_line(log) if log.exists() else {}
+    activity = max((p.stat().st_mtime for p in (log, state_path) if p.exists()), default=0.0)
+    row = {
+        "run": name, "copy": args.get("start") or None, "beta": state.get("beta"),
+        "update": state.get("updates", line.get("update", 0)),
+        "hours": state.get("seconds", 0.0) / 3600, "hours total": args.get("hours"),
+        "games": state.get("games", line.get("games", 0)),
+        "points per game": line.get("points per finished game"),
+        "agreement": line.get("agreement with copy"), "drift": line.get("drift"),
+        "eval": last_eval(name), "updated": activity,
+    }
+    if status is not None:
+        row.update({k: v for k, v in status.items() if v is not None})
+        row["updated"] = max(activity, status.get("updated", 0))
+        row["phase"] = training_phase(status, train_file(name, ".stop").exists())
+        return row
+    now = time.time() if now is None else now
+    if args and state.get("seconds", 0) >= args.get("hours", 0) * 3600:
+        row["phase"] = "finished"
+    elif now - activity < OUTSIDE_SECS:
+        row["phase"] = "outside"
+    else:
+        row["phase"] = "stopped"
+    return row
+
+
+def list_runs(statuses: dict[str, dict], now: float | None = None) -> list[dict]:
+    """Every run, the ones playing first, then the most recently active."""
+    folder = RL_DATA / "ppo"
+    names = {p.name for p in folder.glob("*") if p.is_dir()} | set(statuses)
+    rows = [r for r in (run_overview(n, statuses.get(n), now) for n in names) if r is not None]
+    return sorted(rows, key=lambda r: (r["phase"] not in TRAIN_ACTIVE, -r["updated"]))
+
+
+class History:
+    """A run's numbers by update and by evaluation, read again only when its files grow."""
+
+    def __init__(self) -> None:
+        self._key: dict[str, tuple] = {}
+        self._data: dict[str, dict] = {}
+
+    def of(self, name: str) -> dict:
+        folder = run_dir(name)
+        log = folder / "log.jsonl"
+        evals = sorted(folder.glob("eval_u*.json"))
+        key = (log.stat().st_size if log.exists() else -1, tuple(p.name for p in evals))
+        if self._key.get(name) != key:
+            self._data[name] = self._read(log, evals)
+            self._key[name] = key
+        return self._data[name]
+
+    @staticmethod
+    def _read(log: Path, evals: list[Path]) -> dict:
+        data = {"update": [], "points": [], "agreement": [], "drift": [], "evals": []}
+        try:
+            lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        except OSError:
+            lines = []
+        for text in lines:
+            try:
+                line = json.loads(text)
+            except ValueError:
+                continue
+            data["update"].append(line.get("update"))
+            data["points"].append(line.get("points per finished game"))
+            data["agreement"].append(line.get("agreement with copy"))
+            data["drift"].append(line.get("drift"))
+        for path in evals:
+            s = _eval_summary(path)
+            if s is not None:
+                data["evals"].append((s["update"], s["win rate"], s["win rate +/-"], s["mean final ante"]))
+        return data
+
+
+# ── The stream ──
+
+
+def stream_file(name: str) -> Path:
+    """``status.json`` (the launcher), ``now.json`` (the player), ``stop``, ``games.jsonl``."""
+    return STREAM_DIR / name
+
+
+def read_stream() -> tuple[dict | None, dict | None]:
+    """The launcher's status (one whose process is gone while marked live reads as
+    failed) and the player's game and totals."""
+    status, now = read_json(stream_file("status.json")), read_json(stream_file("now.json"))
+    if (status and status.get("phase") in ("starting", "running", "stopping")
+            and not pid_alive(int(status.get("pid", 0)))):
+        status = {**status, "phase": "failed", "error": "The stream process ended without saying why."}
+    return status, now
+
+
+def model_sources() -> list[str]:
+    """What the stream can play: ``run <name>`` for each run with a save, newest first,
+    then ``copy <name>`` for each copy."""
+    runs = sorted((p for p in (RL_DATA / "ppo").glob("*") if (p / "latest.pt").exists()),
+                  key=lambda p: -(p / "latest.pt").stat().st_mtime)
+    return [f"run {p.name}" for p in runs] + [f"copy {c}" for c in copies()]
+
+
+def checkpoints(source: str) -> list[str]:
+    """A run's saves: ``latest`` first (followed: read again before each game), then its
+    update saves newest first. A copy has one."""
+    kind, name = source.split(" ", 1)
+    if kind == "copy":
+        return [name]
+    return ["latest"] + sorted((p.stem for p in run_dir(name).glob("u*.pt")), reverse=True)
+
+
+def model_choice(source: str, checkpoint: str) -> tuple[Path, bool]:
+    """The model file for a choice, and whether the stream follows it."""
+    kind, name = source.split(" ", 1)
+    if kind == "copy":
+        return RL_DATA / "models" / f"{name}.pt", False
+    return run_dir(name) / f"{checkpoint}.pt", checkpoint == "latest"
+
+
+def choice_of(model: str) -> tuple[str, str]:
+    """The (model, save) choice a model file stands for: the inverse of model_choice."""
+    path = Path(model)
+    if path.parent.name == "models":
+        return f"copy {path.stem}", path.stem
+    return f"run {path.parent.name}", path.stem
+
+
+def stream_command(settings: dict) -> list[str]:
+    path, follow = model_choice(settings["stream_source"], settings["stream_checkpoint"])
+    cmd = [PYTHON, "-m", "balatro_bot.stream", "--model", str(path), "--deck", settings["stream_deck"],
+           "--stake", settings["stream_stake"], "--delay", str(settings["stream_delay"])]
+    return cmd + (["--follow"] if follow else [])
+
+
+def launch_stream(cmd: list[str]) -> subprocess.Popen:
+    """Start the stream windowless; the game window it opens is the only one that shows."""
+    STREAM_DIR.mkdir(parents=True, exist_ok=True)
+    stream_file("stop").unlink(missing_ok=True)
+    with open(stream_file("launcher.log"), "w", encoding="utf-8") as out:
+        return subprocess.Popen(
+            cmd, cwd=str(BASE_DIR), stdout=out, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )

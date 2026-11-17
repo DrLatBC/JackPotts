@@ -407,3 +407,38 @@ def test_simulator_batches_restart_a_stuck_bot_after_a_minute(tmp_path, monkeypa
     slot.last_action_seq_time -= 90
     assert slot.poll_log_for_softlock(sim.stall_timeout)
     assert not slot.poll_log_for_softlock(live.stall_timeout)
+
+
+# ── Settings shared by the tabs ──
+
+@pytest.fixture
+def settings_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(gui, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(gui, "SETTINGS_FILE", tmp_path / "gui_settings.json")
+
+
+def test_saving_batch_settings_keeps_the_training_fields(settings_file):
+    gui.save_settings({"train_run": "r7", "train_beta": 0.03})
+    batch_only = {k: v for k, v in gui.DEFAULTS.items() if not k.startswith("train_")}
+    gui.save_settings({**batch_only, "instances": 3})
+    saved = gui.load_settings()
+    assert (saved["instances"], saved["train_run"], saved["train_beta"]) == (3, "r7", 0.03)
+
+
+def test_batch_active_sees_a_terminal_batch(monkeypatch):
+    monkeypatch.setattr(gui, "read_status", lambda: None)
+    monkeypatch.setattr(gui, "ports_in_use", lambda: True)
+    assert gui.batch_active()
+    monkeypatch.setattr(gui, "ports_in_use", lambda: False)
+    assert not gui.batch_active()
+
+
+def test_the_stream_tab_notifies_only_when_a_stream_fails():
+    told = []
+    tab = gui.StreamTab.__new__(gui.StreamTab)
+    tab.panel = type("P", (), {"tray": type("T", (), {"notify": lambda self, t, b: told.append(t)})()})()
+    tab.status, tab.was_active = {"error": "the player exited with code 1"}, False
+    for phase in ("starting", "running", "running", "stopping", "stopped", "running", "failed", "failed"):
+        tab.phase = phase
+        tab._notify()
+    assert told == ["Stream failed"]
