@@ -16,11 +16,8 @@ from balatro_bot.constants import FACE_RANKS_SET
 from balatro_bot.domain.scoring.classify import _scoring_cards_for, classify_hand
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.domain.scoring.search import (
-    best_hand, cards_not_in, discard_candidates,
-    enumerate_hands, ChaseCandidate,
+    cards_not_in, discard_candidates, ChaseCandidate,
 )
-from balatro_bot.domain.policy.play_padding import pad_with_junk
-from balatro_bot.domain.scoring.play_order import sort_play_order
 from balatro_bot.scaling import (
     SCALING_REGISTRY, PLAY_SCALERS, DISCARD_SCALERS,
     FINAL_HAND_JOKERS, SELL_PROTECTED, ANTI_DISCARD, DECAY_JOKERS,
@@ -48,25 +45,11 @@ def choose_winning_play(ctx: RoundContext) -> Action | None:
     if (ctx.blind_name == "The Ox" and ctx.ox_most_played
             and ctx.best.hand_name == ctx.ox_most_played
             and effective_score >= ctx.chips_remaining):
-        from balatro_bot.domain.scoring.search import best_hand
-        excluded = set(ctx.eye_used_hands or set()) | {ctx.ox_most_played}
-        alt = best_hand(
-            ctx.hand_cards, ctx.hand_levels,
-            min_select=ctx.min_cards, jokers=ctx.jokers,
-            money=ctx.money, discards_left=ctx.discards_left,
-            hands_left=ctx.hands_left,
-            ancient_suit=ctx.ancient_suit,
-            excluded_hands=excluded,
-            deck_cards=ctx.deck_cards,
-            blind_name=ctx.blind_name,
-            ox_most_played=ctx.ox_most_played,
-            idol_rank=ctx.idol_rank,
-            idol_suit=ctx.idol_suit,
-        )
+        alt = ctx.search.best(exclude={ctx.ox_most_played})
         if alt and alt.total * ctx.score_discount >= ctx.chips_remaining:
             log.info("Ox avoidance: play %s (%d) instead of %s (saves money)",
                      alt.hand_name, alt.total, ctx.ox_most_played)
-            indices = sort_play_order(list(alt.card_indices), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = ctx.search.order(list(alt.card_indices))
             return PlayCards(
                 indices,
                 reason=f"Ox avoidance: {alt.hand_name} for {alt.total} (saves ${ctx.money})",
@@ -78,10 +61,9 @@ def choose_winning_play(ctx: RoundContext) -> Action | None:
         # The Tooth: each played card costs $1. Skip padding when winning —
         # extra cards are pure economy loss with no scoring benefit.
         if ctx.blind_name == "The Tooth":
-            indices = list(ctx.best.card_indices)
+            indices = ctx.search.order(list(ctx.best.card_indices))
         else:
-            indices = pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
-        indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = ctx.search.play(ctx.best.card_indices, ctx.best.hand_name)
         return PlayCards(
             indices,
             reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}) >= {ctx.chips_remaining} needed",
@@ -154,8 +136,7 @@ def choose_high_value_play(ctx: RoundContext) -> Action | None:
         )
         return None
 
-    indices = pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
-    indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+    indices = ctx.search.play(ctx.best.card_indices, ctx.best.hand_name)
     return PlayCards(
         indices,
         reason=f"{ctx.best.hand_name} for {ctx.best.total} (eff {effective_score:.0f}), outlook={outlook}, {ctx.chips_remaining} remaining",
@@ -208,8 +189,7 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
             return DiscardCards(to_discard, reason="last resort discard (hand too weak, searching for better)")
 
     if ctx.best:
-        indices = pad_with_junk(ctx.best.card_indices, ctx.hand_cards, ctx.jokers, ctx.best.hand_name, protection=ctx.card_protection)
-        indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+        indices = ctx.search.play(ctx.best.card_indices, ctx.best.hand_name)
         return PlayCards(
             indices,
             reason=f"best available: {ctx.best.hand_name} for {ctx.best.total}",
@@ -238,15 +218,9 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
                            f"discarding to chase ({suggestions[0].reason})",
                 )
         # No discards left — forced to play something (will score near-zero).
-        unconstrained = best_hand(
-            ctx.hand_cards, ctx.hand_levels,
-            min_select=ctx.min_cards, jokers=ctx.jokers,
-            money=ctx.money, discards_left=ctx.discards_left,
-            hands_left=ctx.hands_left,
-        )
+        unconstrained = ctx.search.best(ignore_mouth=True)
         if unconstrained:
-            indices = pad_with_junk(unconstrained.card_indices, ctx.hand_cards, ctx.jokers, unconstrained.hand_name, protection=ctx.card_protection)
-            indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = ctx.search.play(unconstrained.card_indices, unconstrained.hand_name)
             return PlayCards(
                 indices,
                 reason=f"mouth target ({mouth_target}) not formable (no discards): "
@@ -261,10 +235,10 @@ def choose_best_available(ctx: RoundContext) -> Action | None:
             ranked = sorted(range(len(ctx.hand_cards)),
                             key=lambda i: rank_value(card_rank(ctx.hand_cards[i]) or "2"),
                             reverse=True)
-            indices = sort_play_order(ranked[:5], ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = ctx.search.order(ranked[:5])
             return PlayCards(indices, reason="fallback: play 5 highest cards", hand_name="High Card",
                             total=ctx.best.total if ctx.best else 0)
-        indices = sort_play_order(list(range(len(ctx.hand_cards))), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+        indices = ctx.search.order(list(range(len(ctx.hand_cards))))
         return PlayCards(indices, reason="fallback: play all remaining cards", hand_name="High Card",
                          total=ctx.best.total if ctx.best else 0)
     return None
@@ -416,7 +390,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
 
     # Square Joker: exactly 4 junk cards
     if "j_square" in play_scalers and len(junk) >= 4:
-        indices = sort_play_order(ctx.with_forced([i for i, _ in junk], 4), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+        indices = ctx.search.order(ctx.with_forced([i for i, _ in junk], 4))
         return PlayCards(
             indices,
             reason=f"milk: cycle 4 junk for Square (+4 chips) ({hands_after} hands left)",
@@ -432,7 +406,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if enhanced:
             required = enhanced[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = sort_play_order(ctx.with_forced([required] + filler), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = ctx.search.order(ctx.with_forced([required] + filler))
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -446,7 +420,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if twos:
             required = twos[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = sort_play_order(ctx.with_forced([required] + filler), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = ctx.search.order(ctx.with_forced([required] + filler))
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -460,7 +434,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if eights:
             required = eights[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = sort_play_order(ctx.with_forced([required] + filler), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = ctx.search.order(ctx.with_forced([required] + filler))
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -475,7 +449,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
         if faces:
             required = faces[0][0]
             filler = [i for i, _ in junk if i != required][:4]
-            indices = sort_play_order(ctx.with_forced([required] + filler), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+            indices = ctx.search.order(ctx.with_forced([required] + filler))
             hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
             return PlayCards(
                 indices,
@@ -510,15 +484,11 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
             targets.append((seance_type, "j_seance"))
 
     if targets:
-        candidates = enumerate_hands(
-            ctx.hand_cards, ctx.hand_levels,
-            jokers=ctx.jokers, joker_limit=len(ctx.jokers),
-            required_card_indices=ctx.required_cards,
-        )
+        candidates = ctx.search.enumerate()
         for ht, jname in targets:
             match = next((c for c in candidates if c.hand_name == ht), None)
             if match:
-                indices = sort_play_order(match.card_indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+                indices = ctx.search.order(match.card_indices)
                 return PlayCards(
                     indices,
                     reason=f"milk: {ht} for {jname} ({hands_after} hands left)",
@@ -552,7 +522,7 @@ def milk_play_action(ctx: RoundContext, joker_keys: set,
 
     if generic:
         dump = junk if junk else playable[:1]
-        indices = sort_play_order(ctx.with_forced([i for i, _ in dump]), ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+        indices = ctx.search.order(ctx.with_forced([i for i, _ in dump]))
         hand_name = classify_hand([ctx.hand_cards[i] for i in indices])
         return PlayCards(
             indices,

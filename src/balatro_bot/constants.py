@@ -20,7 +20,8 @@ RANK_CHIPS: dict[str, int] = {
     "T": 10, "J": 10, "Q": 10, "K": 10, "A": 11,
 }
 
-ALL_SUITS = {"H", "D", "C", "S"}
+# A tuple, not a set: suit ties are broken in this order, the same in every process.
+ALL_SUITS = ("H", "D", "C", "S")
 
 FACE_RANKS = {"J", "Q", "K"}
 FIBONACCI_RANKS = {"A", "2", "3", "5", "8"}

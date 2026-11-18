@@ -7,6 +7,7 @@ from balatro_bot.domain.scoring.draws import seed_draws
 import pytest
 
 from balatro_bot.domain.models.deck_profile import DeckProfile
+from balatro_bot.domain.policy.round_search import RoundSearch
 from balatro_bot.domain.scoring.mouth_commit import (
     _flush_repeatability,
     _repeatability,
@@ -71,16 +72,11 @@ def _commit(seed=42, **overrides):
         discards_left=3,
         money=4,
         deck_cards=default_deck,
-        deck_profile=_full_deck_profile(),
-        ancient_suit=None,
-        idol_rank=None,
-        idol_suit=None,
-        forced_card_idx=None,
         blind_name="The Mouth",
-        ox_most_played=None,
     )
+    deck_profile = overrides.pop("deck_profile", _full_deck_profile())
     params.update(overrides)
-    return choose_mouth_commit(**params)
+    return choose_mouth_commit(RoundSearch(**params), deck_profile)
 
 
 def _stock_deck_profile() -> DeckProfile:

@@ -38,6 +38,10 @@ _Avoid_: Filler, free discard
 How strongly a card should be kept rather than discarded or destroyed, combining build affinity, boss constraints and The Idol's target card.
 _Avoid_: Keep priority, card value
 
+**Round search**:
+Finding the hands the bot could play this round with the round's rules already in force: the boss's effects, Cerulean Bell's forced card, open joker slots, The Idol's and Ancient Joker's targets and the Mouth commit. A question asked of it names only what differs from the round, such as a target hand type or fewer hands left.
+_Avoid_: Best-hand call, constrained search
+
 ## Building a run
 
 **Build**:

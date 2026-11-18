@@ -18,6 +18,7 @@ import zlib
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import joker_key
+from balatro_bot.constants import ALL_SUITS
 from balatro_bot.domain.models.card import Card, CardModifier, CardValue
 from balatro_bot.domain.policy import utility_value
 from balatro_bot.domain.policy.scaling_projection import (
@@ -240,7 +241,6 @@ def _make_card(rank: str, suit: str, enhancement: str | None = None) -> Card:
 
 _ALL_RANKS: tuple[str, ...] = ("2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A")
 _RANK_ORDER: dict[str, int] = {r: i for i, r in enumerate(_ALL_RANKS)}
-_ALL_SUITS: tuple[str, ...] = ("H", "D", "C", "S")
 
 # Scoring-relevant enhancements. STONE breaks hand-type constraints and is
 # handled specially. WILD is suit-promiscuous. Others add chips/mult on scoring.
@@ -351,7 +351,7 @@ def _stratified_ranks(
 
 
 def _suit_with_min(dp: "DeckProfile", min_copies: int, rng: random.Random) -> str | None:
-    items = [s for s in _ALL_SUITS if dp.suit_counts.get(s, 0) >= min_copies]
+    items = [s for s in ALL_SUITS if dp.suit_counts.get(s, 0) >= min_copies]
     if not items:
         return None
     weights = [float(dp.suit_counts[s]) for s in items]
@@ -359,7 +359,7 @@ def _suit_with_min(dp: "DeckProfile", min_copies: int, rng: random.Random) -> st
 
 
 def _sample_suit(dp: "DeckProfile", rng: random.Random) -> str | None:
-    items = [s for s in _ALL_SUITS if dp.suit_counts.get(s, 0) > 0]
+    items = [s for s in ALL_SUITS if dp.suit_counts.get(s, 0) > 0]
     if not items:
         return None
     weights = [float(dp.suit_counts[s]) for s in items]
@@ -585,7 +585,7 @@ def _get_vanilla_deck() -> "DeckProfile":
         _VANILLA_DECK_FOR_SIM = DeckProfile(
             total_cards=52,
             rank_counts={r: 4 for r in _ALL_RANKS},
-            suit_counts={s: 13 for s in _ALL_SUITS},
+            suit_counts={s: 13 for s in ALL_SUITS},
             enhancement_counts={},
             enhanced_card_count=0,
         )

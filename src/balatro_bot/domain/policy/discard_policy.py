@@ -5,7 +5,7 @@ DiscardToImprove in rules/playing.py is a thin wrapper.
 
 Ranking is done via a single Monte Carlo pass per unique keep set. For each
 candidate keep set, we sample draws from the deck, score the resulting hand
-with full joker effects via best_hand(), and average.
+with full joker effects via the round search, and average.
 """
 
 from __future__ import annotations
@@ -21,10 +21,9 @@ from dataclasses import replace as dc_replace
 from balatro_bot.actions import DiscardCards, Action
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.joker import Joker
-from balatro_bot.domain.scoring import estimate
 from balatro_bot.domain.scoring.draws import sample_draws
 from balatro_bot.domain.scoring.search import (
-    best_hand, cards_not_in, discard_candidates, ChaseCandidate,
+    cards_not_in, discard_candidates, ChaseCandidate,
 )
 from balatro_bot.joker_effects.parsers import _ab_mult, _ab_xmult
 
@@ -40,7 +39,7 @@ N_SAMPLES = 30          # Monte Carlo samples per unique keep set
 # reads their live values from the joker dict, so without adjustment the MC
 # over-estimates a chase's future-hand EV (the bot "sees" the pre-discard
 # Ramen xmult when it should see the post-discard value). We clone these
-# jokers with decremented ability fields before passing to best_hand.
+# jokers with decremented ability fields before searching the sampled hands.
 #
 # Incrementing-on-discard jokers (Yorick, Castle, Hit the Road, Trading,
 # Mail-in Rebate, Faceless, Burnt) are NOT handled here — they make the sim
@@ -185,10 +184,10 @@ def choose_discard(ctx: RoundContext) -> Action | None:
 
 
 def _expected_play_value(keep_indices: list[int], ctx: RoundContext) -> float:
-    """Monte Carlo estimate of best_hand() value after discarding non-kept cards.
+    """Monte Carlo estimate of the best play's value after discarding non-kept cards.
 
     Samples `discard_count` cards from the deck, forms a new hand with the kept
-    cards, and scores best_hand() with full joker effects. Averages over
+    cards, and scores its best play with full joker effects. Averages over
     N_SAMPLES samples to produce an expected realized score.
 
     Because the sample uniformly explores both hit and miss outcomes, the
@@ -206,41 +205,11 @@ def _expected_play_value(keep_indices: list[int], ctx: RoundContext) -> float:
     # the pre-discard accumulated value and over-estimates future-hand EV.
     sim_jokers = _adjust_jokers_for_discard(ctx.jokers, discard_count)
 
-    total = 0.0
-    if estimate.USE_KERNEL:
-        # The compiled kernel scores every sampled hand in one call.
-        from balatro_bot.domain.scoring.kernel import KernelScorer
-
-        scorer = KernelScorer(
-            ctx.hand_levels, sim_jokers,
-            money=ctx.money,
-            discards_left=max(0, ctx.discards_left - 1),
-            hands_left=ctx.hands_left,
-            ancient_suit=ctx.ancient_suit,
-            idol_rank=ctx.idol_rank,
-            idol_suit=ctx.idol_suit,
-            blind_name=ctx.blind_name,
-        )
-        hands = [keep_cards + drawn for drawn in sample_draws(draw_pile, discard_count, N_SAMPLES)]
-        for best_total in scorer.best_totals(hands):
-            total += best_total
-        return total / N_SAMPLES
-    for drawn in sample_draws(draw_pile, discard_count, N_SAMPLES):
-        result = best_hand(
-            keep_cards + drawn,
-            hand_levels=ctx.hand_levels,
-            jokers=sim_jokers,
-            money=ctx.money,
-            discards_left=max(0, ctx.discards_left - 1),
-            hands_left=ctx.hands_left,
-            ancient_suit=ctx.ancient_suit,
-            idol_rank=ctx.idol_rank,
-            idol_suit=ctx.idol_suit,
-            deck_cards=ctx.deck_cards,
-            blind_name=ctx.blind_name,
-        )
-        total += result.total if result else 0
-    return total / N_SAMPLES
+    hands = [keep_cards + drawn for drawn in sample_draws(draw_pile, discard_count, N_SAMPLES)]
+    totals = ctx.search.best_totals(
+        hands, jokers=sim_jokers, discards_left=max(0, ctx.discards_left - 1),
+    )
+    return sum(totals) / N_SAMPLES
 
 
 # Minimum EV multiplier a chase must beat play_ev by.

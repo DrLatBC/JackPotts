@@ -19,14 +19,12 @@ from balatro_bot.cards import card_rank, joker_key, rank_value
 from balatro_bot.constants import FACE_RANKS_SET
 from balatro_bot.domain.scoring.classify import classify_hand
 from balatro_bot.domain.scoring.search import (
-    enumerate_hands, best_hand, cards_not_in, HandCandidate,
+    cards_not_in, HandCandidate,
 )
 from balatro_bot.domain.policy.play_policy import (
     milk_discard, milk_play_action,
     _MILK_MARGIN_WALL, _MILK_MARGIN_MANY, _MILK_MARGIN_FEW,
 )
-from balatro_bot.domain.policy.play_padding import pad_with_junk
-from balatro_bot.domain.scoring.play_order import sort_play_order
 from balatro_bot.scaling import (
     SCALING_REGISTRY, FINAL_HAND_JOKERS, SEQUENCE_JOKERS,
     PLAY_SCALERS, DISCARD_SCALERS, ANTI_DISCARD, ANTI_MILK,
@@ -295,12 +293,7 @@ def _build_eye_plan(ctx: RoundContext) -> RoundPlan | None:
     eye_used = ctx.eye_used_hands or set()
 
     # Enumerate all distinct hand types we can form right now
-    candidates = enumerate_hands(
-        ctx.hand_cards, ctx.hand_levels,
-        jokers=ctx.jokers, joker_limit=len(ctx.jokers),
-        hands_left=ctx.hands_left,
-        excluded_hands=eye_used,
-    )
+    candidates = ctx.search.enumerate()
     if not candidates:
         return None
 
@@ -333,7 +326,7 @@ def _build_eye_plan(ctx: RoundContext) -> RoundPlan | None:
 
     type_seq = " -> ".join(f"{s.target_type}({s.score_estimate})" for s in steps)
     log.info("RoundPlan[Eye]: %s | %d types available, %d hands, used=%s",
-             type_seq, len(best_per_type), ctx.hands_left, eye_used or "{}")
+             type_seq, len(best_per_type), ctx.hands_left, sorted(eye_used))
 
     return plan
 
@@ -381,11 +374,7 @@ def _execute_finisher(ctx: RoundContext) -> Action | None:
     if not candidate:
         return None
 
-    indices = pad_with_junk(
-        candidate.card_indices, ctx.hand_cards, ctx.jokers,
-        candidate.hand_name, protection=ctx.card_protection,
-    )
-    indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+    indices = ctx.search.play(candidate.card_indices, candidate.hand_name)
 
     effective = candidate.total * ctx.score_discount
     return PlayCards(
@@ -403,21 +392,11 @@ def _execute_setup(ctx: RoundContext, target_type: str | None) -> Action | None:
         return None
 
     # Find the target hand type in current hand
-    candidates = enumerate_hands(
-        ctx.hand_cards, ctx.hand_levels,
-        jokers=ctx.jokers, joker_limit=len(ctx.jokers),
-        hands_left=ctx.hands_left,
-        excluded_hands=ctx.eye_used_hands,
-        required_card_indices=ctx.required_cards,
-    )
+    candidates = ctx.search.enumerate()
     match = next((c for c in candidates if c.hand_name == target_type), None)
 
     if match:
-        indices = pad_with_junk(
-            match.card_indices, ctx.hand_cards, ctx.jokers,
-            match.hand_name, protection=ctx.card_protection,
-        )
-        indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+        indices = ctx.search.play(match.card_indices, match.hand_name)
         return PlayCards(
             indices,
             reason=f"setup: {target_type} for Card Sharp (next same-type gets x3)",
@@ -452,22 +431,12 @@ def _execute_score(ctx: RoundContext, target_type: str | None = None) -> Action 
 
     # If we have a target type (Card Sharp second play), prefer it
     if target_type:
-        candidates = enumerate_hands(
-            ctx.hand_cards, ctx.hand_levels,
-            jokers=ctx.jokers, joker_limit=len(ctx.jokers),
-            hands_left=ctx.hands_left,
-            excluded_hands=ctx.eye_used_hands,
-            required_card_indices=ctx.required_cards,
-        )
+        candidates = ctx.search.enumerate()
         type_match = next((c for c in candidates if c.hand_name == target_type), None)
         if type_match:
             candidate = type_match
 
-    indices = pad_with_junk(
-        candidate.card_indices, ctx.hand_cards, ctx.jokers,
-        candidate.hand_name, protection=ctx.card_protection,
-    )
-    indices = sort_play_order(indices, ctx.hand_cards, ctx.jokers, ctx.strategy, idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit, ancient_suit=ctx.ancient_suit)
+    indices = ctx.search.play(candidate.card_indices, candidate.hand_name)
 
     effective = candidate.total * ctx.score_discount
     if target_type and ctx.blind_name == "The Eye":
@@ -591,12 +560,7 @@ def _play_junk(ctx: RoundContext) -> Action | None:
             # All subsets produce used types — skip junk play
             return None
 
-    indices = sort_play_order(
-        indices, ctx.hand_cards, ctx.jokers,
-        ctx.strategy if hasattr(ctx, 'strategy') else None,
-        idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit,
-        ancient_suit=ctx.ancient_suit,
-    )
+    indices = ctx.search.order(indices)
     return PlayCards(
         indices,
         reason=f"plan milk: cycle {len(indices)} junk ({ctx.hands_left - 1} hands left)",
@@ -617,7 +581,7 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
     """During a milk step, try to play the To-Do List target type for $4.
 
     Attempts to form the target from non-best cards. If it can't be formed
-    from junk alone, uses enumerate_hands to find any combo that matches.
+    from junk alone, searches every combo for one that matches.
     """
     target = _todo_list_hand_type(ctx.jokers)
     if not target:
@@ -638,12 +602,7 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
                     continue
                 cards = [c for _, c in combo]
                 if classify_hand(cards) == target:
-                    indices = sort_play_order(
-                        indices, ctx.hand_cards, ctx.jokers,
-                        ctx.strategy if hasattr(ctx, 'strategy') else None,
-                        idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit,
-                        ancient_suit=ctx.ancient_suit,
-                    )
+                    indices = ctx.search.order(indices)
                     log.info("To-Do List: playing %s from junk for $4", target)
                     return PlayCards(
                         indices,
@@ -653,20 +612,10 @@ def _todo_list_milk(ctx: RoundContext) -> Action | None:
                     )
 
     # Second: search all combos — may overlap with best hand but still worth $4
-    candidates = enumerate_hands(
-        ctx.hand_cards, ctx.hand_levels,
-        jokers=ctx.jokers, joker_limit=len(ctx.jokers),
-        hands_left=ctx.hands_left,
-        required_card_indices=ctx.required_cards,
-    )
+    candidates = ctx.search.enumerate()
     match = next((c for c in candidates if c.hand_name == target), None)
     if match:
-        indices = sort_play_order(
-            list(match.card_indices), ctx.hand_cards, ctx.jokers,
-            ctx.strategy if hasattr(ctx, 'strategy') else None,
-            idol_rank=ctx.idol_rank, idol_suit=ctx.idol_suit,
-            ancient_suit=ctx.ancient_suit,
-        )
+        indices = ctx.search.order(list(match.card_indices))
         log.info("To-Do List: playing %s (any cards) for $4", target)
         return PlayCards(
             indices,
@@ -962,11 +911,7 @@ def _find_card_sharp_type(ctx: RoundContext) -> str | None:
     Also considers types already played this round — if we've already
     played a Two Pair, playing another Two Pair immediately gets x3.
     """
-    candidates = enumerate_hands(
-        ctx.hand_cards, ctx.hand_levels,
-        jokers=ctx.jokers, joker_limit=len(ctx.jokers),
-        hands_left=ctx.hands_left,
-    )
+    candidates = ctx.search.enumerate()
 
     if not candidates:
         return None

@@ -17,7 +17,6 @@ from balatro_bot.constants import (
 )
 from balatro_bot.domain.scoring.draws import flush_draw
 from balatro_bot.domain.scoring.estimate import score_hand
-from balatro_bot.domain.scoring.search import best_hand
 from balatro_bot.strategy import LEAN_FLOOR
 from balatro_bot.domain.policy.targeting import (
     find_tarot_targets, find_gold_targets, find_enhancement_targets,

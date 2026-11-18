@@ -9,7 +9,7 @@ from balatro_bot.constants import (
     PLANET_KEYS, SAFE_CONSUMABLE_TAROTS, TARGETING_TAROTS,
     SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
 )
-from balatro_bot.domain.scoring.search import best_hand
+from balatro_bot.context import RoundContext
 from balatro_bot.strategy import compute_strategy
 from balatro_bot.domain.policy.consumable_policy import (
     score_use_now, score_hold, evaluate_hex,
@@ -95,13 +95,8 @@ class UseConsumables:
         chips_remaining = max(0, blind_score - chips_scored)
 
         joker_limit = joker_slots.get("limit", 5)
-        current_best = None
-        current_score = 0
-        if hand_cards:
-            current_best = best_hand(hand_cards, hand_levels, jokers=jokers,
-                                     money=money, discards_left=discards_left,
-                                     hands_left=hands_left, joker_limit=joker_limit)
-            current_score = current_best.total if current_best else 0
+        current_best = RoundContext.from_state(state).best if hand_cards else None
+        current_score = current_best.total if current_best else 0
 
         can_win_now = current_score >= chips_remaining
         # Desperate = genuinely about to lose: last 2 hands AND can't win yet.

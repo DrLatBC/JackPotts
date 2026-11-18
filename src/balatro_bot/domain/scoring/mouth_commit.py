@@ -12,7 +12,7 @@ Two commitment modes:
 
   - **Chase**: T isn't formable now, but discarding non-contributing cards
     and drawing replacements gives some chance of forming it. First-hand
-    outcome is Monte Carlo averaged via `best_hand(..., required_hand=T)`.
+    outcome is Monte Carlo averaged via a round search targeting T.
     On a missed chase under Mouth pre-lock we do NOT play (would lock the
     type) — we re-plan. The MC re-scores the reformed hand without the T
     constraint to estimate that fallback.
@@ -36,7 +36,10 @@ from balatro_bot.domain.scoring.draws import (
     pair_draw_quality, sample_draws, straight_draw_quality, straight_flush_draw_quality,
     three_kind_draw_quality, two_pair_draw_quality,
 )
-from balatro_bot.domain.scoring.search import best_hand, enumerate_hands
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from balatro_bot.domain.policy.round_search import RoundSearch
 
 log = logging.getLogger("balatro_bot")
 
@@ -77,49 +80,23 @@ _CHASEABLE_TYPES: tuple[str, ...] = (
 )
 
 
-def choose_mouth_commit(
-    hand_cards,
-    hand_levels,
-    jokers,
-    joker_limit: int,
-    hands_left: int,
-    discards_left: int,
-    money: int,
-    deck_cards,
-    deck_profile,
-    ancient_suit,
-    idol_rank,
-    idol_suit,
-    forced_card_idx,
-    blind_name: str,
-    ox_most_played,
-) -> str | None:
+def choose_mouth_commit(search: RoundSearch, deck_profile) -> str | None:
     """Pick the hand type with the best round-total EV under Mouth pre-lock.
 
     Evaluates every formable type and every chase-reachable type, then
     argmaxes on expected round total. Returns None only when no candidate
     is available at all (empty hand or fully locked out).
     """
+    hand_cards = search.hand_cards
+    deck_cards = search.deck_cards
+    hands_left = search.hands_left
     if hands_left <= 0 or not hand_cards:
         return None
 
-    joker_keys_set = {joker_key(j) for j in (jokers or [])}
+    joker_keys_set = {joker_key(j) for j in (search.jokers or [])}
 
     # --- Pass 1: formable candidates ---
-    required_card_indices = {forced_card_idx} if forced_card_idx is not None else None
-
-    formable = enumerate_hands(
-        hand_cards, hand_levels,
-        jokers=jokers, joker_limit=joker_limit,
-        hands_left=hands_left,
-        required_card_indices=required_card_indices,
-        ancient_suit=ancient_suit,
-        deck_cards=deck_cards,
-        blind_name=blind_name,
-        ox_most_played=ox_most_played,
-        idol_rank=idol_rank,
-        idol_suit=idol_suit,
-    )
+    formable = search.enumerate()
     best_per_type: dict[str, object] = {}
     for c in formable:
         existing = best_per_type.get(c.hand_name)
@@ -137,26 +114,9 @@ def choose_mouth_commit(
     # higher-scoring version of a formable type is not modelled. When no
     # formable exists at all, drop
     # the hit-prob pre-filter so we force some chase rather than returning None.
-    if discards_left > 0 and deck_cards:
+    if search.discards_left > 0 and deck_cards:
         has_formable = bool(best_per_type)
         pre_filter = _MIN_CHASE_PRE_FILTER if has_formable else 0.0
-
-        ctx_params = _ChaseParams(
-            hand_cards=hand_cards,
-            hand_levels=hand_levels,
-            jokers=jokers,
-            joker_limit=joker_limit,
-            money=money,
-            discards_left=discards_left,
-            hands_left=hands_left,
-            deck_cards=deck_cards,
-            ancient_suit=ancient_suit,
-            idol_rank=idol_rank,
-            idol_suit=idol_suit,
-            blind_name=blind_name,
-            ox_most_played=ox_most_played,
-            required_card_indices=required_card_indices,
-        )
 
         for hand_type in _CHASEABLE_TYPES:
             if hand_type in best_per_type:
@@ -169,7 +129,7 @@ def choose_mouth_commit(
                 continue
             p_rep = _repeatability(hand_type, deck_profile, joker_keys_set)
             rt, p_form = _mc_chase_rt(
-                keep_indices, hand_type, p_rep, hands_left, ctx_params,
+                keep_indices, hand_type, p_rep, hands_left, search,
             )
             scored.append((
                 rt, hand_type,
@@ -191,20 +151,6 @@ def choose_mouth_commit(
 # ---------------------------------------------------------------------------
 # Chase evaluation
 # ---------------------------------------------------------------------------
-
-
-class _ChaseParams:
-    """Bundle of parameters threaded into MC best_hand calls."""
-    __slots__ = (
-        "hand_cards", "hand_levels", "jokers", "joker_limit", "money",
-        "discards_left", "hands_left", "deck_cards", "ancient_suit",
-        "idol_rank", "idol_suit", "blind_name", "ox_most_played",
-        "required_card_indices",
-    )
-
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
 
 
 def _chase_keep_set(
@@ -264,20 +210,21 @@ def _mc_chase_rt(
     target_type: str,
     p_repeat: float,
     hands_left: int,
-    ctx: _ChaseParams,
+    search: RoundSearch,
 ) -> tuple[float, float]:
     """Monte Carlo estimate of round-total EV for a chase commit.
 
     For each sample: draw replacements for the non-kept cards and score
-    `best_hand(required_hand=target_type)`. Hits contribute to score_on_hit.
+    the best play of ``target_type``. Hits contribute to score_on_hit.
     Misses re-score the reformed hand unconstrained to estimate the fallback
     round-total we'd achieve after re-planning.
 
     Returns (rt_chase, p_form).
     """
-    keep_cards = [ctx.hand_cards[i] for i in keep_indices]
-    discard_count = len(ctx.hand_cards) - len(keep_cards)
-    draw_pile = ctx.deck_cards
+    keep_cards = [search.hand_cards[i] for i in keep_indices]
+    discard_count = len(search.hand_cards) - len(keep_cards)
+    draw_pile = search.deck_cards
+    discards_after = max(0, search.discards_left - 1)
 
     if not draw_pile or len(draw_pile) < discard_count or discard_count < 0:
         return 0.0, 0.0
@@ -289,41 +236,14 @@ def _mc_chase_rt(
     for drawn in sample_draws(draw_pile, discard_count, _N_SAMPLES):
         new_hand = keep_cards + drawn
 
-        hit_result = best_hand(
-            new_hand,
-            hand_levels=ctx.hand_levels,
-            jokers=ctx.jokers, joker_limit=ctx.joker_limit,
-            money=ctx.money,
-            discards_left=max(0, ctx.discards_left - 1),
-            hands_left=ctx.hands_left,
-            required_hand=target_type,
-            ancient_suit=ctx.ancient_suit,
-            idol_rank=ctx.idol_rank,
-            idol_suit=ctx.idol_suit,
-            deck_cards=ctx.deck_cards,
-            blind_name=ctx.blind_name,
-            ox_most_played=ctx.ox_most_played,
-        )
+        hit_result = search.best(new_hand, discards_left=discards_after, target=target_type)
 
         if hit_result is not None and hit_result.total > 0:
             hits += 1
             score_on_hit_sum += hit_result.total
         else:
             # Miss: re-plan to best formable from the reformed hand.
-            miss_result = best_hand(
-                new_hand,
-                hand_levels=ctx.hand_levels,
-                jokers=ctx.jokers, joker_limit=ctx.joker_limit,
-                money=ctx.money,
-                discards_left=max(0, ctx.discards_left - 1),
-                hands_left=ctx.hands_left,
-                ancient_suit=ctx.ancient_suit,
-                idol_rank=ctx.idol_rank,
-                idol_suit=ctx.idol_suit,
-                deck_cards=ctx.deck_cards,
-                blind_name=ctx.blind_name,
-                ox_most_played=ctx.ox_most_played,
-            )
+            miss_result = search.best(new_hand, discards_left=discards_after)
             if miss_result is not None:
                 # Approximate the fallback's own repeatability via our static
                 # model — cheap enough vs. rebuilding deck_profile per sample.

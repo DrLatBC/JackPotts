@@ -7,6 +7,7 @@ import random
 from math import comb
 
 from balatro_bot.cards import card_rank, card_suits, is_debuffed, rank_value
+from balatro_bot.constants import ALL_SUITS
 
 
 _draw_rng = random.Random()
@@ -26,15 +27,22 @@ def sample_draws(pile: list, count: int, n: int) -> list[list]:
 # Draw detection
 # ---------------------------------------------------------------------------
 
+def _suit_groups(hand_cards, smeared: bool = False) -> dict[str, list[int]]:
+    """Hand positions of the cards counting as each suit, keyed in ALL_SUITS order.
+
+    The key order breaks ties between suits, so it is fixed rather than taken from
+    a set (Wild cards count as every suit).
+    """
+    groups: dict[str, list[int]] = {}
+    for suit in ALL_SUITS:
+        indices = [i for i, card in enumerate(hand_cards) if suit in card_suits(card, smeared=smeared)]
+        if indices:
+            groups[suit] = indices
+    return groups
+
 def flush_draw(hand_cards, smeared: bool = False):
     """If 4+ cards share a suit, return their indices."""
-    suits_to_indices: dict[str, list[int]] = {}
-    for i, card in enumerate(hand_cards):
-        for suit in card_suits(card, smeared=smeared):
-            if suit not in suits_to_indices:
-                suits_to_indices[suit] = []
-            if i not in suits_to_indices[suit]:
-                suits_to_indices[suit].append(i)
+    suits_to_indices = _suit_groups(hand_cards, smeared)
 
     for suit, indices in suits_to_indices.items():
         if len(indices) >= 4:
@@ -122,12 +130,7 @@ def flush_draw_quality_loose(
     Only activates when exactly 3 cards share a suit (not 4+, where
     the tight variant dominates on probability).
     """
-    suits_to_indices: dict[str, list[int]] = {}
-    for i, card in enumerate(hand_cards):
-        for suit in card_suits(card, smeared=smeared):
-            suits_to_indices.setdefault(suit, [])
-            if i not in suits_to_indices[suit]:
-                suits_to_indices[suit].append(i)
+    suits_to_indices = _suit_groups(hand_cards, smeared)
 
     best: tuple[list[int], float, str] | None = None
     best_prob = -1.0
@@ -161,13 +164,7 @@ def flush_draw_quality(
     rank_affinity: dict[str, float] | None = None,
 ) -> tuple[list[int], float, str] | None:
     """If 4+ cards share a suit, return (keep_indices, probability, suit)."""
-    suits_to_indices: dict[str, list[int]] = {}
-    for i, card in enumerate(hand_cards):
-        for suit in card_suits(card, smeared=smeared):
-            if suit not in suits_to_indices:
-                suits_to_indices[suit] = []
-            if i not in suits_to_indices[suit]:
-                suits_to_indices[suit].append(i)
+    suits_to_indices = _suit_groups(hand_cards, smeared)
 
     best: tuple[list[int], float, str] | None = None
     best_prob = -1.0
@@ -703,12 +700,7 @@ def straight_flush_draw_quality(
         if r:
             rank_to_indices.setdefault(r, []).append(i)
 
-    suits_to_indices: dict[str, list[int]] = {}
-    for i, c in enumerate(hand_cards):
-        for s in card_suits(c, smeared=smeared):
-            suits_to_indices.setdefault(s, [])
-            if i not in suits_to_indices[s]:
-                suits_to_indices[s].append(i)
+    suits_to_indices = _suit_groups(hand_cards, smeared)
 
     rank_keys = sorted(rank_to_indices.keys(), key=rank_value)
     max_gap = 2 if shortcut else 1
@@ -791,12 +783,7 @@ def flush_house_draw_quality(
     From 4 suited cards with a pair or trips among them, need 1 more suited
     card of the right rank.
     """
-    suits_to_indices: dict[str, list[int]] = {}
-    for i, c in enumerate(hand_cards):
-        for s in card_suits(c, smeared=smeared):
-            suits_to_indices.setdefault(s, [])
-            if i not in suits_to_indices[s]:
-                suits_to_indices[s].append(i)
+    suits_to_indices = _suit_groups(hand_cards, smeared)
 
     deck_size = len(deck_cards)
     best: tuple[list[int], float] | None = None
@@ -897,12 +884,7 @@ def flush_five_draw_quality(
     Requires 4+ suited cards of the same rank in hand + 1 more from deck
     matching both suit and rank.  Only realistic with Wild or Smeared Joker.
     """
-    suits_to_indices: dict[str, list[int]] = {}
-    for i, c in enumerate(hand_cards):
-        for s in card_suits(c, smeared=smeared):
-            suits_to_indices.setdefault(s, [])
-            if i not in suits_to_indices[s]:
-                suits_to_indices[s].append(i)
+    suits_to_indices = _suit_groups(hand_cards, smeared)
 
     deck_size = len(deck_cards)
     best: tuple[list[int], float] | None = None

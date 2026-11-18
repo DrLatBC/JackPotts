@@ -73,7 +73,7 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 
 | File | Role |
 |------|------|
-| `search.py` | `enumerate_hands`, `best_hand` (single pass, same pick as the first enumerated hand), `discard_candidates` |
+| `search.py` | `enumerate_hands`, `best_hand` (single pass, same pick as the first enumerated hand), `discard_candidates`; decisions call them through the round search (`domain/policy/round_search.py`) |
 | `play_order.py` | `sort_play_order` — left-to-right order (additive before xmult, Hanging Chad / Photograph / DNA first slot) |
 | `classify.py` | Hand classification + scoring-card extraction |
 | `estimate.py` | Full scoring simulation: `HandScorer` is set up once per joker lineup and surroundings and scores many hands; `score_hand` uses one once |
@@ -129,7 +129,7 @@ Thin rule classes per game state. Each has `match(state, ctx)` and `action(state
 
 ### Unified discard ranking
 
-All discard decisions flow through one Monte Carlo primitive: `_expected_play_value(keep_indices, ctx)` in `discard_policy.py`. For each candidate keep-set, it samples random draws from the deck, runs `best_hand()` with full joker effects on each hypothetical hand, and averages the totals. Hit rate and miss outcomes are captured implicitly by the sample distribution.
+All discard decisions flow through one Monte Carlo primitive: `_expected_play_value(keep_indices, ctx)` in `discard_policy.py`. For each candidate keep-set, it samples random draws from the deck, takes each hypothetical hand's best total from the round search with full joker effects, and averages the totals. Hit rate and miss outcomes are captured implicitly by the sample distribution.
 
 The previous three-pass design ranked candidates with a joker-blind heuristic, so candidates that would score huge with the current roster (Bloodstone + hearts, Triboulet + K/Q, Steel Joker + enhanced cards, The Idol's round target) got buried before ever reaching a joker-aware scoring step.
 

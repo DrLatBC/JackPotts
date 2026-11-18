@@ -9,7 +9,8 @@ from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.scoring.base import arm_reduce_hand_levels, flint_halve_hand_levels
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.scoring.mouth_commit import choose_mouth_commit
-from balatro_bot.domain.scoring.search import HandCandidate, best_hand
+from balatro_bot.domain.policy.round_search import RoundSearch
+from balatro_bot.domain.scoring.search import HandCandidate
 from balatro_bot.infrastructure.state_adapter import adapt_state
 from balatro_bot.scaling import FINAL_HAND_JOKERS
 from balatro_bot.strategy import Strategy, compute_strategy
@@ -26,6 +27,10 @@ _COMFORTABLE_RATIO = 1.5   # >= this → comfortable, blind is well in hand
 _TIGHT_RATIO = 0.9         # >= this → tight, every hand matters
 
 __all__ = ["RoundContext"]
+
+
+def _hand_affinity(strategy: Strategy | None) -> dict[str, float] | None:
+    return dict(strategy.preferred_hands) if strategy and strategy.preferred_hands else None
 
 
 @dataclass
@@ -60,6 +65,35 @@ class RoundContext:
     ox_most_played: str | None = None
     best_as_finisher: HandCandidate | None = None
     best_without_forced: HandCandidate | None = None
+    joker_limit: int = 5
+    search: RoundSearch | None = None
+
+    def __post_init__(self) -> None:
+        if self.search is None:
+            self.search = RoundSearch(
+                hand_cards=self.hand_cards,
+                hand_levels=self.hand_levels,
+                jokers=self.jokers,
+                joker_limit=self.joker_limit,
+                money=self.money,
+                hands_left=self.hands_left,
+                discards_left=self.discards_left,
+                min_cards=self.min_cards,
+                blind_name=self.blind_name,
+                mouth_hand=self.mouth_locked_hand or self.committed_hand_type,
+                forced_card=(None if self.forced_card_idx is None
+                             else self.hand_cards[self.forced_card_idx]),
+                eye_used=self.eye_used_hands,
+                ancient_suit=self.ancient_suit,
+                idol_rank=self.idol_rank,
+                idol_suit=self.idol_suit,
+                ox_most_played=self.ox_most_played,
+                deck_cards=self.deck_cards,
+                hand_affinity=_hand_affinity(self.strategy),
+                strategy=self.strategy,
+                scoring_suit=self.scoring_suit,
+                debuffed_suit=self.debuffed_suit,
+            )
 
     @property
     def kept_best(self) -> HandCandidate | None:
@@ -97,15 +131,7 @@ class RoundContext:
     @property
     def card_protection(self):
         """Build the CardProtection view from this round's strategy + state."""
-        return self.strategy.card_protection(
-            jokers=self.jokers,
-            idol_rank=self.idol_rank,
-            idol_suit=self.idol_suit,
-            scoring_suit=self.scoring_suit,
-            debuffed_suit=self.debuffed_suit,
-            discards_left=self.discards_left,
-            heavy_debuff=(self.blind_name == "The Pillar"),
-        )
+        return self.search.card_protection()
 
     @property
     def round_outlook(self) -> str:
@@ -226,89 +252,50 @@ class RoundContext:
         # so boss-specific scoring effects (The Tooth, The Ox, etc.) don't fire.
         effective_blind = "" if boss_disabled else blind_name
 
+        search = RoundSearch(
+            hand_cards=hand_cards,
+            hand_levels=hand_levels,
+            jokers=jokers,
+            joker_limit=snapshot.joker_limit,
+            money=money,
+            hands_left=hands_left,
+            discards_left=discards_left,
+            min_cards=min_cards,
+            blind_name=effective_blind,
+            forced_card=None if forced_card_idx is None else hand_cards[forced_card_idx],
+            eye_used=eye_used_hands,
+            ancient_suit=ancient_suit,
+            idol_rank=idol_rank,
+            idol_suit=idol_suit,
+            ox_most_played=ox_most_played,
+            deck_cards=deck_cards,
+            hand_affinity=_hand_affinity(strat),
+            strategy=strat,
+            scoring_suit=scoring_suit,
+            debuffed_suit=debuffed_suit,
+        )
+
         # The Mouth pre-lock: pick the hand type with best round-total EV
         # before the first play locks it. Once locked, mouth_locked_hand wins.
         committed_hand_type = None
         if (effective_blind == "The Mouth"
                 and mouth_locked_hand is None
                 and hands_left > 0):
-            committed_hand_type = choose_mouth_commit(
-                hand_cards, hand_levels,
-                jokers=jokers, joker_limit=snapshot.joker_limit,
-                hands_left=hands_left, discards_left=discards_left,
-                money=money,
-                deck_cards=deck_cards, deck_profile=deck_profile,
-                ancient_suit=ancient_suit,
-                idol_rank=idol_rank, idol_suit=idol_suit,
-                forced_card_idx=forced_card_idx,
-                blind_name=effective_blind,
-                ox_most_played=ox_most_played,
-            )
+            committed_hand_type = choose_mouth_commit(search, deck_profile)
 
-        effective_commit = mouth_locked_hand or committed_hand_type
-
-        hand_affinity_dict = dict(strat.preferred_hands) if strat.preferred_hands else None
-
-        best = best_hand(
-            hand_cards, hand_levels,
-            min_select=min_cards, jokers=jokers,
-            money=money, discards_left=discards_left,
-            hands_left=hands_left,
-            joker_limit=snapshot.joker_limit,
-            required_hand=effective_commit,
-            required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
-            ancient_suit=ancient_suit,
-            excluded_hands=eye_used_hands,
-            deck_cards=deck_cards,
-            blind_name=effective_blind,
-            ox_most_played=ox_most_played,
-            idol_rank=idol_rank,
-            idol_suit=idol_suit,
-            hand_affinity=hand_affinity_dict,
-        )
+        search = search.locked_to(mouth_locked_hand or committed_hand_type)
+        best = search.best()
 
         # Score best hand as if it were the final hand (hands_left=1) so the
         # planner can see the Acrobat x3 / Dusk retrigger value.
         joker_keys_set = {joker_key(j) for j in jokers}
         has_final_hand = bool(joker_keys_set & FINAL_HAND_JOKERS) and hands_left > 1
-        best_as_finisher = (
-            best_hand(
-                hand_cards, hand_levels,
-                min_select=min_cards, jokers=jokers,
-                money=money, discards_left=discards_left,
-                hands_left=1,
-                joker_limit=snapshot.joker_limit,
-                required_hand=effective_commit,
-                required_card_indices={forced_card_idx} if forced_card_idx is not None else None,
-                ancient_suit=ancient_suit,
-                excluded_hands=eye_used_hands,
-                deck_cards=deck_cards,
-                blind_name=effective_blind,
-                ox_most_played=ox_most_played,
-                hand_affinity=hand_affinity_dict,
-            )
-            if has_final_hand else None
-        )
+        best_as_finisher = search.best(hands_left=1) if has_final_hand else None
 
         best_without_forced = None
         if forced_card_idx is not None:
             others = [i for i in range(len(hand_cards)) if i != forced_card_idx]
-            best_without_forced = best_hand(
-                [hand_cards[i] for i in others], hand_levels,
-                min_select=min_cards, jokers=jokers,
-                money=money, discards_left=discards_left,
-                hands_left=hands_left,
-                joker_limit=snapshot.joker_limit,
-                required_hand=effective_commit,
-                ancient_suit=ancient_suit,
-                excluded_hands=eye_used_hands,
-                deck_cards=deck_cards,
-                blind_name=effective_blind,
-                ox_most_played=ox_most_played,
-                idol_rank=idol_rank,
-                idol_suit=idol_suit,
-                hand_affinity=hand_affinity_dict,
-            )
+            best_without_forced = search.best([hand_cards[i] for i in others])
             if best_without_forced is not None:
                 best_without_forced.card_indices = [others[i] for i in best_without_forced.card_indices]
 
@@ -343,4 +330,6 @@ class RoundContext:
             deck_cards=deck_cards,
             deck_profile=deck_profile,
             best_as_finisher=best_as_finisher,
+            joker_limit=snapshot.joker_limit,
+            search=search,
         )

@@ -12,11 +12,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from balatro_bot.cards import card_rank, card_suits
+from balatro_bot.constants import ALL_SUITS
 
 if TYPE_CHECKING:
     from balatro_bot.cards import CardLike
 
-ALL_SUITS = ("H", "D", "C", "S")
 
 
 @dataclass(frozen=True)
@@ -128,7 +128,7 @@ class DeckProfile:
 
         return DeckProfile(
             total_cards=len(cards),
-            suit_counts=dict(suit_counts),
+            suit_counts={s: suit_counts[s] for s in ALL_SUITS if s in suit_counts},
             rank_counts=dict(rank_counts),
             enhancement_counts=dict(enhancement_counts),
             enhanced_card_count=enhanced_total,
