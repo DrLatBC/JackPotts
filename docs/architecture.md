@@ -75,7 +75,7 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | File | Role |
 |------|------|
 | `search.py` | `enumerate_hands`, `best_hand` (single pass, same pick as the first enumerated hand), `discard_candidates`; decisions call them through the round search (`domain/policy/round_search.py`) |
-| `play_order.py` | `sort_play_order` — left-to-right order (additive before xmult, Hanging Chad / Photograph / DNA first slot) |
+| `play_order.py` | `sort_play_order` — left-to-right order: hand order unless a ×mult card would score before a +mult one (Hanging Chad / DNA first slot, Photograph's face before other faces); `hand_order_for_play` — the hand rearrangement that swaps played cards among their own slots |
 | `classify.py` | Hand classification + scoring-card extraction |
 | `estimate.py` | Full scoring simulation: `HandScorer` is set up once per joker lineup and surroundings and scores many hands; `score_hand` uses one once |
 | `draws.py` | Flush/straight draw probability |

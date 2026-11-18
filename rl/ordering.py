@@ -18,7 +18,7 @@ sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "sim" / "jackdaw_adapter"))
 
 from balatro_bot.domain.models.deck_profile import DeckProfile  # noqa: E402
-from balatro_bot.domain.scoring.play_order import sort_play_order  # noqa: E402
+from balatro_bot.domain.scoring.play_order import hand_order_for_play, sort_play_order  # noqa: E402
 from balatro_bot.infrastructure.state_adapter import adapt_state  # noqa: E402
 from balatro_bot.strategy import compute_strategy  # noqa: E402
 from fork_view import augment  # noqa: E402
@@ -29,7 +29,7 @@ from rl.convert import left_moves  # noqa: E402
 # ``sort_play_order`` gives plain hand order unless the lineup puts a card first
 # (Hanging Chad, Photograph, DNA), a joker multiplies a scored card's mult (Triboulet,
 # Ancient Joker, Bloodstone, The Idol; Photograph again), a copier may copy one of
-# those, or a chosen card is Glass. Without any of them the bot's whole view need not
+# those, or a chosen card is Glass or Polychrome. Without any of them the bot's whole view need not
 # be rebuilt. ``rl/tests/test_ordering.py`` holds this equal to the full rule on
 # recorded plays.
 ORDER_JOKERS = frozenset({
@@ -46,7 +46,7 @@ def order_can_change(game, cards) -> bool:
     if any(j.key in ORDER_JOKERS for j in game.jokers):
         return True
     hand = game.hand
-    return any(hand[c].key in ORDER_CARDS for c in cards)
+    return any(hand[c].key in ORDER_CARDS or hand[c].edition == "polychrome" for c in cards)
 
 
 def bot_state(game) -> dict:
@@ -74,15 +74,14 @@ def bot_order(game, cards) -> list[int]:
 
 
 def put_in_order(game, cards) -> tuple[int, ...]:
-    """Reorder the game's hand so ``cards`` sit at the front in the bot's play order.
+    """Reorder the game's hand so ``cards`` sit in the bot's play order among their own
+    slots, every other card where it was.
     Returns the hand positions to play: the cards as given when they need no reorder."""
     if not order_can_change(game, cards):
         return tuple(sorted(cards))
     order = bot_order(game, cards)
     if order == sorted(order):
         return tuple(order)
-    chosen = set(order)
-    perm = order + [i for i in range(len(game.hand)) if i not in chosen]
-    for at in left_moves(perm):
+    for at in left_moves(hand_order_for_play(order, len(game.hand))):
         game.step(A.SwapHandLeft(at))
-    return tuple(range(len(order)))
+    return tuple(sorted(order))

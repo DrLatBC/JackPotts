@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from balatro_bot.cards import card_rank, card_suit, card_xmult_value, card_chip_value, card_mult_value, is_debuffed
+from balatro_bot.cards import (
+    card_chip_value, card_edition_mult_value, card_edition_xmult_value, card_mult_value,
+    card_rank, card_suit, card_xmult_value, is_debuffed,
+)
 from balatro_bot.constants import FACE_RANKS
 from balatro_bot.joker_effects.roster import Roster, roster
 from balatro_bot.joker_effects.per_card import (
@@ -22,17 +25,19 @@ class PlayOrderer:
     Hand search orders every subset of the same hand, so each card's ordering
     values are worked out once here and reused across subsets.
 
-    In Balatro, played cards score left-to-right. Cards that gain ×mult — whether
-    from the card itself (Glass, Polychrome) or from a per-card joker (Triboulet
-    on K/Q, Idol on target rank+suit, Ancient on matching suit, Bloodstone on
-    hearts, etc.) — should be rightmost so all +chips/+mult accumulate first.
+    In Balatro, played cards score left-to-right by hand position. Chips are
+    summed, so only +mult against ×mult depends on order: a card that
+    multiplies (Glass, Polychrome, or a per-card ×mult joker such as Bloodstone
+    or Triboulet) should score after every card that adds mult. Cards keep
+    hand order unless a multiplying card would score before an adding one,
+    so the bot rearranges the hand only when that changes the score.
 
     With Hanging Chad, the first card gets +2 retriggers (3 total). The card
     that benefits most from compounded retriggers goes first instead.
 
-    Photograph fires ×2 mult once on the first face card played; we put the
-    highest-value face first so Photograph compounds with its other xmult
-    sources (Triboulet, Idol) on the same trigger.
+    Photograph fires ×2 mult once on the first face card played; the
+    highest-value face is placed before every other face so Photograph
+    compounds with its other xmult sources (Triboulet, Idol).
 
     All per-card joker scoring math is sourced from ``joker_effects.per_card``
     — no hardcoded joker names in this file. Registering a new per-card joker
@@ -70,9 +75,7 @@ class PlayOrderer:
         self._has_dna = "j_dna" in joker_keys
         self._xmult: dict[int, float] = {}
         self._xmult_first_face: dict[int, float] = {}
-        # Per hand index: 0 for an additive-only card, 1 for a card with any xmult.
-        self._side: list[int] | None = None
-        self._any_xmult = False
+        self._adds_mult: dict[int, bool] = {}
 
     def _is_face(self, idx: int) -> bool:
         return self._pc_ctx.pareidolia or card_rank(self._hand_cards[idx]) in FACE_RANKS
@@ -86,7 +89,7 @@ class PlayOrderer:
                 value = 1.0
             else:
                 _, _, jx = card_contribution(c, self._effects, self._pc_ctx, is_first_face=is_first_face)
-                value = card_xmult_value(c) * jx
+                value = card_xmult_value(c) * card_edition_xmult_value(c) * jx
             memo[idx] = value
         return value
 
@@ -97,16 +100,35 @@ class PlayOrderer:
         dc, dm, _ = card_contribution(c, self._effects, self._pc_ctx, is_first_face=False)
         return card_chip_value(c) + card_mult_value(c) + dc + dm
 
-    def _additive_left(self, indices: list[int]) -> list[int]:
-        """Additive-only cards left, any-xmult cards right (index order within groups)."""
-        side = self._side
-        if side is None:
-            side = self._side = [
-                0 if self._card_xmult(i) <= 1.0 else 1 for i in range(len(self._hand_cards))]
-            self._any_xmult = 1 in side
-        if not self._any_xmult:
-            return sorted(indices)
-        return sorted(indices, key=lambda i: (side[i], i))
+    def _card_adds_mult(self, idx: int) -> bool:
+        value = self._adds_mult.get(idx)
+        if value is None:
+            c = self._hand_cards[idx]
+            if is_debuffed(c):
+                value = False
+            else:
+                _, dm, _ = card_contribution(c, self._effects, self._pc_ctx, is_first_face=False)
+                value = card_mult_value(c) + card_edition_mult_value(c) + dm > 0
+            self._adds_mult[idx] = value
+        return value
+
+    def _additive_left(self, indices: list[int], photographed: int | None = None) -> list[int]:
+        """Hand order, unless a multiplying card would score before one that adds mult;
+        then adding cards go left of multiplying ones (hand order within each group).
+
+        ``photographed`` is the face card Photograph's x2 lands on.
+        """
+        def multiplies(j: int) -> bool:
+            return self._card_xmult(j, is_first_face=j == photographed) > 1.0
+
+        ordered = sorted(indices)
+        multiplied = False
+        for i in ordered:
+            if multiplied and self._card_adds_mult(i):
+                return sorted(ordered, key=lambda j: (multiplies(j), j))
+            if multiplies(i):
+                multiplied = True
+        return ordered
 
     def _first_position_score(self, idx: int) -> float:
         if is_debuffed(self._hand_cards[idx]):
@@ -141,14 +163,19 @@ class PlayOrderer:
             best_first = max(indices, key=self._first_position_score)
             return [best_first] + self._additive_left([i for i in indices if i != best_first])
 
-        # Photograph without Hanging Chad: put best face card first so its x2
-        # compounds with other per-card xmult sources on the same trigger.
+        # Photograph without Hanging Chad: the best face card scores before every
+        # other face, so its x2 compounds with other per-card xmult sources.
         if self._has_photograph:
             hand_cards = self._hand_cards
             face_indices = [i for i in indices if not is_debuffed(hand_cards[i]) and self._is_face(i)]
             if face_indices:
                 best_face = max(face_indices, key=lambda i: self._card_xmult(i, is_first_face=True))
-                return [best_face] + self._additive_left([i for i in indices if i != best_face])
+                order = self._additive_left(indices, photographed=best_face)
+                first_face = next(k for k, i in enumerate(order) if i in face_indices)
+                if order[first_face] != best_face:
+                    order.remove(best_face)
+                    order.insert(first_face, best_face)
+                return order
 
         # DNA: first card played gets copied to deck — pick the most strategic card
         if self._has_dna:
@@ -175,3 +202,13 @@ def sort_play_order(
         hand_cards, jokers, strategy,
         idol_rank=idol_rank, idol_suit=idol_suit, ancient_suit=ancient_suit,
     ).order(indices)
+
+
+def hand_order_for_play(order: list[int], hand_size: int) -> list[int]:
+    """The hand rearrangement that plays ``order`` left to right: the played cards swap
+    among their own slots and every other card stays put. ``result[k]`` is the current
+    index of the card for position k; the play is then the slots ``sorted(order)``."""
+    result = list(range(hand_size))
+    for slot, idx in zip(sorted(order), order):
+        result[slot] = idx
+    return result

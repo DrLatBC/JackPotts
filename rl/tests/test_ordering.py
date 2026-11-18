@@ -47,17 +47,23 @@ def test_the_bot_sees_its_usual_state(shard):
 
 
 def test_the_rule_gives_the_order_the_bot_played_in(shard):
-    plays = reordered = same = 0
+    """The fixture bot also reordered some plays where order changes no score (Glass
+    past chip-only cards, Photograph's face already the first face); the rule now plays
+    those in hand order."""
+    plays = reordered = same = dropped = 0
     for g in range(shard.n_games):
         for i, game in _plays(shard, g):
             if int(shard["flags"][i]) & dataset.BELL:
                 continue  # the recorded bot did not choose the forced card
             did = _what_the_bot_did(shard, i, len(game.hand))
+            order = bot_order(game, shard.action(i).card_target)
             plays += 1
             reordered += did != sorted(did)
-            same += bot_order(game, shard.action(i).card_target) == did
+            same += order == did
+            dropped += order != did and order == sorted(did)
     assert plays > 100 and reordered >= 10
-    assert same == plays
+    assert same + dropped == plays
+    assert dropped <= 4
 
 
 def _order_holds(game, cards) -> bool:
@@ -94,6 +100,9 @@ def test_the_quick_check_sees_glass_and_the_order_jokers(shard):
     assert bot_order(game, sorted([glass, other]))[-1] == glass
     plain = tuple(k for k in range(len(game.hand)) if k != glass)[:2]
     assert not order_can_change(game, plain)
+    game.debug_add("S_K", edition="polychrome")
+    poly = next(k for k, c in enumerate(game.hand) if c.edition == "polychrome")
+    assert order_can_change(game, (plain[0], poly))
     game.debug_add("j_triboulet")
     assert order_can_change(game, (0, 1))
     assert not order_can_change(game, (0,))
@@ -127,18 +136,22 @@ def test_cards_already_in_order_are_left_where_they_are(shard):
     assert [c.sort_id for c in game.hand] == before
 
 
-def test_a_reordered_play_puts_the_cards_at_the_front(shard):
+def test_a_reordered_play_swaps_the_cards_among_their_own_slots(shard):
     found = None
     for g in range(shard.n_games):
         for i, game in _plays(shard, g):
-            if len(shard.rows("pre", i)) and not int(shard["flags"][i]) & dataset.BELL:
-                found = (i, game)
+            if int(shard["flags"][i]) & dataset.BELL:
+                continue
+            order = bot_order(game, shard.action(i).card_target)
+            if order != sorted(order):
+                found = (game, order, shard.action(i).card_target)
                 break
         if found:
             break
-    i, game = found
-    did = _what_the_bot_did(shard, i, len(game.hand))
-    ids = [game.hand[k].sort_id for k in did]
-    cards = put_in_order(game, shard.action(i).card_target)
-    assert cards == tuple(range(len(did)))
-    assert [c.sort_id for c in game.hand][:len(did)] == ids
+    game, order, chosen = found
+    before = [c.sort_id for c in game.hand]
+    cards = put_in_order(game, chosen)
+    after = [c.sort_id for c in game.hand]
+    assert cards == tuple(sorted(order))
+    assert [after[k] for k in cards] == [before[k] for k in order]
+    assert all(after[k] == before[k] for k in range(len(before)) if k not in cards)

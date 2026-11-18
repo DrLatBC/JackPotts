@@ -18,6 +18,7 @@ from balatro_bot.bot_logging import (
 )
 from balatro_bot.domain.policy.exploration import explorer
 from balatro_bot.domain.scoring.draws import seed_draws
+from balatro_bot.domain.scoring.play_order import hand_order_for_play
 from balatro_bot.engine import RuleEngine
 from balatro_bot.infrastructure.client import BalatroClient
 from balatro_bot.replays import ReplayWriter, replay_record
@@ -470,18 +471,15 @@ def run_bot(
             if _decision is not None and not _decision.get("continuation") else None
         )
 
-        # Rearrange hand cards so scoring order matches the bot's intended play order.
-        # Balatro scores left-to-right by hand position, not by click order.
+        # Balatro scores played cards left to right by hand position, not by click
+        # order, so the played cards swap among their own slots; the rest stay put.
         if method == "play" and params and "cards" in params:
             play_indices = params["cards"]
             if play_indices != sorted(play_indices):
-                hand_size = len(state.get("hand", {}).get("cards", []))
-                non_play = [i for i in range(hand_size) if i not in set(play_indices)]
-                new_order = play_indices + non_play  # played cards first, rest after
+                new_order = hand_order_for_play(play_indices, len(state.get("hand", {}).get("cards", [])))
                 try:
                     client.call("rearrange", {"hand": new_order})
-                    # Remap: played cards are now at positions 0..len-1
-                    params["cards"] = list(range(len(play_indices)))
+                    params["cards"] = sorted(play_indices)
                     # Refresh state so card labels reflect new order
                     state = client.call("gamestate")
                 except Exception:

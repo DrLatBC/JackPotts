@@ -43,6 +43,7 @@ from rl.features import CONSUMABLE, ENTITY_LIST, HAND, JOKER, MAX_FREE_MOVES, PA
 from rl.model import Prepared, weigh
 from rl.ordering import bot_order, order_can_change
 from rl.train import load_model
+from balatro_bot.domain.scoring.play_order import hand_order_for_play  # noqa: E402
 from balatro_bot.files import replace_file  # noqa: E402
 from fork_view import strip  # noqa: E402
 
@@ -279,11 +280,9 @@ class Player:
         if isinstance(action, A.PlayHand) and order_can_change(game, action.card_indices):
             order = bot_order(game, action.card_indices)
             if order != sorted(order):
-                chosen = set(order)
-                perm = order + [i for i in range(len(game.hand)) if i not in chosen]
-                for at in left_moves(perm):
+                for at in left_moves(hand_order_for_play(order, len(game.hand))):
                     self.adapter.step(A.SwapHandLeft(at))
-                action = A.PlayHand(tuple(range(len(order))))
+                action = A.PlayHand(tuple(sorted(order)))
         self.adapter.step(action)
         self.write_now(last=describe(action), **self.game_numbers())
 

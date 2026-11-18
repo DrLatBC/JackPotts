@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace as dc_replace
 
+from balatro_bot.domain.models.card import CardModifier
 from balatro_bot.domain.policy.play_padding import pad_with_junk
 from balatro_bot.domain.scoring.play_order import sort_play_order
 from tests.conftest import card, joker
@@ -129,16 +130,54 @@ def test_hanging_chad_multiple_joker_bonuses_stack():
     assert result[0] == 0, f"Expected 8♠ first (even+spade bonuses), got index {result[0]}"
 
 
-def test_no_hanging_chad_glass_goes_last():
-    """Without Hanging Chad, Glass (xmult) cards should go rightmost."""
+def test_glass_stays_in_hand_order_when_nothing_adds_mult():
+    """Chips are summed, so a Glass card left of chip-only cards scores the same."""
     hand = [
-        card("A", "S", enhancement="GLASS"),  # 0: glass x2
-        card("K", "H"),                        # 1: no xmult
-        card("Q", "D"),                        # 2: no xmult
+        card("A", "S", enhancement="GLASS"),
+        card("K", "H"),
+        card("Q", "D"),
     ]
-    jokers = []  # no hanging chad
-    result = sort_play_order([0, 1, 2], hand, jokers)
-    assert result[-1] == 0, f"Expected Glass card last, got index {result[-1]} last"
+    assert sort_play_order([0, 1, 2], hand, []) == [0, 1, 2]
+
+
+def test_glass_goes_right_of_a_mult_card():
+    hand = [
+        card("A", "S", enhancement="GLASS"),
+        card("K", "H"),
+        card("Q", "D", enhancement="MULT"),
+    ]
+    assert sort_play_order([0, 1, 2], hand, []) == [1, 2, 0]
+
+
+def test_polychrome_goes_right_of_a_holographic_card():
+    poly = dc_replace(card("A", "S"), modifier=CardModifier(edition="POLYCHROME", edition_x_mult=1.5))
+    holo = dc_replace(card("K", "H"), modifier=CardModifier(edition="HOLO"))
+    assert sort_play_order([0, 1], [poly, holo], []) == [1, 0]
+
+
+def test_bloodstone_hearts_stay_put_when_nothing_adds_mult():
+    """Bloodstone's per-heart xmult only matters ahead of a +mult card."""
+    hand = [card("K", "H"), card("T", "D"), card("7", "S")]
+    jokers = [joker("j_bloodstone"), joker("j_splash")]
+    assert sort_play_order([0, 1, 2], hand, jokers) == [0, 1, 2]
+
+
+def test_bloodstone_heart_goes_right_of_a_per_card_mult():
+    """Wrathful Joker adds mult per spade, so the heart's xmult waits for it."""
+    hand = [card("K", "H"), card("7", "S")]
+    jokers = [joker("j_bloodstone"), joker("j_wrathful_joker")]
+    assert sort_play_order([0, 1], hand, jokers) == [1, 0]
+
+
+def test_photograph_face_already_first_face_stays_put():
+    """Photograph needs its face to be the first face played, not the first card."""
+    hand = [card("7", "S"), card("K", "H"), card("5", "D")]
+    assert sort_play_order([0, 1, 2], hand, [joker("j_photograph")]) == [0, 1, 2]
+
+
+def test_photograph_face_goes_right_of_a_mult_card():
+    hand = [card("K", "H"), card("7", "S", enhancement="MULT")]
+    assert sort_play_order([0, 1], hand, [joker("j_photograph")]) == [1, 0]
 
 
 def test_rearrange_needed_when_order_differs():

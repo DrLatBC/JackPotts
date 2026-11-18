@@ -413,12 +413,17 @@ impl Lineup {
         if card.debuffed() {
             1.0
         } else {
-            card.xmult * self.contribution(card, first_face).2
+            card.xmult * card.edition_xmult * self.contribution(card, first_face).2
         }
     }
 
-    /// The order to play the cards at `positions` (ascending) in: cards that only
-    /// add go left of cards that multiply, after any card a joker wants first.
+    fn adds_mult(&self, card: &Card) -> bool {
+        !card.debuffed() && card.mult + card.edition_mult + self.contribution(card, false).1 > 0.0
+    }
+
+    /// The order to play the cards at `positions` (ascending) in: hand order, unless
+    /// a multiplying card would score before one that adds mult, then adding cards go
+    /// left of multiplying ones; after any card a joker wants first.
     pub fn play_order(&self, hand: &[Card], positions: &[u8], out: &mut [u8]) {
         let n = positions.len();
         out[..n].copy_from_slice(positions);
@@ -441,7 +446,9 @@ impl Lineup {
             best.map(|(p, _)| p)
         };
         let everyone = |_: &Card| true;
+        let photo_face = |card: &Card| !card.debuffed() && face(card);
         let mut first = None;
+        let mut photographed = None;
         if self.chad_active {
             // The first card triggers three times: xmult cubed, twice the additions extra.
             first = first_of(
@@ -457,9 +464,9 @@ impl Lineup {
             );
         } else {
             if self.photograph {
-                first = first_of(&|card| self.card_xmult(card, true), &|card| !card.debuffed() && face(card));
+                photographed = first_of(&|card| self.card_xmult(card, true), &photo_face);
             }
-            if first.is_none() && self.dna_active {
+            if photographed.is_none() && self.dna_active {
                 first = first_of(&|card| if card.debuffed() { -1.0 } else { card.chips / 100.0 }, &everyone);
             }
         }
@@ -468,18 +475,35 @@ impl Lineup {
             out[0] = p;
             k = 1;
         }
-        let any_multiplier = hand.iter().any(|card| self.card_xmult(card, false) > 1.0);
-        for multiplies in [false, true] {
+        let multiplies = |p: u8| self.card_xmult(&hand[p as usize], Some(p) == photographed) > 1.0;
+        let mut multiplied = false;
+        let mut clash = false;
+        for &p in positions {
+            if Some(p) == first {
+                continue;
+            }
+            if multiplied && self.adds_mult(&hand[p as usize]) {
+                clash = true;
+                break;
+            }
+            if multiplies(p) {
+                multiplied = true;
+            }
+        }
+        for right in [false, true] {
             for &p in positions {
-                if Some(p) == first {
+                if Some(p) == first || (clash && multiplies(p) != right) || (!clash && right) {
                     continue;
                 }
-                let on_right = any_multiplier && self.card_xmult(&hand[p as usize], false) > 1.0;
-                if on_right == multiplies {
-                    out[k] = p;
-                    k += 1;
-                }
+                out[k] = p;
+                k += 1;
             }
+        }
+        // Photograph's face scores before every other face.
+        if let Some(best) = photographed {
+            let at = out[..n].iter().position(|&p| photo_face(&hand[p as usize])).unwrap();
+            let from = out[..n].iter().position(|&p| p == best).unwrap();
+            out[at..=from].rotate_right(1);
         }
     }
 }
