@@ -16,6 +16,14 @@ half the difference as its advantage, the drawn move with minus half. The main-l
 draws were tried at are kept too, each with the first move drawn there (a sample of the
 policy, as self-play's moves are), so a learning step can be measured on states it was
 not trained on and held near its start there (``rl.ppo.one_step``).
+
+Some moves the bot never makes, so a copy of the bot gives them next to no probability and
+draws would never try them: the boss reroll (Director's Cut, Retcon), skipping a blind, and
+buying a Planet, Tarot or Spectral to use on the spot. A main line branches on these
+outside the rate (``FORCED``): once per occasion (an ante, a blind, a shop visit) at its
+first decision point where the move is legal and not the line's own pick, with that
+move's chance. A forced move takes the policy's likeliest item. Those branches are not
+among the kept states: their moves are not samples of the policy.
 """
 
 from __future__ import annotations
@@ -30,10 +38,20 @@ from jackdaw.env.game_spec import FactoredAction
 
 from rl import dataset
 from rl.evaluate import DECK, MAX_STEPS, STAKE, WIN_ANTE
-from rl.model import Policy, Prepared, act
+from rl.model import Policy, Prepared, _complete, act
 from rl.ordering import put_in_order
 from rl.playback import copy_env, env_view, make_env, no_legal_action
 from rl.selfplay import WIN_BONUS, game_points, train_seed
+
+REROLL = int(ActionType.RerollBoss)
+SKIP = int(ActionType.SkipBlind)
+BUY_AND_USE = int(ActionType.BuyAndUse)
+FORCED: dict[int, tuple[str, float]] = {
+    REROLL: ("ante", 0.5),
+    SKIP: ("blind", 0.01),
+    BUY_AND_USE: ("shop", 0.1),
+}
+"""Per forced move type: the occasion it is tried once in, and the chance it is tried."""
 
 
 @dataclass
@@ -104,7 +122,8 @@ class BranchPlay:
         env = make_env(self.deck, self.stake, on_refusal="truncate", max_steps=self.max_steps)
         _, _, info = env.reset(seed=seed)
         self.seeds[seed] = {"result": None, "hash": {}, "open": 0, "waiting": []}
-        return {"role": "main", "seed": seed, "env": env, "info": info, "steps": 0, "force": None}
+        return {"role": "main", "seed": seed, "env": env, "info": info, "steps": 0, "force": None,
+                "blinds": 0, "shops": 0, "forced": set()}
 
     def _tick(self, model: Policy) -> None:
         while sum(line["role"] == "main" for line in self.lines) < self.mains:
@@ -117,6 +136,7 @@ class BranchPlay:
         drawn, first = self._draw(model, prep, tried, greedy)
         for k in tried:
             self._states.append((views[k], *first[k]))
+        drawn.update(self._forced(model, prep, greedy))
         spawned, still = [], []
         for k, line in enumerate(self.lines):
             move = greedy[k]
@@ -149,6 +169,39 @@ class BranchPlay:
             left = again
         return found, first
 
+    def _forced(self, model: Policy, prep: Prepared, greedy) -> dict:
+        """Per main line where a ``FORCED`` move is legal for the first time in its
+        occasion, is not the line's own pick and comes up at its chance: that move with
+        the policy's likeliest item, and its log-probability. One per line per tick."""
+        rows, types = [], []
+        for k, line in enumerate(self.lines):
+            if line["role"] != "main":
+                continue
+            legal = line["info"]["action_mask"].type_mask
+            pick = None
+            for ty, (when, chance) in FORCED.items():
+                if not legal[ty]:
+                    continue
+                occasion = (ty, int(line["info"]["game"].ante) if when == "ante" else line[f"{when}s"])
+                if occasion in line["forced"]:
+                    continue
+                line["forced"].add(occasion)
+                if pick is None and greedy[k].action_type != ty and self.rng.random() < chance:
+                    pick = ty
+            if pick is not None:
+                rows.append(k)
+                types.append(pick)
+        if not rows:
+            return {}
+        idx, types = np.asarray(rows), np.asarray(types)
+        with torch.no_grad():
+            t = prep.tokens(idx)
+            run, tokens = model.encode(t)
+            logp = torch.log_softmax(model.type_logits(run, t["type_mask"]), -1)
+            logp = logp[torch.arange(len(idx)), torch.from_numpy(types)]
+            moves, logp = _complete(model, prep, idx, run, tokens, types, logp, None)
+        return {k: (move, float(lp)) for k, move, lp in zip(rows, moves, logp)}
+
     def _branch(self, main: dict, view, move, move_logp: float, alt, alt_logp: float) -> dict:
         g = main["info"]["game"]
         env, info = copy_env(main["env"])
@@ -163,6 +216,9 @@ class BranchPlay:
     def _step(self, line: dict, move: FactoredAction) -> bool:
         """Play one move; True while the line goes on."""
         game = line["info"]["game"]
+        if line["role"] == "main":
+            line["blinds"] += move.action_type in (ActionType.SelectBlind, ActionType.SkipBlind)
+            line["shops"] += move.action_type == ActionType.CashOut
         if move.action_type == ActionType.PlayHand:
             move = replace(move, card_target=put_in_order(game, move.card_target))
         _, terminated, truncated, _, info = line["env"].step(move)

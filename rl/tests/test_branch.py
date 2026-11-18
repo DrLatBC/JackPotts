@@ -10,11 +10,12 @@ import sys
 import numpy as np
 import pytest
 import torch
+from jackdaw.env.action_space import ActionType
 
 from rl import branch, dataset, ppo
 from rl.branch import BranchPlay, tally
 from rl.evaluate import DECK, STAKE, game_setup
-from rl.model import Policy, Prepared, choose
+from rl.model import Policy, Prepared, act, choose
 from rl.playback import copy_env, env_view, make_env
 from rl.ppo import scored
 from rl.selfplay import game_points
@@ -110,6 +111,88 @@ def test_a_branch_back_on_its_main_lines_path_stops_tied():
     assert bp._joined(line)
     assert bp._resolved == [decision] and decision["tied"] and decision["joined"]
     assert bp._pairs == [] and bp.seeds["s"]["open"] == 0
+
+
+def test_a_legal_boss_reroll_is_branched_on_once_per_ante_and_learned_like_any_move(model, monkeypatch):
+    import copy
+
+    model = copy.deepcopy(model)
+    with torch.no_grad():
+        model.type_head.bias[branch.REROLL] -= 30.0
+    monkeypatch.setitem(branch.FORCED, branch.REROLL, ("ante", 1.0))
+    bp = BranchPlay("test", rate=0.0, mains=1)
+    bp._pairs, bp._states, bp._finished, bp._resolved = [], [], [], []
+    main = bp._new_main()
+    game = main["info"]["game"]
+    snapshot = game.to_dict()
+    snapshot["sets"]["used_vouchers"] = ["v_directors_cut"]
+    game.replace_state(snapshot)
+    game.debug_set(money=30)
+    main["env"], main["info"] = copy_env(main["env"])
+    bp.lines = [main]
+    view = env_view(main["info"])
+    assert main["info"]["action_mask"].type_mask[branch.REROLL]
+
+    bp._tick(model)
+    branches = [line for line in bp.lines if line["role"] == "branch"]
+    assert len(branches) == 1 and branches[0]["force"].action_type == branch.REROLL
+    assert branches[0]["decision"]["drawn move"] == "RerollBoss" and bp._states == []
+    _, move, move_logp, alt, alt_logp = branches[0]["decision"]["pair"]
+    prep = Prepared(dataset.examples_of([view]))
+    assert bp._forced(model, prep, [move]) == {}
+
+    ex, logp, _ = branch._pair_examples([(view, move, move_logp, alt, alt_logp, 1.0)], DECK, STAKE)
+    with torch.no_grad():
+        recomputed = scored(model, Prepared(ex), np.arange(2))[0].numpy()
+    assert ex.action(1).action_type == branch.REROLL
+    assert np.allclose(recomputed, logp, atol=1e-5)
+
+
+def at_first_shop(bp: BranchPlay) -> dict:
+    """The first main line of run "test", its first blind won outright, in its first shop
+    (which sells a Planet)."""
+    from jackdaw.env.game_spec import FactoredAction
+
+    main = bp._new_main()
+    for move in (ActionType.SelectBlind, ActionType.PlayHand, ActionType.CashOut):
+        if move == ActionType.PlayHand:
+            main["info"]["game"].debug_set(chips=1e9)
+            main["env"], main["info"] = copy_env(main["env"])
+        cards = (0,) if move == ActionType.PlayHand else None
+        bp._step(main, FactoredAction(int(move), card_target=cards))
+    return main
+
+
+@pytest.mark.parametrize("forced, phase", [(branch.SKIP, "blind_select"),
+                                           (branch.BUY_AND_USE, "shop")])
+def test_a_forced_move_comes_up_once_per_occasion_with_its_chance(model, monkeypatch, forced, phase):
+    import copy
+
+    model = copy.deepcopy(model)
+    with torch.no_grad():
+        model.type_head.bias[forced] -= 30.0
+    bp = BranchPlay("test", rate=0.0, mains=1)
+    bp._pairs, bp._states, bp._finished, bp._resolved = [], [], [], []
+    main = bp._new_main() if phase == "blind_select" else at_first_shop(bp)
+    assert main["info"]["game"].phase.value == phase
+    assert main["info"]["action_mask"].type_mask[forced]
+    bp.lines = [main]
+    prep = Prepared(dataset.examples_of([env_view(main["info"])]))
+    greedy = act(model, prep)[0]
+
+    monkeypatch.setitem(branch.FORCED, forced, (branch.FORCED[forced][0], 0.0))
+    assert bp._forced(model, prep, greedy) == {}
+    main["forced"].clear()
+    monkeypatch.setitem(branch.FORCED, forced, (branch.FORCED[forced][0], 1.0))
+    got = bp._forced(model, prep, greedy)
+    assert [move.action_type for move, _ in got.values()] == [forced]
+    assert bp._forced(model, prep, greedy) == {}
+
+    (move, logp), = got.values()
+    view = env_view(main["info"])
+    ex, stored, _ = branch._pair_examples([(view, greedy[0], 0.0, move, logp, 1.0)], DECK, STAKE)
+    with torch.no_grad():
+        assert np.isclose(scored(model, Prepared(ex), np.arange(2))[0].numpy()[1], stored[1], atol=1e-5)
 
 
 def test_the_panels_deck_and_stake_names_map_to_the_engines():
