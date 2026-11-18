@@ -115,14 +115,18 @@ def title(key: str) -> str:
 
 def card_name(card) -> dict:
     """A card as the overlay draws it: a playing card's rank and suit (``?`` face down),
-    else the item's name."""
+    else the item's name; ``debuff`` when the boss has disabled it."""
     if card.front is None:
         return {"name": title(card.key)}
     if card.face_down:
         return {"rank": "?"}
     if card.key == "m_stone":
-        return {"rank": "Stone"}
-    return {"rank": RANKS.get(card.rank, card.rank), "suit": SUITS[card.suit]}
+        out = {"rank": "Stone"}
+    else:
+        out = {"rank": RANKS.get(card.rank, card.rank), "suit": SUITS[card.suit]}
+    if card.debuff:
+        out["debuff"] = True
+    return out
 
 
 def option(factored, game) -> dict:
@@ -143,6 +147,34 @@ def option(factored, game) -> dict:
             if scored is not None:
                 out["hand"] = scored[0]
     return out
+
+
+def deck_view(game) -> dict:
+    """The whole deck for the overlay: per card (``"SA"``, ``"H10"``) how many the deck
+    holds, how many are still to draw, in hand (the rest were played or discarded this
+    round) and debuffed, and its enhanced cards counted by name. Stone cards have no
+    rank or suit, so they are only counted."""
+    cards: dict[str, dict] = {}
+    enhanced: dict[str, int] = {}
+    piles = (("draw", game.deck), ("hand", game.hand), (None, game.discard_pile))
+    size = 0
+    for where, pile in piles:
+        for card in pile:
+            if card.front is None:
+                continue
+            size += 1
+            if card.key != "c_base":
+                name = title(card.key).removesuffix(" Card")
+                enhanced[name] = enhanced.get(name, 0) + 1
+            if card.key == "m_stone":
+                continue
+            cell = cards.setdefault(card.front[0] + RANKS.get(card.rank, card.rank), {"n": 0, "draw": 0, "hand": 0, "debuff": 0})
+            cell["n"] += 1
+            cell["debuff"] += bool(card.debuff)
+            if where:
+                cell[where] += 1
+    return {"size": size, "to draw": len(game.deck), "cards": cards,
+            "enhanced": dict(sorted(enhanced.items(), key=lambda kv: -kv[1]))}
 
 
 class UpstreamView:
@@ -174,7 +206,8 @@ class Player:
         self.checkpoint = ""
         self.updates: int | None = None
         self.first_updates: int | None = None
-        self.totals = {"games": 0, "wins": 0, "divergences": 0}
+        self.totals = {"games": 0, "wins": 0, "divergences": 0, "hands": 0}
+        self.antes: list[int] = []
         self.recent: list[dict] = []
         self.now: dict = {}
 
@@ -193,6 +226,7 @@ class Player:
         body = {"pid": os.getpid(), "updated": time.time(), "model": str(self.model_path),
                 "checkpoint": self.checkpoint, "updates": self.updates,
                 "first updates": self.first_updates, "game": self.now, **self.totals,
+                "mean ante": round(sum(self.antes) / len(self.antes), 2) if self.antes else None,
                 "recent": self.recent}
         tmp = self.out / "now.tmp"
         try:
@@ -258,13 +292,14 @@ class Player:
         return {"ante": int(g.ante), "round": int(g.round), "money": int(g.dollars),
                 "chips": int(g.chips), "blind": int(g.blind.chips), "blind name": g.blind.key,
                 "blind title": title(g.blind.key),
-                "hands": int(g.hands_left), "discards": int(g.discards_left), "phase": str(g.phase)}
+                "hands": int(g.hands_left), "discards": int(g.discards_left), "phase": str(g.phase),
+                "deck": deck_view(g)}
 
     def play_game(self) -> dict:
         self.load()
         seed = next(self.seeds) if self.seeds is not None else random_seed()
         self.now = {"seed": seed, "deck": self.deck, "stake": self.stake, "steps": 0, "last": "",
-                    "history": []}
+                    "hands played": 0, "history": []}
         result = {"seed": seed, "deck": self.deck, "stake": self.stake, "checkpoint": self.checkpoint}
         started = time.time()
         free_run, streak, refused = 0, 0, set()
@@ -299,6 +334,9 @@ class Player:
                 streak, refused = 0, set()
                 free_run = free_run + 1 if factored.action_type in FREE_ACTION_TYPES else 0
                 self.now["steps"] += 1
+                if factored.action_type == ActionType.PlayHand:
+                    self.now["hands played"] += 1
+                    self.totals["hands"] += 1
                 self.now["history"].append(self.now["outlook"])
         except DivergenceError as e:
             result["outcome"] = "divergence"
@@ -313,6 +351,7 @@ class Player:
             result["ante"] = WIN_ANTE if result["outcome"] == "won" else min(int(g.ante), WIN_ANTE)
             result["round"] = int(g.round)
         result["steps"] = self.now["steps"]
+        result["hands"] = self.now["hands played"]
         result["seconds"] = round(time.time() - started, 1)
         result["ended"] = time.time()
         return result
@@ -322,6 +361,8 @@ class Player:
             self.totals["games"] += 1
             self.totals["wins"] += result["outcome"] == "won"
             self.totals["divergences"] += result["outcome"] == "divergence"
+            if "ante" in result:
+                self.antes.append(result["ante"])
             self.out.mkdir(parents=True, exist_ok=True)
             with (self.out / "games.jsonl").open("a") as f:
                 f.write(json.dumps(result) + "\n")

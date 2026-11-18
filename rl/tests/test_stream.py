@@ -45,6 +45,53 @@ def test_whole_games_are_recorded(tmp_path):
     assert now["game"]["seed"] == SEEDS[2] and now["game"]["last"]
 
 
+def test_hands_and_the_mean_ante_are_counted_for_the_overlay(tmp_path):
+    p = player(tmp_path)
+    p.run(2)
+    games = [json.loads(line) for line in (tmp_path / "games.jsonl").read_text().splitlines()]
+    now = json.loads((tmp_path / "now.json").read_text())
+    assert all(g["hands"] > 0 for g in games)
+    assert now["hands"] == sum(g["hands"] for g in games)
+    assert now["game"]["hands played"] == games[-1]["hands"]
+    assert now["mean ante"] == round(sum(g["ante"] for g in games) / 2, 2)
+
+
+def test_the_deck_view_splits_each_card_into_to_draw_in_hand_and_spent(tmp_path):
+    p = player(tmp_path)
+    p.load()
+    p.adapter.start("BLUE", "WHITE", SEEDS[0])
+    fresh = stream.deck_view(p.adapter.game)
+    assert fresh["size"] == 52 and len(fresh["cards"]) == 52
+    assert all(c == {"n": 1, "draw": 1, "hand": 0, "debuff": 0} for c in fresh["cards"].values())
+    while not p.adapter.game.discard_pile:
+        p.move(p.pick(True, set()))
+    g = p.adapter.game
+    deck = stream.deck_view(g)
+    cells = deck["cards"].values()
+    assert deck["size"] == len(g.deck) + len(g.hand) + len(g.discard_pile) == 52
+    assert sum(c["draw"] for c in cells) == deck["to draw"] == len(g.deck)
+    assert sum(c["hand"] for c in cells) == len(g.hand)
+    assert sum(c["n"] - c["draw"] - c["hand"] for c in cells) == len(g.discard_pile)
+    assert {"SA", "H10", "DJ", "C2"} <= set(deck["cards"])
+
+
+def test_debuffed_cards_are_marked_in_the_deck_and_the_cards_weighed():
+    from types import SimpleNamespace
+
+    def card(front, rank, suit, debuff, key="c_base"):
+        return SimpleNamespace(front=front, rank=rank, suit=suit, key=key, debuff=debuff, face_down=False)
+
+    clubs = [card("C_K", "King", "Clubs", True), card("C_K", "King", "Clubs", False)]
+    game = SimpleNamespace(deck=[clubs[0], card("H_2", "2", "Hearts", False)], hand=[clubs[1]],
+                           discard_pile=[card("C_5", "5", "Clubs", True, key="m_stone")])
+    deck = stream.deck_view(game)
+    assert deck["cards"]["CK"] == {"n": 2, "draw": 1, "hand": 1, "debuff": 1}
+    assert deck["cards"]["H2"]["debuff"] == 0
+    assert stream.card_name(clubs[0]) == {"rank": "K", "suit": "♣", "debuff": True}
+    assert stream.card_name(clubs[1]) == {"rank": "K", "suit": "♣"}
+    assert stream.card_name(game.discard_pile[0]) == {"rank": "Stone", "debuff": True}
+
+
 def test_the_stream_plays_as_evaluation_does(tmp_path):
     """Same copy, same seeds: the stream's games end where evaluation's do (seeds where
     the live game's rules and the simulator's agree on every move)."""

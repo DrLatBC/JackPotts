@@ -1,11 +1,12 @@
-"""The stream overlay: a sidebar page for an OBS Browser Source showing what the model
-weighs before each move, its outlook, and the stream's record, read from the player's
-``now.json``.
+"""The stream overlay: a full-canvas page for an OBS Browser Source showing the stream
+title, what the model weighs before each move, and this run's and the stream's stats, read
+from the player's ``now.json``.
 
     .venv\\Scripts\\python.exe -m balatro_bot.overlay [--dir bot_log\\model_stream]
 
 ``balatro_bot.stream`` serves it on OVERLAY_PORT while a stream runs. In OBS, add a
-Browser Source at http://localhost:12341/ sized 480x1080.
+Browser Source at http://localhost:12341/ sized 1920x1080 over the whole canvas, above the game
+capture (fitted top left in 1440x810): the page is see-through there.
 """
 
 from __future__ import annotations

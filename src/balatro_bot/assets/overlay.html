@@ -2,146 +2,209 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=480">
+<meta name="viewport" content="width=1920">
 <title>JackPotts Overlay</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Fraunces:opsz,wght,SOFT@9..144,400..900,0..100&display=swap" rel="stylesheet">
 <style>
 :root {
-  --ink: #121731;
-  --panel: #1b2245;
-  --line: #2c3566;
-  --chips: #3d8fe0;
-  --mult: #e5484d;
-  --gold: #f2b33d;
-  --text: #eef0f8;
-  --dim: #8c93b8;
-  --card: #f4f1e8;
-  --card-ink: #1d2140;
+  /* A card room around the game's green felt: oxblood frame, card-stock ivory, and jade
+     for what the model is leaning toward or holding. */
+  --frame: #1e0b0f;
+  --panel: #2d1116;
+  --line: #4b2028;
+  --text: #f1e7d3;
+  --dim: #b49a93;
+  --lean: #4fbf98;
+  --lean-soft: #a8737a;
+  --suit-red: #e47b84;
+  --card: #f1e7d3;
+  --card-ink: #2a1115;
+  --card-red: #b3202f;
+  --shadow: #120609;
 }
 * { box-sizing: border-box; margin: 0; }
-html, body { width: 480px; height: 1080px; overflow: hidden; }
+/* The whole 1920x1080 canvas: see-through where the game sits (top left, 1440x810). */
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: transparent; }
 body {
-  background: var(--ink);
+  position: relative;
   color: var(--text);
   font-family: "Archivo", system-ui, sans-serif;
-  font-variation-settings: "wdth" 100;
   font-size: 20px;
   line-height: 1.3;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 24px 22px;
 }
-section { background: var(--panel); border-radius: 14px; padding: 18px 20px; }
+.num, .serif {
+  font-family: "Fraunces", Georgia, serif;
+  font-variation-settings: "SOFT" 60;
+  font-variant-numeric: lining-nums tabular-nums;
+}
 .quiet { color: var(--dim); }
-.narrow { font-stretch: 75%; font-variation-settings: "wdth" 75; }
 
-/* Outlook */
-#outlook-row { display: flex; align-items: flex-end; justify-content: space-between; }
-#outlook-label { font-size: 22px; font-weight: 600; }
-#outlook-num {
-  font-size: 76px; line-height: 0.9; font-weight: 900;
-  font-variation-settings: "wdth" 125; color: var(--gold);
-  font-variant-numeric: tabular-nums;
+#side {
+  position: absolute; top: 0; right: 0; width: 480px; height: 1080px; background: var(--frame);
+  display: flex; flex-direction: column; gap: 18px; padding: 28px 22px 22px;
 }
-#outlook-note { font-size: 15px; margin-top: 4px; }
-#graph { display: block; width: 100%; height: 150px; margin-top: 14px; }
-#where { display: flex; justify-content: space-between; margin-top: 10px; font-size: 18px; }
-#where b { font-weight: 700; }
+#strip {
+  position: absolute; left: 0; bottom: 0; width: 1440px; height: 270px; background: var(--frame);
+  display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 18px; padding: 20px 0 22px 22px;
+}
+section { background: var(--panel); border-radius: 12px; padding: 18px 20px; }
+h2 { font-size: 18px; font-weight: 600; color: var(--dim); }
+
+/* Title */
+#stream-title {
+  font-family: "Fraunces", Georgia, serif; font-variation-settings: "SOFT" 100, "opsz" 144;
+  font-size: 52px; line-height: 0.92; font-weight: 900; letter-spacing: -0.01em;
+  text-shadow: 0 3px 0 var(--shadow); text-wrap: balance;
+}
+.num small { margin-left: 6px; }
+#model-line { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; row-gap: 6px; margin-top: 12px; font-size: 16px; }
+#gained.on { padding: 2px 10px; border-radius: 6px; background: var(--lean); color: var(--frame); font-weight: 700; }
 
 /* Considering */
-#considering { flex: 1; display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow: hidden; }
-#options { display: flex; flex-direction: column; gap: 18px; }
-#considering h2 { font-size: 22px; font-weight: 600; }
+#considering { flex: 1; display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow: hidden; }
+#options { display: flex; flex-direction: column; gap: 20px; }
 .option { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; row-gap: 8px; align-items: baseline; }
 .option .what { font-weight: 700; font-size: 24px; }
-.option .what .hand { color: var(--chips); }
-.option .pct { font-weight: 800; font-size: 24px; font-variant-numeric: tabular-nums; }
+.option .what .hand { color: var(--lean); }
+.option .pct { font-size: 26px; font-weight: 700; }
 .option .bar { grid-column: 1 / -1; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
-.option .bar i { display: block; height: 100%; border-radius: 4px; background: var(--chips); }
-.option .sure { grid-column: 1 / -1; font-size: 15px; }
-.option.lead .what { font-size: 30px; }
-.option.lead .pct { font-size: 30px; color: var(--gold); }
+.option .bar i { display: block; height: 100%; border-radius: 4px; background: var(--lean-soft); }
+.option .sure { grid-column: 1 / -1; font-size: 16px; }
+.option.lead .what { font-size: 32px; line-height: 1.1; }
+.option.lead .pct { font-size: 34px; color: var(--lean); }
 .option.lead .bar { height: 12px; border-radius: 6px; }
-.option.lead .bar i { background: var(--gold); }
-.option.alt { opacity: .8; }
+.option.lead .bar i { background: var(--lean); }
+.option.alt .what { color: var(--dim); }
+.option.alt .pct { color: var(--dim); }
 
-.fan { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.fan { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; }
 .card {
-  width: 56px; height: 74px; border-radius: 8px; background: var(--card); color: var(--card-ink);
+  width: 56px; height: 76px; border-radius: 7px; background: var(--card); color: var(--card-ink);
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  font-weight: 800; box-shadow: 0 3px 0 #0a0d20;
+  box-shadow: 0 3px 0 var(--shadow);
 }
-.card .r { font-size: 26px; line-height: 1; font-variation-settings: "wdth" 80; }
-.card .s { font-size: 24px; line-height: 1.1; }
-.card.red { color: #c8313a; }
+.card .r { font-family: "Fraunces", Georgia, serif; font-size: 28px; line-height: 1; font-weight: 800; }
+.card .s { font-size: 22px; line-height: 1.1; }
+.card.red { color: var(--card-red); }
 .card.blank { background: var(--line); color: var(--dim); box-shadow: none; }
-.card.word .r { font-size: 14px; font-variation-settings: "wdth" 62; }
-.alt .fan .card { width: 34px; height: 46px; border-radius: 6px; box-shadow: 0 2px 0 #0a0d20; }
-.alt .fan .card .r { font-size: 16px; }
+.card.word { padding: 0 4px; }
+.card.word .r { font-family: "Archivo", sans-serif; font-size: 13px; font-weight: 700; text-align: center; font-variation-settings: "wdth" 70; }
+.alt .fan .card { width: 36px; height: 48px; border-radius: 5px; box-shadow: 0 2px 0 var(--shadow); }
+.alt .fan .card .r { font-size: 18px; }
 .alt .fan .card .s { font-size: 14px; }
 .alt .fan .card.word .r { font-size: 10px; }
 .item {
-  grid-column: 1 / -1; justify-self: start; padding: 6px 12px; border-radius: 8px;
-  background: var(--line); font-weight: 700; font-size: 20px;
+  grid-column: 1 / -1; justify-self: start; padding: 6px 14px; border-radius: 7px;
+  background: var(--card); color: var(--card-ink); font-weight: 700; font-size: 22px;
+  box-shadow: 0 3px 0 var(--shadow);
 }
-.lead .item { font-size: 24px; padding: 8px 14px; }
+#none-close { font-size: 18px; }
 
-/* Model and record */
-#model-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-#run { font-weight: 700; font-size: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#update { font-size: 18px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-#gained { font-size: 16px; margin-top: 4px; color: var(--dim); }
-#gained.on {
-  justify-self: start; display: inline-block; padding: 2px 10px; border-radius: 6px;
-  background: var(--gold); color: var(--ink); font-weight: 800;
-}
-#record { display: flex; align-items: baseline; gap: 14px; margin-top: 14px; }
-#record .big { font-size: 34px; font-weight: 900; font-variation-settings: "wdth" 115; font-variant-numeric: tabular-nums; }
-#recent { display: flex; gap: 6px; margin-top: 12px; }
+/* This stream */
+#stream { display: flex; flex-direction: column; }
+.row { display: flex; justify-content: space-between; align-items: baseline; padding: 9px 0; border-top: 1px solid var(--line); }
+h2 + .row { border-top: 0; margin-top: 6px; }
+.row .num { font-size: 30px; font-weight: 700; line-height: 1; }
+.row .num small { font-family: "Archivo", sans-serif; font-size: 16px; font-weight: 600; color: var(--dim); }
+#recent { display: flex; gap: 6px; margin-top: 8px; }
 .game {
-  width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
-  font-weight: 800; font-size: 16px; background: var(--line); color: var(--dim);
+  width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
+  font-family: "Fraunces", Georgia, serif; font-weight: 800; font-size: 16px;
 }
-.game.won { background: var(--gold); color: var(--ink); }
-.game.lost { background: var(--mult); color: var(--text); }
+.game.won { background: var(--lean); color: var(--frame); }
+.game.lost { background: var(--line); color: var(--dim); }
+.game.other { box-shadow: inset 0 0 0 2px var(--line); color: var(--dim); }
+
+/* This run */
+#run-now { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto auto; gap: 14px 20px; align-content: start; }
+.figure .what { display: block; font-size: 16px; color: var(--dim); }
+.figure .num { display: block; font-size: 48px; line-height: 1; font-weight: 700; margin-top: 2px; }
+.figure .num small { font-family: "Archivo", sans-serif; font-size: 18px; font-weight: 600; color: var(--dim); }
+#blind-figure { grid-column: 1 / -1; }
+#blind-name { color: var(--text); font-weight: 700; }
+
+/* Deck */
+#deck { padding-top: 14px; padding-bottom: 16px; }
+#deck-head { display: flex; align-items: baseline; gap: 14px; height: 30px; }
+#deck-size { font-size: 26px; font-weight: 700; }
+#deck-left { font-size: 18px; }
+#deck-marks { margin-left: auto; display: flex; gap: 8px; }
+.mark { font-size: 16px; padding: 2px 10px; border-radius: 6px; background: var(--line); color: var(--text); }
+.mark b { font-family: "Fraunces", Georgia, serif; font-weight: 800; margin-right: 4px; }
+#deck-grid { display: grid; grid-template-columns: 26px repeat(13, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.suit { display: grid; place-items: center; font-size: 24px; line-height: 1; color: var(--text); }
+.suit.red { color: var(--suit-red); }
+.dc {
+  position: relative; height: 33px; border-radius: 6px; display: grid; place-items: center;
+  background: var(--card); color: var(--card-ink); box-shadow: 0 2px 0 var(--shadow);
+  font-family: "Fraunces", Georgia, serif; font-weight: 800; font-size: 20px;
+}
+.dc.red { color: var(--card-red); }
+.dc.hand { box-shadow: 0 0 0 3px var(--lean); }
+.dc.spent { background: var(--line); color: var(--dim); box-shadow: none; }
+.dc.none { background: transparent; color: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.dc i { position: absolute; top: 2px; right: 5px; font-family: "Archivo", sans-serif; font-style: normal; font-weight: 700; font-size: 11px; line-height: 1; }
+
+/* Debuffed by the boss: a red cross over the card, as the game marks it. */
+.card, .dc { position: relative; }
+.debuff { --x: var(--card-red); }
+.debuff .r { opacity: .45; }
+.dc.spent.debuff { --x: var(--suit-red); }
+.debuff::after {
+  content: ""; position: absolute; inset: 4px calc(50% - 14px); pointer-events: none;
+  background:
+    linear-gradient(to top right, transparent calc(50% - 2px), var(--x) calc(50% - 2px), var(--x) calc(50% + 2px), transparent calc(50% + 2px)),
+    linear-gradient(to bottom right, transparent calc(50% - 2px), var(--x) calc(50% - 2px), var(--x) calc(50% + 2px), transparent calc(50% + 2px));
+}
+.card.debuff::after { inset: 10px 6px; }
+.alt .card.debuff::after { inset: 6px 4px; }
 
 #waiting { flex: 1; display: none; align-items: center; justify-content: center; text-align: center; font-size: 24px; }
-body.idle #outlook, body.idle #considering, body.idle #model { display: none; }
+body.idle #strip > section, body.idle #considering, body.idle #stream { display: none; }
 body.idle #waiting { display: flex; }
-
 </style>
 </head>
 <body class="idle">
-<div id="waiting" class="quiet">Waiting for the stream to start</div>
+<div id="side">
+  <header>
+    <div id="stream-title">JackPotts Learns Balatro</div>
+    <div id="model-line"><span id="update" class="quiet"></span><span id="gained" class="quiet"></span></div>
+  </header>
+  <div id="waiting" class="quiet">Waiting for the stream to start</div>
+  <section id="considering">
+    <h2>Considering</h2>
+    <div id="options"></div>
+  </section>
+  <section id="stream">
+    <h2>This stream</h2>
+    <div class="row"><span>Runs won</span><span class="num" id="won">–</span></div>
+    <div class="row"><span>Average ante</span><span class="num" id="mean-ante">–</span></div>
+    <div class="row"><span>Hands played</span><span class="num" id="hands-total">–</span></div>
+    <div id="recent"></div>
+  </section>
+</div>
 
-<section id="outlook">
-  <div id="outlook-row">
-    <div id="outlook-label">Outlook</div>
-    <div id="outlook-num">–</div>
-  </div>
-  <div id="outlook-note" class="quiet">Bosses it expects to beat from here, plus 8 for a win</div>
-  <svg id="graph" viewBox="0 0 436 150" preserveAspectRatio="none" aria-label="Outlook over this run"></svg>
-  <div id="where"><span id="ante"></span><span id="blind" class="quiet"></span></div>
-</section>
-
-<section id="considering">
-  <h2>Considering</h2>
-  <div id="options"></div>
-</section>
-
-<section id="model">
-  <div id="model-line"><span id="run"></span><span id="update" class="quiet"></span></div>
-  <div id="gained"></div>
-  <div id="record"><span class="big" id="wins"></span><span class="quiet" id="games"></span></div>
-  <div id="recent"></div>
-</section>
+<div id="strip">
+  <section id="run-now">
+    <div class="figure"><span class="what">Ante</span><span class="num" id="ante">–</span></div>
+    <div class="figure"><span class="what">Hands played</span><span class="num" id="hands-run">–</span></div>
+    <div class="figure" id="blind-figure"><span class="what" id="blind-name"></span><span class="num" id="blind"></span></div>
+  </section>
+  <section id="deck">
+    <div id="deck-head">
+      <span class="num" id="deck-size"></span><span class="quiet" id="deck-left"></span>
+      <span id="deck-marks"></span>
+    </div>
+    <div id="deck-grid"></div>
+  </section>
+</div>
 
 <script>
-const MAX_OUTLOOK = 16;
 const SHOWN = 0.01;
+const DECK_SUITS = [["S", "♠"], ["H", "♥"], ["C", "♣"], ["D", "♦"]];
+const DECK_RANKS = ["A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3", "2"];
 const LEARNED_FOR = 20000;
 const $ = (id) => document.getElementById(id);
 let seenUpdates = null, learnedUntil = 0, learnedText = "";
@@ -158,9 +221,10 @@ function cardTile(c) {
     const t = el("div", "card word"); t.append(el("span", "r", c.name)); return t;
   }
   if (c.rank === "?") { const t = el("div", "card blank"); t.append(el("span", "r", "?")); return t; }
-  if (c.rank === "Stone") { const t = el("div", "card word"); t.append(el("span", "r", "Stone")); return t; }
+  const off = c.debuff ? " debuff" : "";
+  if (c.rank === "Stone") { const t = el("div", "card word" + off); t.append(el("span", "r", "Stone")); return t; }
   const red = c.suit === "♥" || c.suit === "♦";
-  const t = el("div", "card" + (red ? " red" : ""));
+  const t = el("div", "card" + (red ? " red" : "") + off);
   t.append(el("span", "r", c.rank), el("span", "s", c.suit));
   return t;
 }
@@ -176,7 +240,7 @@ function optionRow(o, lead) {
   if (o.item && !lead) what.append(document.createTextNode(" " + itemName(o.item)));
   else if (o.hand) { what.append(document.createTextNode(" ")); what.append(el("span", "hand", o.hand)); }
   else if (o.cards && !o.item) what.append(document.createTextNode(` ${o.cards.length} card${o.cards.length > 1 ? "s" : ""}`));
-  row.append(what, el("div", "pct", Math.round(o.p * 100) + "%"));
+  row.append(what, el("div", "pct num", Math.round(o.p * 100) + "%"));
   const bar = el("div", "bar"), fill = el("i");
   fill.style.width = (o.p * 100).toFixed(1) + "%";
   bar.append(fill); row.append(bar);
@@ -204,32 +268,40 @@ function drawOptions(list) {
   if (shown.length === 1) box.append(el("div", "quiet", "No close second"));
 }
 
-function drawGraph(history, now) {
-  const svg = $("graph");
-  const w = 436, h = 150, pad = 6;
-  const pts = (history || []).concat(now === undefined ? [] : [now]);
-  const y = (v) => h - pad - (Math.max(0, Math.min(MAX_OUTLOOK, v)) / MAX_OUTLOOK) * (h - 2 * pad);
-  let grid = "";
-  for (const v of [0, 8, 16]) {
-    grid += `<line x1="0" x2="${w}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+let lastDeck = "";
+function drawDeck(deck) {
+  const key = JSON.stringify(deck || null);
+  if (key === lastDeck) return;
+  lastDeck = key;
+  const grid = $("deck-grid"), marks = $("deck-marks");
+  grid.replaceChildren();
+  marks.replaceChildren();
+  if (!deck) { $("deck-size").textContent = ""; $("deck-left").textContent = ""; return; }
+  for (const [letter, symbol] of DECK_SUITS) {
+    const red = letter === "H" || letter === "D";
+    grid.append(el("div", "suit" + (red ? " red" : ""), symbol));
+    for (const rank of DECK_RANKS) {
+      const c = deck.cards[letter + rank] || { n: 0, draw: 0, hand: 0 };
+      const state = c.n === 0 ? "none" : c.hand > 0 ? "hand" : c.draw > 0 ? "" : "spent";
+      const tile = el("div", "dc" + (red ? " red" : "") + (state ? " " + state : "") + (c.debuff ? " debuff" : ""));
+      tile.append(el("span", "r", rank));
+      if (c.n > 1) tile.append(el("i", "", c.n));
+      grid.append(tile);
+    }
   }
-  if (pts.length < 2) { svg.innerHTML = grid; return; }
-  const x = (i) => (i / (pts.length - 1)) * w;
-  const line = pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-  const area = `0,${h} ${line} ${w},${h}`;
-  svg.innerHTML = grid +
-    `<polygon points="${area}" fill="var(--gold)" opacity="0.14"/>` +
-    `<polyline points="${line}" fill="none" stroke="var(--gold)" stroke-width="3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+  $("deck-size").textContent = `${deck.size} cards`;
+  $("deck-left").textContent = deck["to draw"] < deck.size ? `${deck["to draw"]} left to draw` : "";
+  for (const [name, n] of Object.entries(deck.enhanced || {})) {
+    const m = el("span", "mark");
+    m.append(el("b", "", n), document.createTextNode(name));
+    marks.append(m);
+  }
 }
 
 function drawModel(d) {
-  const parts = (d.model || "").split(/[\\/]/);
-  const stem = (parts[parts.length - 1] || "").replace(/\.pt$/, "");
-  const name = /^(latest|u\d+)$/.test(stem) ? parts[parts.length - 2] : stem;
-  $("run").textContent = name;
   if (d.updates !== null && d.updates !== undefined) {
     const gained = d["first updates"] !== null ? d.updates - d["first updates"] : 0;
-    $("update").textContent = `update ${d.updates.toLocaleString()}`;
+    $("update").textContent = `Update ${d.updates.toLocaleString()}`;
     if (seenUpdates !== null && d.updates > seenUpdates) {
       learnedUntil = Date.now() + LEARNED_FOR;
       learnedText = `New save loaded, ${(d.updates - seenUpdates).toLocaleString()} more updates`;
@@ -238,16 +310,17 @@ function drawModel(d) {
     const fresh = Date.now() < learnedUntil;
     $("gained").classList.toggle("on", fresh);
     $("gained").textContent = fresh ? learnedText
-      : gained > 0 ? `${gained.toLocaleString()} updates of learning this stream` : "";
+      : gained > 0 ? `${gained.toLocaleString()} learned on stream` : "";
   } else {
     $("update").textContent = d.checkpoint || "";
   }
-  $("wins").textContent = `${d.wins} won`;
-  $("games").textContent = `of ${d.games} game${d.games === 1 ? "" : "s"} this stream`;
+  $("won").innerHTML = `${d.wins.toLocaleString()}<small> of ${d.games.toLocaleString()}</small>`;
+  $("mean-ante").textContent = d["mean ante"] === null || d["mean ante"] === undefined ? "–" : d["mean ante"].toFixed(1);
+  $("hands-total").textContent = (d.hands ?? 0).toLocaleString();
   const recent = $("recent");
   recent.replaceChildren();
   (d.recent || []).filter((r) => r.outcome !== "stopped").slice().reverse().forEach((r) => {
-    const cls = r.outcome === "won" ? "won" : r.outcome === "lost" ? "lost" : "";
+    const cls = r.outcome === "won" ? "won" : r.outcome === "lost" ? "lost" : "other";
     const dot = el("div", "game " + cls, r.outcome === "won" ? "W" : (r.ante ?? "–"));
     dot.title = r.outcome;
     recent.append(dot);
@@ -257,10 +330,11 @@ function drawModel(d) {
 function draw(d) {
   const g = d.game || {};
   document.body.classList.remove("idle");
-  $("outlook-num").textContent = g.outlook === undefined ? "–" : g.outlook.toFixed(1);
-  drawGraph(g.history, g.outlook);
-  $("ante").innerHTML = g.ante ? `Ante <b>${g.ante}</b> of 8` : "";
-  $("blind").textContent = g["blind title"] ? `${g["blind title"]}  ${Number(g.blind).toLocaleString()} to beat` : "";
+  $("ante").innerHTML = g.ante ? `${g.ante}<small> of 8</small>` : "–";
+  $("hands-run").textContent = g["hands played"] ?? "–";
+  $("blind-name").textContent = g["blind title"] || "";
+  $("blind").innerHTML = g["blind title"] ? `${Number(g.blind).toLocaleString()}<small> to beat</small>` : "";
+  drawDeck(g.deck);
   drawOptions(g.considering);
   drawModel(d);
 }
