@@ -23,14 +23,11 @@ from balatro_bot.constants import (
 from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.consumable_policy import score_consumable, evaluate_hex
 from balatro_bot.domain.policy.exploration import Choice, explorer
+from balatro_bot.domain.policy.roster_order import describe_order, roster_order
 from balatro_bot.domain.policy.shop_valuation import (
-    _KEY_TO_CATEGORY, _copy_target_score, evaluate_joker_value,
+    _KEY_TO_CATEGORY, evaluate_joker_value,
 )
 from balatro_bot.joker_effects.parsers import _ab_chips, _ab_mult, _ab_xmult
-from balatro_bot.joker_effects.scoring_phase import (
-    get_joker_phase, get_joker_edition_phase,
-    PHASE_NOOP, PHASE_CHIPS, PHASE_MULT, PHASE_XMULT,
-)
 from balatro_bot.scaling import SELL_PROTECTED, check_anti_synergy
 from balatro_bot.strategy import card_lean, compute_strategy
 
@@ -250,126 +247,6 @@ class ActionPlan:
     net_value: float    # EV improvement minus cost opportunity
     description: str
     item: dict | None = None  # the shop card the plan acquires, if any
-
-
-# ---------------------------------------------------------------------------
-# Reorder computation (same ordering as ReorderJokersForScoring)
-# ---------------------------------------------------------------------------
-
-def _pick_copy_target_pos(
-    desired_order: list[int], owned: list[dict],
-) -> int | None:
-    """Return the position in desired_order of the best copy target, or None.
-
-    Skips Blueprint and Brainstorm themselves — they're not in
-    BLUEPRINT_INCOMPATIBLE but copying a copier is degenerate, so guard
-    explicitly.
-    """
-    best_pos: int | None = None
-    best_score = 0.0
-    for pos, idx in enumerate(desired_order):
-        key = joker_key(owned[idx])
-        if key in ("j_blueprint", "j_brainstorm"):
-            continue
-        score = _copy_target_score(owned[idx])
-        if score > best_score:
-            best_score = score
-            best_pos = pos
-    return best_pos
-
-
-def _compute_optimal_order(
-    owned: list[dict],
-    fodder_idx: int | None = None,
-) -> list[int] | None:
-    """Compute optimal joker order. Returns new index list or None if already optimal.
-
-    If fodder_idx is provided, that joker is positioned right of Ceremonial Dagger.
-    """
-    if len(owned) < 2:
-        return None
-
-    ceremonial_idx: int | None = None
-    blueprint_idx: int | None = None
-    brainstorm_idx: int | None = None
-    noop_fodder: list[int] = []
-
-    for i, j in enumerate(owned):
-        key = joker_key(j)
-        phase = get_joker_phase(key)
-        if key == "j_ceremonial":
-            ceremonial_idx = i
-        elif key == "j_blueprint":
-            blueprint_idx = i
-        elif key == "j_brainstorm":
-            brainstorm_idx = i
-        if phase == PHASE_NOOP:
-            noop_fodder.append(i)
-
-    # If a specific fodder_idx is requested, add it to fodder candidates
-    # even if it's not PHASE_NOOP (it's dead weight identified by live EV)
-    if fodder_idx is not None and fodder_idx not in noop_fodder:
-        noop_fodder.append(fodder_idx)
-
-    excluded = {blueprint_idx, brainstorm_idx} - {None}
-    sortable = []
-    for i, j in enumerate(owned):
-        if i in excluded:
-            continue
-        key = joker_key(j)
-        phase = get_joker_phase(key)
-        ed_phase = get_joker_edition_phase(j)
-        sortable.append((i, phase, ed_phase))
-
-    sortable.sort(key=lambda x: (x[1], x[2], x[0]))
-    desired_order = [i for i, _, _ in sortable]
-
-    # Ceremonial Dagger constraint
-    if ceremonial_idx is not None:
-        available_fodder = [f for f in noop_fodder if f != ceremonial_idx
-                            and f not in excluded]
-        if fodder_idx is not None and fodder_idx not in available_fodder and fodder_idx != ceremonial_idx:
-            available_fodder.append(fodder_idx)
-
-        desired_order = [i for i in desired_order if i != ceremonial_idx]
-        if available_fodder:
-            # Prefer the explicitly requested fodder, else first available
-            if fodder_idx is not None and fodder_idx in available_fodder:
-                sacrifice_idx = fodder_idx
-            else:
-                available_fodder.sort(key=lambda i: joker_key(owned[i]))
-                sacrifice_idx = available_fodder[0]
-            desired_order = [i for i in desired_order if i != sacrifice_idx]
-            insert_at = 0
-            for pos, idx in enumerate(desired_order):
-                if get_joker_phase(joker_key(owned[idx])) <= PHASE_MULT:
-                    insert_at = pos + 1
-            desired_order.insert(insert_at, ceremonial_idx)
-            desired_order.insert(insert_at + 1, sacrifice_idx)
-        else:
-            desired_order.append(ceremonial_idx)
-
-    # Blueprint: left of best copy target (highest expected xmult/mult,
-    # penalized for conditional triggers), skipping copy-incompatible jokers.
-    if blueprint_idx is not None:
-        best_copy_pos = _pick_copy_target_pos(desired_order, owned)
-        if best_copy_pos is not None:
-            desired_order.insert(best_copy_pos, blueprint_idx)
-        else:
-            desired_order.append(blueprint_idx)
-
-    # Brainstorm: copies slot 0. Put the best copy target at slot 0, then
-    # Brainstorm at the end.
-    if brainstorm_idx is not None:
-        desired_order.append(brainstorm_idx)
-        target_pos = _pick_copy_target_pos(desired_order, owned)
-        if target_pos is not None and target_pos != 0:
-            target_idx = desired_order.pop(target_pos)
-            desired_order.insert(0, target_idx)
-
-    if desired_order == list(range(len(owned))):
-        return None
-    return desired_order
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +598,6 @@ class ShopEvaluator:
         self.pending_plan: list[Action] | None = None
         self._pending_sell_keys: dict[int, str] = {}  # idx → expected joker key
         self._pending_buy_key: str | None = None  # shop card a pending BuyCard expects
-        self._last_order: list[int] | None = None
         self._rerolls_this_shop: int = 0
         self._last_round: int = -1
         self.slots_full: bool = False  # set by bot.py on "slots are full" API error
@@ -760,7 +636,6 @@ class ShopEvaluator:
             self.slots_full = False
             self.pending_plan = None
             self._pending_sell_keys = {}
-            self._last_order = None
 
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         """Main entry point — called once per shop tick."""
@@ -968,59 +843,39 @@ class ShopEvaluator:
                         ))
                     break  # only consider the single weakest
 
-        # 3. Dagger fodder positioning (no sell needed — just reorder)
-        # Dagger only eats ONE joker (the one to its right) at blind select, so
-        # emit at most one plan — picking the best fodder. One plan per
-        # eligible fodder ping-pongs between candidates with different target
-        # orders (each passes the _last_order check indefinitely).
-        dagger_owned = any(joker_key(j) == "j_ceremonial" for j in owned)
-        if dagger_owned and roster:
+        # 3. Roster order. Blind select comes before the next reorder, so
+        # Ceremonial Dagger sits left of the joker it should eat, if any.
+        fodder: JokerScore | None = None
+        dagger_idx = next((i for i, j in enumerate(owned) if joker_key(j) == "j_ceremonial"), None)
+        if dagger_idx is not None and roster:
             fodder_candidates = [
                 r for r in roster
                 if r.key != "j_ceremonial" and r.ev_delta < 1.0 and r.fodder_mult > 0
             ]
             if fodder_candidates:
-                best = max(fodder_candidates, key=lambda r: (r.fodder_mult, -r.index))
-                # Positioning is done when the joker right of Dagger feeds it as much as
-                # the best one would. Moving a tied joker there only pushes this one to a
-                # lower slot, where it wins the tie next tick and the two swap forever.
-                dagger_idx = next(i for i, j in enumerate(owned) if joker_key(j) == "j_ceremonial")
-                already_positioned = any(
-                    r.index == dagger_idx + 1 and r.fodder_mult >= best.fodder_mult
-                    for r in fodder_candidates
+                fodder = max(fodder_candidates, key=lambda r: (r.fodder_mult, -r.index))
+                # A tied joker already right of Dagger stays the fodder. Swapping in
+                # the other only moves this one to a lower index, where it wins the
+                # tie next tick and the two trade places forever.
+                fodder = next(
+                    (r for r in fodder_candidates
+                     if r.index == dagger_idx + 1 and r.fodder_mult >= fodder.fodder_mult),
+                    fodder,
                 )
-                if not already_positioned:
-                    new_order = _compute_optimal_order(owned, fodder_idx=best.index)
-                    if new_order is not None and new_order != self._last_order:
-                        candidates.append(ActionPlan(
-                            steps=[RearrangeJokers(order=new_order,
-                                                   reason=f"feed {best.label} to Dagger (+{best.fodder_mult:.0f} mult)")],
-                            net_value=best.fodder_mult * budget.scoring_aggression,
-                            description=f"feed {best.label} to Dagger",
-                        ))
-
-        # 4. General reorder (scoring optimization)
-        # Skip whenever a Dagger+fodder pairing exists on the roster, even if
-        # no feed plan is live this tick. After a feed the fodder sits right of
-        # Dagger and the plan goes silent (new_order == _last_order), but a
-        # scoring reorder would shuffle the fodder back left of Dagger, which
-        # re-triggers the feed plan next tick — infinite loop.
-        has_dagger_fodder = dagger_owned and any(
-            r.key != "j_ceremonial" and r.ev_delta < 1.0 and r.fodder_mult > 0
-            for r in roster
-        )
-        if owned and not has_dagger_fodder:
-            new_order = _compute_optimal_order(owned)
-            if new_order is not None and new_order != self._last_order:
-                phase_names = {PHASE_NOOP: "noop", PHASE_CHIPS: "+c", PHASE_MULT: "+m", PHASE_XMULT: "xm"}
-                order_desc = " ".join(
-                    f"{owned[idx].get('label', '?')}({phase_names.get(get_joker_phase(joker_key(owned[idx])), '?')})"
-                    for idx in new_order
-                )
+        if owned:
+            new_order = roster_order(owned, fodder=fodder.index if fodder else None, blind_next=True)
+            if new_order != list(range(len(owned))):
+                feeds = fodder is not None and fodder.index != dagger_idx + 1
+                if feeds:
+                    reason = f"feed {fodder.label} to Dagger (+{fodder.fodder_mult:.0f} mult)"
+                    value = fodder.fodder_mult * budget.scoring_aggression
+                else:
+                    reason = f"scoring order: {describe_order(owned, new_order)}"
+                    value = 2.0  # moderate priority — order matters but isn't urgent
                 candidates.append(ActionPlan(
-                    steps=[RearrangeJokers(order=new_order, reason=f"scoring order: {order_desc}")],
-                    net_value=2.0,  # moderate priority — order matters but isn't urgent
-                    description="reorder for scoring",
+                    steps=[RearrangeJokers(order=new_order, reason=reason)],
+                    net_value=value,
+                    description=f"feed {fodder.label} to Dagger" if feeds else "reorder for scoring",
                 ))
 
         # 5. Buy consumables
@@ -1228,10 +1083,6 @@ class ShopEvaluator:
                     self._pending_sell_keys[step.index] = joker_key(owned[step.index])
 
         action = best.steps[0]
-
-        # Track reorder state to prevent cycles
-        if isinstance(action, RearrangeJokers):
-            self._last_order = action.order
 
         if isinstance(action, Reroll):
             self._rerolls_this_shop += 1

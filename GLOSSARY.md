@@ -60,6 +60,10 @@ _Avoid_: Deck type, synergy group
 The jokers the bot currently owns, in slot order.
 _Avoid_: Lineup, joker hand
 
+**Roster order**:
+The slot order the bot keeps its roster in: scoring jokers ordered +chips, then +mult, then xmult; Blueprint just left of its best copy target; Brainstorm last with a position-free target in the first slot; Ceremonial Dagger beside its fodder only when blind select comes next. The same order is used to play, to plan in the shop and to price jokers.
+_Avoid_: Scoring order, joker layout
+
 **Scaling joker**:
 A joker whose value grows from a repeatable trigger (playing, discarding, selling, rerolling, using a planet). The trigger defines how the bot can milk it.
 _Avoid_: Growth joker, stacking joker

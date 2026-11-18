@@ -29,16 +29,16 @@ from balatro_bot.domain.policy.scaling_projection import (
 from balatro_bot.domain.policy.boss_adjustment import (
     boss_multiplier, shop_blended_multiplier,
 )
+from balatro_bot.domain.policy.roster_order import copy_target_score, roster_order
 from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring import estimate
 from balatro_bot.domain.scoring.estimate import HandScorer, score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
-from balatro_bot.joker_effects.parsers import _ab_mult, _ab_xmult
 from balatro_bot.joker_effects.scoring_phase import (
-    PHASE_MULT, PHASE_XMULT, get_joker_phase, reorder_for_scoring,
+    PHASE_MULT, PHASE_XMULT,
 )
 from balatro_bot.scaling import (
-    BLUEPRINT_INCOMPATIBLE, CONDITIONAL_XMULT, SCALING_REGISTRY,
+    SCALING_REGISTRY,
 )
 from balatro_bot.strategy import (
     ARCHETYPE_REGISTRY,
@@ -1170,6 +1170,10 @@ def _scoring_delta(
     return _scoring_delta_legacy(ctx, hand_types)
 
 
+def _in_roster_order(jokers: list) -> list:
+    return [jokers[i] for i in roster_order(jokers)]
+
+
 def _scoring_delta_sampled(
     ctx: SimContext,
     hand_types: list[tuple[str, float]],
@@ -1202,33 +1206,14 @@ def _scoring_delta_sampled(
 
     baseline_jokers = [j for j in owned_jokers if j is not ctx.candidate]
 
-    def _place_candidate(base: list[dict]) -> list[dict]:
-        if not base:
-            return [candidate]
-        copyable = [
-            (i, j) for i, j in enumerate(base)
-            if joker_key(j) not in BLUEPRINT_INCOMPATIBLE
-            and joker_key(j) not in ("j_blueprint", "j_brainstorm")
-        ]
-        if not copyable:
-            return base + [candidate]
-        if candidate_key == "j_blueprint":
-            target_i, _ = copyable[-1]
-            return base[:target_i] + [candidate] + base[target_i:]
-        if candidate_key == "j_brainstorm":
-            target_i, target_j = copyable[0]
-            rest = [j for k, j in enumerate(base) if k != target_i]
-            return [target_j, candidate] + rest
-        return base + [candidate]
-
     # Ancient/Idol need a rank+suit pinned for their effect to fire at all —
     # model the bot playing to match the round's target.
     ancient_suit = _idol_context_suit(ctx) if "j_ancient" in candidate_keys else None
     idol_rank = _idol_context_rank(ctx) if "j_idol" in candidate_keys else None
     idol_suit = _idol_context_suit(ctx) if "j_idol" in candidate_keys else None
 
-    baseline_jokers = reorder_for_scoring(baseline_jokers)
-    with_jokers = reorder_for_scoring(_place_candidate(list(baseline_jokers)))
+    baseline_jokers = _in_roster_order(baseline_jokers)
+    with_jokers = _in_roster_order([*baseline_jokers, candidate])
     # Both lineups and their surroundings are fixed for every sample below.
     baseline_scorer, with_scorer = (
         HandScorer(
@@ -1339,31 +1324,6 @@ def _scoring_delta_legacy(
     candidate_key = ctx.candidate_key
     baseline_jokers = [j for j in owned_jokers if j is not ctx.candidate]
 
-    # Blueprint/Brainstorm only produce value when positioned to copy a
-    # compatible joker. Appending to the end (Blueprint) or leaving leftmost
-    # unchanged (Brainstorm) can yield a sim value of zero even when the
-    # candidate would be strong in practice. Place the copy joker adjacent to
-    # the best compatible target.
-    def _place_candidate(base: list[dict]) -> list[dict]:
-        if not base:
-            return [candidate]
-        copyable = [
-            (i, j) for i, j in enumerate(base)
-            if joker_key(j) not in BLUEPRINT_INCOMPATIBLE
-            and joker_key(j) not in ("j_blueprint", "j_brainstorm")
-        ]
-        if not copyable:
-            return base + [candidate]
-        if candidate_key == "j_blueprint":
-            target_i, _ = copyable[-1]  # rightmost compatible
-            return base[:target_i] + [candidate] + base[target_i:]
-        if candidate_key == "j_brainstorm":
-            target_i, target_j = copyable[0]  # leftmost compatible
-            # Ensure the target sits at index 0, Brainstorm right after.
-            rest = [j for k, j in enumerate(base) if k != target_i]
-            return [target_j, candidate] + rest
-        return base + [candidate]
-
     weighted_delta = 0.0
 
     # Contextual assumptions for round-variable per-card jokers during valuation:
@@ -1389,13 +1349,9 @@ def _scoring_delta_legacy(
             out.append(_make_card(c.value.rank, new_suit, enhancement=enh))
         return out
 
-    # Normalize joker order to match the live bot's
-    # ReorderJokersForScoring (chips→mult→xmult). Without this the sim scores
-    # in owned order and understates jokers that benefit from being placed
-    # rightmost (Hologram after chips/mult) or left of xmult (Blueprint).
-    # Joker order doesn't depend on hand type, so reorder once outside the loop.
-    baseline_jokers = reorder_for_scoring(baseline_jokers)
-    with_jokers = reorder_for_scoring(_place_candidate(list(baseline_jokers)))
+    # Score both rosters in the order the bot plays them.
+    baseline_jokers = _in_roster_order(baseline_jokers)
+    with_jokers = _in_roster_order([*baseline_jokers, candidate])
 
     samples = max(0, ctx.monte_carlo_samples)
 
@@ -1500,39 +1456,6 @@ _HAND_CONDITIONAL_XMULT = frozenset({
     "j_duo", "j_trio", "j_tribe", "j_family", "j_order",
 })
 
-# Discount for xmult jokers whose trigger is conditional on hand type —
-# copying Tribe at X2 is worth ~half the value of copying Cavendish at X2,
-# since the copier only fires when the trigger hand is played.
-_CONDITIONAL_XMULT_DISCOUNT = 0.5
-
-
-def _copy_target_score(j: dict) -> float:
-    """Score a joker as a Blueprint/Brainstorm copy target.
-
-    Higher = better target. PHASE_XMULT beats PHASE_MULT beats everything else.
-    Within PHASE_XMULT we rank by live parsed xmult (captures scaling like
-    Constellation X5.5 beating Cavendish X3.0), discounted for conditional
-    triggers that may not fire at scoring time.
-
-    Reads the joker's current value (live_values), so scaling jokers
-    contribute their *live* accumulated value, not a base estimate.
-    """
-    key = joker_key(j)
-    if key in BLUEPRINT_INCOMPATIBLE:
-        return -1.0
-    phase = get_joker_phase(key)
-    if phase == PHASE_XMULT:
-        xm = _ab_xmult(j, fallback=1.5)
-        if key in CONDITIONAL_XMULT:
-            xm *= _CONDITIONAL_XMULT_DISCOUNT
-        # Scale into a tier above PHASE_MULT scoring; +100 keeps any xmult
-        # target ranked above even huge flat-mult jokers.
-        return 100.0 + xm
-    if phase == PHASE_MULT:
-        return _ab_mult(j, fallback=0.0)
-    return 0.0
-
-
 def _best_copy_target_value(owned_jokers: list[dict]) -> float:
     """Return the raw xmult-equivalent of the current best copy target.
 
@@ -1545,7 +1468,7 @@ def _best_copy_target_value(owned_jokers: list[dict]) -> float:
         k = joker_key(j)
         if k in _COPY_JOKERS:
             continue
-        s = _copy_target_score(j)
+        s = copy_target_score(j)
         if s >= 100.0:
             # PHASE_XMULT tier: strip the +100 tier offset
             xm = s - 100.0
@@ -1658,7 +1581,7 @@ def _synergy_multiplier(
         live_target = _best_copy_target_value(owned_jokers)
         mult *= base + _copier_amplification(live_target)
     elif owned_keys & _COPY_JOKERS and candidate is not None:
-        cand_score = _copy_target_score(candidate)
+        cand_score = copy_target_score(candidate)
         # Strip tier offset for xmult, convert flat mult to xmult-equivalent
         if cand_score >= 100.0:
             cand_value = cand_score - 100.0

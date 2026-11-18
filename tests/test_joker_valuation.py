@@ -183,7 +183,7 @@ class TestSynergyMultiplier:
         """Blueprint should boost an xMult joker's value when buying it.
 
         The copier-amplification is live-data driven: candidate's
-        _copy_target_score determines the bonus. Any xmult joker produces
+        copy_target_score determines the bonus. Any xmult joker produces
         a bonus > 1.0 (scaled by its xmult value), chip jokers produce
         closer to 1.0.
         """

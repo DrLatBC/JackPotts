@@ -58,6 +58,7 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | `hand_sequencing.py` | Round-level plan: milk early, finisher on last hand |
 | `shop_evaluator.py` | Unified shop evaluator: scores roster, budgets, enumerates action plans |
 | `shop_valuation.py` | Joker valuation (scoring sim, synergy, context scaling, boss-aware) |
+| `roster_order.py` | Roster order for play, shop plans and valuation; copy-target score |
 | `shop.py` | Shop helpers: deck profile, economy constants |
 | `sim_context.py` | `SimContext`, `LifetimeState`, `LiveRunStats`, `BossBlindState` dataclasses |
 | `utility_value.py` | ROI-based valuation for economy / event-generator jokers |
@@ -90,7 +91,7 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | `context.py` | `ScoreContext` (chips/mult/xmult), retrigger logic, optional RNG |
 | `parsers.py` | Extracts chips/mult/xmult from joker effect text |
 | `per_card.py` | Per-scored-card effect model (Fibonacci, Photograph, Triboulet, Idol, Bloodstone) |
-| `scoring_phase.py` | Phase classification (chips/mult/xmult) + `reorder_for_scoring` |
+| `scoring_phase.py` | Phase classification (chips/mult/xmult), per-card xmult set |
 | `simple.py` / `complex.py` | Individual joker effect functions |
 
 ### Rules (`rules/`)
@@ -152,7 +153,7 @@ This replaces an older design with 11 siloed shop rules that couldn't trade off 
 
 Valuation runs in four layers:
 
-1. **Scoring delta.** `_scoring_delta` builds a synthetic hand against the deck's actual density, normalizes joker order via `reorder_for_scoring` (chips → mult → xmult, Blueprint / Brainstorm placed adjacent to a compatible target), and scores with vs. without the candidate. Stochastic jokers route through an MC sample loop with common random numbers for variance reduction.
+1. **Scoring delta.** `_scoring_delta` builds a synthetic hand against the deck's actual density, puts both rosters in roster order (`domain/policy/roster_order.py`, the order the bot plays), and scores with vs. without the candidate. Stochastic jokers route through an MC sample loop with common random numbers for variance reduction.
 2. **Synergy multiplier.** Amplification pairs (Pareidolia × face-card jokers, Blueprint × strong neighbors, etc.), hand-type coherence, archetype bonuses.
 3. **Context scaling.** Ante urgency, category diminishing returns.
 4. **Boss adjustment.** In-round uses the active boss; shop phase uses `shop_blended_multiplier` weighted by `BOSS_WEIGHT` across the upcoming pool.
