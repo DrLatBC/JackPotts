@@ -39,6 +39,9 @@ def launcher(tmp_path, monkeypatch):
     monkeypatch.setattr(stream, "kill_port_processes", lambda ports: 0)
     monkeypatch.setattr(stream, "ensure_isolated_profile", lambda port: str(tmp_path / "profile"))
     monkeypatch.setattr(stream, "graceful_kill", lambda proc: None)
+    monkeypatch.setattr(stream, "unlock_all", lambda profile_dir, love_path: None)
+    for path in ("love_path", "lovely_path", "balatrobot_path"):
+        monkeypatch.setitem(stream.cfg.__dict__, path, path)
     monkeypatch.setattr(stream.time, "sleep", lambda s: None)
     monkeypatch.setattr(stream.subprocess, "run", lambda *a, **k: None)
     procs = {}

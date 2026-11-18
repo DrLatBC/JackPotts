@@ -41,9 +41,6 @@ BOT_MODULE = "balatro_bot.cli"
 LOG_DIR = cfg.log_dir
 WINS_DIR = cfg.wins_dir
 
-LOVE_PATH = cfg.love_path
-LOVELY_PATH = cfg.lovely_path
-BALATROBOT = cfg.balatrobot_path
 _VENV_PYTHON = BASE_DIR / ".venv" / "Scripts" / "python.exe"
 # A worktree checkout has no .venv of its own; its bots run on the supervisor's interpreter.
 PYTHON = cfg.python_path or str(_VENV_PYTHON if _VENV_PYTHON.exists() else Path(sys.executable))
@@ -762,10 +759,10 @@ class Supervisor:
             slot.last_health = time.time()
             return
         cmd = [
-            BALATROBOT, "serve",
+            cfg.balatrobot_path, "serve",
             "--port", str(slot.port),
-            "--love-path", LOVE_PATH,
-            "--lovely-path", LOVELY_PATH,
+            "--love-path", cfg.love_path,
+            "--lovely-path", cfg.lovely_path,
         ]
         if not self.stream:
             cmd.extend(["--headless", "--fast"])

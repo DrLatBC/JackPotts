@@ -32,7 +32,7 @@ from pathlib import Path
 from balatro_bot import overlay
 from balatro_bot.files import replace_file
 from balatro_bot.supervisor import (
-    BALATROBOT, BASE_DIR, LOG_DIR, LOVE_PATH, LOVELY_PATH, ensure_isolated_profile, graceful_kill,
+    BASE_DIR, LOG_DIR, cfg, ensure_isolated_profile, graceful_kill,
     kill_port_processes, tie_children_to_supervisor,
 )
 
@@ -155,12 +155,12 @@ def run(args) -> int:
     kill_port_processes([args.port])
     env = os.environ.copy()
     env["APPDATA"] = ensure_isolated_profile(args.port)
-    unlock_all(Path(env["APPDATA"]) / "Balatro" / "1", LOVE_PATH)
+    unlock_all(Path(env["APPDATA"]) / "Balatro" / "1", cfg.love_path)
     flags = subprocess.CREATE_NO_WINDOW
     with open(GAME_LOG, "w", encoding="utf-8") as game_out:
         game = subprocess.Popen(
-            [BALATROBOT, "serve", "--port", str(args.port), "--love-path", LOVE_PATH,
-             "--lovely-path", LOVELY_PATH],
+            [cfg.balatrobot_path, "serve", "--port", str(args.port), "--love-path", cfg.love_path,
+             "--lovely-path", cfg.lovely_path],
             env=env, stdout=game_out, stderr=subprocess.STDOUT, creationflags=flags,
         )
     player = None

@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 
 
@@ -94,9 +95,6 @@ def _default_balatrobot_path() -> str:
 @dataclass
 class SupervisorConfig:
     base_port: int = 12346
-    love_path: str = field(default_factory=_default_love_path)
-    lovely_path: str = field(default_factory=_default_lovely_path)
-    balatrobot_path: str = field(default_factory=_default_balatrobot_path)
     python_path: str = ""
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent)
     log_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent / "bot_log")
@@ -109,3 +107,17 @@ class SupervisorConfig:
     server_stagger: float = 3.0
     bot_stagger: float = 2.0
     poll_interval: float = 5.0
+
+    # Resolved on first use, so importing a module that holds a config (and the
+    # simulator, which never starts the game) works on a machine without Balatro.
+    @cached_property
+    def love_path(self) -> str:
+        return _default_love_path()
+
+    @cached_property
+    def lovely_path(self) -> str:
+        return _default_lovely_path()
+
+    @cached_property
+    def balatrobot_path(self) -> str:
+        return _default_balatrobot_path()
