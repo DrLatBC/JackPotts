@@ -147,3 +147,17 @@ def test_main_marks_a_claimed_run_failed(files, monkeypatch):
     assert "no start.pt" in _main(monkeypatch, "--run", "fresh")
     w = written("fresh")
     assert (w["phase"], w["pid"]) == ("failed", os.getpid()) and "no start.pt" in w["error"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows priority classes")
+def test_a_run_really_drops_to_below_normal_priority():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    probe = ("import ctypes; from rl.ppo import below_normal_priority; below_normal_priority(); "
+             "k = ctypes.WinDLL('kernel32'); k.GetCurrentProcess.restype = ctypes.c_void_p; "
+             "k.GetPriorityClass.argtypes = (ctypes.c_void_p,); print(hex(k.GetPriorityClass(k.GetCurrentProcess())))")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True,
+                         cwd=Path(ppo.__file__).resolve().parents[1])
+    assert out.stdout.strip() == hex(ppo.BELOW_NORMAL) and not out.stderr

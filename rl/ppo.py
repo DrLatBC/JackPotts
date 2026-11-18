@@ -68,8 +68,12 @@ TRAINING = Path(__file__).resolve().parent.parent / "bot_log" / "training"
 def below_normal_priority() -> None:
     """Let everything else on the PC go first (Windows)."""
     if sys.platform == "win32":
-        kernel = ctypes.windll.kernel32
-        kernel.SetPriorityClass(kernel.GetCurrentProcess(), BELOW_NORMAL)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        # A process handle is 64-bit; ctypes' default int cuts it to 32 and Windows refuses it.
+        kernel.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel.SetPriorityClass.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        if not kernel.SetPriorityClass(kernel.GetCurrentProcess(), BELOW_NORMAL):
+            print(f"Could not lower priority: {ctypes.WinError(ctypes.get_last_error())}", file=sys.stderr)
 
 
 def scored(model: Policy, prep: Prepared, idx: np.ndarray):
