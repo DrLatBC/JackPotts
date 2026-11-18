@@ -285,6 +285,8 @@ class Player:
                 if factored is None:
                     result["outcome"] = "stuck"
                     break
+                if self.delay:  # the overlay shows what was weighed before the move lands
+                    time.sleep(self.delay)
                 try:
                     self.move(factored)
                 except IllegalActionError as e:  # the shadow refused it before the live game saw it
@@ -298,8 +300,6 @@ class Player:
                 free_run = free_run + 1 if factored.action_type in FREE_ACTION_TYPES else 0
                 self.now["steps"] += 1
                 self.now["history"].append(self.now["outlook"])
-                if self.delay:
-                    time.sleep(self.delay)
         except DivergenceError as e:
             result["outcome"] = "divergence"
             result["error"] = str(e).splitlines()[0]

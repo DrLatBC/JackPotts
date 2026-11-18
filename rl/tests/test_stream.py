@@ -274,6 +274,24 @@ def test_now_json_shows_what_the_model_weighed(tmp_path):
     assert lead["move"] in stream.MOVES.values() and 0 < lead["p"] <= 1 and 0 < lead["sure"] <= 1
 
 
+def test_the_wait_comes_between_showing_a_move_and_making_it(tmp_path, monkeypatch):
+    p = stream.Player(SimBackend(), COPY, delay=1.5, out=tmp_path, seeds=SEEDS[:1])
+    events = []
+    monkeypatch.setattr(stream.time, "sleep", lambda s: events.append("wait"))
+    pick, move = p.pick, p.move
+    p.pick = lambda *a: (events.append("show"), pick(*a))[1]
+
+    def move_then_stop(factored):
+        events.append("move")
+        move(factored)
+        if events.count("move") == 3:
+            p.stop_file.touch()
+
+    p.move = move_then_stop
+    p.run(1)
+    assert events == ["show", "wait", "move"] * 3
+
+
 def test_option_names_the_cards_hand_and_item(tmp_path):
     from jackdaw.env.game_spec import FactoredAction
 
