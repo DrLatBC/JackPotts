@@ -637,7 +637,7 @@ class TestPhase4LifetimeProjection:
         from balatro_bot.domain.policy.sim_context import LifetimeState
         m = live_joker("j_madness", {"extra": 0.5, "x_mult": 4.5}, "Madness")
         lt = LifetimeState.from_owned([m])
-        assert lt.madness_xmult == 4.5
+        assert lt.xmult_anchor("j_madness") == 4.5
 
 
 # ---------------------------------------------------------------------------

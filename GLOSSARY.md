@@ -71,6 +71,9 @@ _Avoid_: Growth joker, stacking joker
 **Anchor**:
 A scaling joker's current value (what the game shows as "Currently X"), which values project forward from.
 
+**Projection**:
+A scaling joker's expected value at the end of the run: its anchor plus the gain its trigger is expected to add over the runway left.
+
 **Fodder**:
 A joker bought or kept so another joker can consume it, chiefly Ceremonial Dagger eating the joker to its right.
 _Avoid_: Sacrifice, food

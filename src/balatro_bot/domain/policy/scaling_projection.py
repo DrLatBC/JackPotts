@@ -1,12 +1,12 @@
-"""Per-joker projection of scaling-joker end-of-run state.
+"""Projection of each scaling joker's end-of-run state.
 
-For each scaling joker, ``project_total_xmult`` (xmult scalers) and
-``project_additive_total`` (chip/mult scalers) return the *total* value the
-joker is expected to reach by end of run, combining its live anchor (parsed
-from effect text when owned) with a forward projection based on its trigger
-rate × rounds remaining. The caller
-converts the result to a floor via the same ``_dynamic_power`` conversion used
-for the live-anchor-only floor.
+``project_end_state`` returns the xmult, chips and mult a scaling joker is
+expected to reach by the end of the run: its anchor (the live value from
+``joker_effects/live_values``; X1.0 or 0 when not owned) plus the gain its
+trigger is expected to add over the runway left. The gain per trigger, and the
+trigger rate of chip/mult scalers, come from the joker's ``ScalingProfile``;
+the models here supply how often each xmult trigger fires and how much of the
+gain is realized.
 """
 
 from __future__ import annotations
@@ -35,121 +35,114 @@ def _ante_remaining(ante: int) -> int:
     return max(0, 9 - ante)
 
 
-# Per-joker projection functions. Each returns the *gain over baseline X1.0*
-# for xmult scalers, or the additive gain for mult/chips scalers. The caller
-# adds the live anchor to this gain to get end-of-run state.
+def _gain(key: str) -> float:
+    return float(SCALING_REGISTRY[key].gain_per)
+
+
+# Per-joker xmult models. Each returns the gain over the anchor.
 
 def _project_madness_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # +X0.5 per blind select, but Madness destroys a random joker each blind —
-    # halve the naive projection to account for joker-destroy risk muting the
-    # realized value (destroyed jokers still triggered Madness gain, but their
-    # own contribution is lost, lowering overall roster power).
-    return 0.5 * _blinds_remaining(ctx.ante) * 0.5
+    # One trigger per blind select, but Madness destroys a random joker each
+    # blind: halve the naive projection for the roster power it costs.
+    return _gain("j_madness") * _blinds_remaining(ctx.ante) * 0.5
 
 
 def _project_throwback_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
     # Bot skip policy averages ~2 blind skips per run. Scale by remaining runway.
     remaining_fraction = _ante_remaining(ctx.ante) / 8.0
-    return 2.0 * 0.25 * remaining_fraction
+    return 2.0 * _gain("j_throwback") * remaining_fraction
 
 
 def _project_caino_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
     # Face destruction is rare (Spectral cards, Glass break). Expect ~0.5 procs
-    # over a full run — less when ante is high.
-    return 0.5 * (_ante_remaining(ctx.ante) / 8.0)
+    # over a full run, fewer when the ante is high.
+    return _gain("j_caino") * 0.5 * (_ante_remaining(ctx.ante) / 8.0)
 
 
 def _project_hologram_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # "Cards added to deck" via Marble/DNA/Spectral. ~2 cards/run avg when
-    # those enablers exist; gate by roster presence for accuracy.
-    owned = ctx.owned_keys
-    enablers = {"j_marble", "j_dna"} & owned
+    # "Cards added to deck" via Marble/DNA/Spectral: ~2 cards/run when those
+    # enablers are owned.
+    enablers = {"j_marble", "j_dna"} & ctx.owned_keys
     base_rate = 2.0 if enablers else 0.5
-    return 0.25 * base_rate * (_ante_remaining(ctx.ante) / 8.0)
+    return _gain("j_hologram") * base_rate * (_ante_remaining(ctx.ante) / 8.0)
 
 
 def _project_obelisk_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # +X0.2 per hand that isn't the most-played type. Bot typically has a
-    # dominant hand early; assume 0.5 non-fav hands per blind.
-    return 0.2 * 0.5 * _blinds_remaining(ctx.ante)
+    # Triggers on a hand that isn't the most-played type. The bot usually has a
+    # dominant hand early; assume 0.5 such hands per blind.
+    return _gain("j_obelisk") * 0.5 * _blinds_remaining(ctx.ante)
 
 
 def _project_vampire_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # +X0.1 per enhanced scoring card; Vampire CONSUMES the enhancement, so
-    # gain is capped by deck's enhancement stock. Use density to estimate.
+    # Triggers per enhanced scoring card and CONSUMES the enhancement, so the
+    # deck's enhancement stock caps it: density x 5 cards/hand x 3 hands/blind
+    # x blinds left, discounted 0.3, at most 10 triggers.
     enhanced_density = sum(ctx.enhancement_density.values()) if ctx.enhancement_density else 0.0
-    # Roughly: enhanced_density × 5 cards/hand × 3 hands/blind × blinds_left,
-    # heavily discounted (0.3) because Vampire eats its own food supply.
     if enhanced_density <= 0:
         return 0.0
     triggers = enhanced_density * 5.0 * 3.0 * _blinds_remaining(ctx.ante) * 0.3
-    return 0.1 * min(triggers, 10.0)  # cap at +1.0 xmult projection
+    return _gain("j_vampire") * min(triggers, 10.0)
 
 
 def _project_yorick_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # +X1.0 per 23 cards discarded lifetime. ``yorick_cards_to_proc`` is the
-    # distance to the NEXT proc (23 = fresh). Project future discards from
-    # avg_discards_per_round × rounds_left.
+    # One proc per 23 cards discarded. ``yorick_cards_to_proc`` is the distance
+    # to the NEXT proc (23 = fresh); future discards are avg per round x rounds left.
     projected_discards = int(lt.avg_discards_per_round * _rounds_remaining(ctx.ante))
     if projected_discards <= 0:
         return 0.0
     procs = 0
     if projected_discards >= lt.yorick_cards_to_proc:
         procs = 1 + (projected_discards - lt.yorick_cards_to_proc) // 23
-    return 1.0 * procs
+    return _gain("j_yorick") * procs
 
 
 def _project_campfire_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # +X0.25 per sold card, RESETS at each boss blind. Live anchor captures
-    # accumulation within the current ante. Future antes contribute one-ante
-    # worth each, but each ante resets, so the floor is one-ante-at-a-time.
-    # Project: remaining sells this ante + one-ante worth × a few future antes.
-    sells_this_ante = max(0.0, lt.avg_sells_per_ante * 0.5)  # ~half-ante left on avg
+    # Triggers per card sold and RESETS at each boss blind, so the anchor holds
+    # only this ante's sells. Project the rest of this ante (~half left on
+    # average) plus a soft share of up to two future antes, since the bot may
+    # not keep Campfire through the run.
+    sells_this_ante = max(0.0, lt.avg_sells_per_ante * 0.5)
     future_antes = _ante_remaining(ctx.ante)
-    # Future antes reset — value only ~1 ante's worth since we pay now but
-    # gain is soft (bot may not own Campfire through the full run).
     future_ante_value = min(future_antes, 2) * lt.avg_sells_per_ante * 0.3
     total_sells = sells_this_ante + future_ante_value
-    return 0.25 * total_sells
+    return _gain("j_campfire") * total_sells
 
 
 def _project_constellation_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # +X0.1 per planet used lifetime. ``unique_planets_used`` counts done;
-    # project remaining planet usage. Arcana/Celestial pack income gives
-    # ~5 planets/run typical; cap headroom at 10.
+    # Triggers per planet used. Headroom is 10 minus the planets already used,
+    # scaled by runway and discounted 0.7.
     projected_additional = max(0, 10 - lt.unique_planets_used)
     remaining_fraction = _ante_remaining(ctx.ante) / 8.0
-    return 0.1 * projected_additional * remaining_fraction * 0.7
+    return _gain("j_constellation") * projected_additional * remaining_fraction * 0.7
+
+
+# Hit the Road resets each round, so its value is an average over the round's
+# scoring hands rather than a run-long gain: ~1.5 discards x 5 cards x 4/52
+# Jacks per round lift the last hands; earlier hands score X1.0.
+_HIT_THE_ROAD_AVG_GAIN = 0.15
 
 
 def _project_hit_the_road_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # +X0.5 per Jack discarded, RESETS each round — NOT cumulative across the
-    # run. ~1.5 discards × 5 cards × (4/52) ≈ 0.58 Jacks/round → +X0.29 on the
-    # last scoring hand of each round, X1.0 on earlier hands. Per-scoring-hand
-    # average: ~+X0.15. Returned flat (no rounds_remaining scaling).
-    return 0.15
+    return _HIT_THE_ROAD_AVG_GAIN
 
 
 def _project_lucky_cat_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # +X0.25 per Lucky card trigger. Density-driven: 4 Lucky in deck is
-    # ~baseline value, 8+ is strong.
+    # Triggers per Lucky card proc (1 in 5): density x 5 x 3 x blinds left x 0.2,
+    # at most 8 triggers.
     lucky_density = ctx.enhancement_density.get("LUCKY", 0.0)
     if lucky_density <= 0:
         return 0.0
     triggers = lucky_density * 5.0 * 3.0 * _blinds_remaining(ctx.ante) * 0.2
-    # Lucky proc rate is 1/5, so multiply triggers by 0.2 (already factored).
-    return 0.25 * min(triggers, 8.0)
+    return _gain("j_lucky_cat") * min(triggers, 8.0)
 
 
 def _project_glass_gain(ctx: "SimContext", lt: "LifetimeState") -> float:
-    # Glass Joker gains +X0.75 per Glass card destroyed. gain_per in the
-    # registry is 0 (variable), so model directly from deck density.
+    # Triggers per Glass card destroyed (1 in 4 per scored Glass card), at most 4.
     glass_density = ctx.enhancement_density.get("GLASS", 0.0)
     if glass_density <= 0:
         return 0.0
-    # ~1/4 destruction chance × triggers × blinds_left.
     destroys = glass_density * 5.0 * 3.0 * _blinds_remaining(ctx.ante) * 0.25
-    return 0.75 * min(destroys, 4.0)
+    return _gain("j_glass") * min(destroys, 4.0)
 
 
 _XMULT_PROJECTORS = {
@@ -167,97 +160,63 @@ _XMULT_PROJECTORS = {
     "j_glass":         _project_glass_gain,
 }
 
-# Public frozen view — jokers whose xmult accrues over time (need runway).
-# Immediate-fire xmult (Cavendish, Triboulet, Photograph, Bloodstone) is NOT
-# in this set. Callers use it to distinguish "scales into late game" from
-# "fires now." See shop_valuation._context_scale for the late-ante carve-out.
+# Jokers whose xmult accrues over time (need runway). Immediate-fire xmult
+# (Cavendish, Triboulet, Photograph, Bloodstone) is not in this set; see
+# shop_valuation._context_scale for the late-ante carve-out.
 SCALING_XMULT_KEYS = frozenset(_XMULT_PROJECTORS.keys())
 
 
-_XMULT_ANCHOR_ATTR: dict[str, str] = {
-    "j_madness":       "madness_xmult",
-    "j_throwback":     "throwback_xmult",
-    "j_caino":         "caino_xmult",
-    "j_hologram":      "hologram_xmult",
-    "j_obelisk":       "obelisk_xmult",
-    "j_vampire":       "vampire_xmult",
-    "j_yorick":        "yorick_xmult",
-    "j_campfire":      "campfire_xmult",
-    "j_constellation": "constellation_xmult",
-    "j_hit_the_road":  "hit_the_road_xmult",
-    "j_lucky_cat":     "lucky_cat_xmult",
-    "j_glass":         "glass_xmult",
-}
+# Additive scalers (chip/mult): ~3 hands per blind x blinds left, times the
+# profile's trigger rate and gain per trigger.
+def _hands_remaining(ante: int) -> float:
+    return 3.0 * _blinds_remaining(ante)
 
 
-def project_total_xmult(key: str, ctx: "SimContext") -> float:
-    """Return projected end-of-run xmult for a scaling xmult joker.
-
-    Combines live anchor (``LifetimeState.{joker}_xmult``, X1.0 if unowned)
-    with projected future gain. Returns X1.0 for jokers we don't project (the
-    caller treats X1.0 as "no floor contribution").
-    """
+def _total_xmult(key: str, ctx: "SimContext") -> float:
     if key not in _XMULT_PROJECTORS:
         return 1.0
     lt = ctx.lifetime
     if lt is None:
         return 1.0
-    anchor_attr = _XMULT_ANCHOR_ATTR.get(key)
-    live_anchor = getattr(lt, anchor_attr, 1.0) if anchor_attr else 1.0
-    projector = _XMULT_PROJECTORS[key]
-    gain = projector(ctx, lt)
-    return live_anchor + max(0.0, gain)
+    gain = _XMULT_PROJECTORS[key](ctx, lt)
+    return lt.xmult_anchor(key) + max(0.0, gain)
 
 
-# Additive-gain scalers (chip/mult). Modelled as: bot plays ~3 hands/blind ×
-# blinds_left, multiplied by trigger probability and gain_per.
-def _hands_remaining(ante: int) -> float:
-    return 3.0 * _blinds_remaining(ante)
-
-
-# Per-hand trigger probability for each mult/chip scaler. Values are rough
-# but trigger-aware (e.g. Runner only fires on Straights which the bot builds
-# toward rarely unless a straight archetype is active).
-_ADDITIVE_PROJECTORS: dict[str, callable] = {
-    "j_green_joker":    lambda ctx, lt: 1.0,       # fires every hand
-    "j_supernova":      lambda ctx, lt: 1.0,       # fires every hand (stale-type)
-    "j_ride_the_bus":   lambda ctx, lt: 0.6,       # reset risk on face hands
-    "j_square":         lambda ctx, lt: 0.3,       # requires exactly 4 cards
-    "j_runner":         lambda ctx, lt: 0.15,      # only straights
-    "j_trousers":       lambda ctx, lt: 0.25,      # only two pair
-    "j_hiker":          lambda ctx, lt: 5.0,       # +5 per card scored, ~5/hand → 25/hand
-    "j_wee":            lambda ctx, lt: 0.2,       # 2s in hand
-    "j_castle":         lambda ctx, lt: 0.5,       # per discarded suit card
-}
-
-
-def project_additive_total(key: str, ctx: "SimContext", joker: dict) -> tuple[float, float]:
-    """Return (chips_total, mult_total) = live anchor + projected future gain.
-
-    Live anchor for additive scalers is the joker's current chips/mult
-    (live_values); projection adds expected future gain from rounds
-    remaining × trigger rate.
-
-    Only produces non-zero output for scalers with gain_type ∈
-    {"chips", "mult", "perma_chips"}. xmult scalers use ``project_total_xmult``.
-    """
+def _additive_total(key: str, ctx: "SimContext") -> tuple[float, float]:
     profile = SCALING_REGISTRY.get(key)
     if profile is None or profile.gain_type not in ("chips", "mult", "perma_chips"):
         return (0.0, 0.0)
 
-    live_chips = current_value(joker, "chips", 0.0)
-    live_mult = current_value(joker, "mult", 0.0)
+    live_chips = current_value(ctx.candidate, "chips", 0.0)
+    live_mult = current_value(ctx.candidate, "mult", 0.0)
 
     lt = ctx.lifetime
     gain = 0.0
-    if lt is not None and profile.gain_per != 0 and key in _ADDITIVE_PROJECTORS:
-        per_hand_trigger = _ADDITIVE_PROJECTORS[key](ctx, lt)
+    if lt is not None and profile.gain_per != 0 and profile.trigger_rate:
         if profile.trigger == "discard":
-            events = _rounds_remaining(ctx.ante) * lt.avg_discards_per_round * per_hand_trigger
+            events = _rounds_remaining(ctx.ante) * lt.avg_discards_per_round * profile.trigger_rate
         else:
-            events = _hands_remaining(ctx.ante) * per_hand_trigger
+            events = _hands_remaining(ctx.ante) * profile.trigger_rate
         gain = profile.gain_per * events * 0.5  # halve for realization risk
 
     if profile.gain_type in ("chips", "perma_chips"):
         return (live_chips + gain, live_mult)
     return (live_chips, live_mult + gain)
+
+
+def project_end_state(ctx: "SimContext") -> dict[str, float | None]:
+    """The candidate's projected end-of-run ``xmult``, ``chips`` and ``mult``.
+
+    Each is None when it adds nothing (xmult at most X1.0, chips or mult at
+    most 0), so a joker that is not a projected scaler gets all None. The xmult
+    anchor is read from the roster (``ctx.lifetime``); the chip and mult
+    anchors from the candidate itself.
+    """
+    key = ctx.candidate_key
+    total_xmult = _total_xmult(key, ctx)
+    total_chips, total_mult = _additive_total(key, ctx)
+    return {
+        "xmult": total_xmult if total_xmult > 1.0 else None,
+        "chips": total_chips if total_chips > 0 else None,
+        "mult": total_mult if total_mult > 0 else None,
+    }

@@ -42,7 +42,7 @@ class TestLifetimeStateOverrides:
         m = _joker("j_madness", {"extra": 0.5, "x_mult": 4.5})
         live = LiveRunStats(avg_discards_per_round=2.0, avg_sells_per_ante=0.5)
         lt = LifetimeState.from_owned([m], live_stats=live)
-        assert lt.madness_xmult == 4.5
+        assert lt.xmult_anchor("j_madness") == 4.5
         assert lt.avg_discards_per_round == 2.0
 
 
