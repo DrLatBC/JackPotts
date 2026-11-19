@@ -148,7 +148,7 @@ This replaces an older design with 11 siloed shop rules that couldn't trade off 
 
 - Candidate joker, owned jokers, joker limit, strategy
 - Hand levels, ante, deck profile (rank/suit/enhancement density)
-- `LifetimeState` — live "Currently X…" anchors parsed from owned jokers for scaling xmult (Madness, Hologram, Canio, Vampire, Obelisk, Yorick, Campfire, Constellation, Throwback, Hit the Road, Lucky Cat, Glass)
+- `LifetimeState` — owned xmult scalers' current xmult keyed by joker (`xmult_anchor(key)`, from `live_values`), Yorick's distance to its next proc, and the run rates the projections read
 - `LiveRunStats` — bot-observed per-run averages (`avg_discards_per_round`, `avg_sells_per_ante`, `avg_plays_per_round`) feeding scaling-joker projections
 - `BossBlindState` — active boss template when known, else `None` (shop phase blends across the upcoming-boss pool)
 - `monte_carlo_samples` — MC sample count for stochastic jokers (Misprint, Lucky Cat, Bloodstone, Oops)

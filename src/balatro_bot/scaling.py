@@ -45,6 +45,10 @@ class ScalingProfile:
     protect_from_sell: bool  # include in SELL_PROTECTED (never sold)
     milk_priority: int  # 0=don't actively milk, 1=low, 2=medium, 3=high
     notes: str = ""
+    trigger_rate: float = 0.0
+    """Expected triggers per hand played (per discard for a ``discard`` trigger)
+    that the projection assumes for a chip or mult scaler; 0 means it is not
+    projected."""
 
 
 # ---------------------------------------------------------------------------
@@ -56,26 +60,32 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
     "j_green_joker": ScalingProfile(
         "j_green_joker", "play", "mult", 1, True, 3,
         "Also -1 per discard. Pure hand spammer.",
+        trigger_rate=1.0,
     ),
     "j_supernova": ScalingProfile(
         "j_supernova", "play", "mult", 1, False, 2,
         "+1 mult per time THIS hand type played this run.",
+        trigger_rate=1.0,
     ),
     "j_ride_the_bus": ScalingProfile(
         "j_ride_the_bus", "play_no_face", "mult", 1, False, 3,
         "Resets to 0 when face cards in hand. Avoid faces until kill shot.",
+        trigger_rate=0.6,
     ),
     "j_square": ScalingProfile(
         "j_square", "play_4_cards", "chips", 4, False, 2,
         "Every milk hand should be exactly 4 cards.",
+        trigger_rate=0.3,
     ),
     "j_runner": ScalingProfile(
         "j_runner", "play_straight", "chips", 15, True, 2,
         "Only scales on Straights. Chase Straight milk hands when possible.",
+        trigger_rate=0.15,
     ),
     "j_trousers": ScalingProfile(
         "j_trousers", "play_two_pair", "mult", 2, False, 1,
         "Only scales on Two Pair. Chase Two Pair milk hands when possible.",
+        trigger_rate=0.25,
     ),
     "j_obelisk": ScalingProfile(
         "j_obelisk", "play_non_favorite", "xmult", 0.2, True, 1,
@@ -84,10 +94,12 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
     "j_hiker": ScalingProfile(
         "j_hiker", "play", "perma_chips", 5, False, 2,
         "+5 permanent chips on every played card. Every hand makes cards beefier.",
+        trigger_rate=5.0,
     ),
     "j_wee": ScalingProfile(
         "j_wee", "play_2", "chips", 8, False, 1,
         "Only scales when a 2 is scored. Include 2s in milk hands.",
+        trigger_rate=0.2,
     ),
     "j_vampire": ScalingProfile(
         "j_vampire", "play_enhanced", "xmult", 0.1, True, 1,
@@ -136,7 +148,7 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
 
     # --- Anti-milk constraints (limit milking, not scale from it) ---
     "j_glass": ScalingProfile(
-        "j_glass", "play", "xmult", 0, False, 0,
+        "j_glass", "play", "xmult", 0.75, False, 0,
         "1/4 chance to destroy glass cards when played. ANTI-MILK: fewer plays = safer glass.",
     ),
     "j_selzer": ScalingProfile(
@@ -148,6 +160,7 @@ SCALING_REGISTRY: dict[str, ScalingProfile] = {
     "j_castle": ScalingProfile(
         "j_castle", "discard", "chips", 3, True, 2,
         "+3 chips per discarded card of the current suit.",
+        trigger_rate=0.5,
     ),
     "j_hit_the_road": ScalingProfile(
         "j_hit_the_road", "discard_jack", "xmult", 0.5, True, 3,
@@ -286,9 +299,6 @@ SELL_PROTECTED = _keys_where(lambda p: p.protect_from_sell) | frozenset({
 
 # All jokers with any scaling behavior (for gates, logging, etc.)
 ALL_SCALING = frozenset(SCALING_REGISTRY.keys())
-
-# xMult scalers — compound multiplicatively, still valuable late game
-SCALING_XMULT = _keys_where(lambda p: p.gain_type == "xmult" and p.gain_per > 0)
 
 # Jokers that DECAY (anti-milk) — other rules check these to avoid milking
 DECAY_JOKERS = _keys_where(lambda p: p.gain_per < 0)

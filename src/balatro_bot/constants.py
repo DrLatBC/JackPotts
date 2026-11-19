@@ -66,7 +66,6 @@ from balatro_bot.scaling import (
     SHOP_SCALERS,
     ANTI_DISCARD,
     DECAY_JOKERS,
-    SCALING_XMULT,
 )
 
 FEWER_CARDS_JOKERS = {"j_half"}

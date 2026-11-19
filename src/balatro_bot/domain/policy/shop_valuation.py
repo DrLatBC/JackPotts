@@ -23,8 +23,7 @@ from balatro_bot.domain.models.card import Card, CardModifier, CardValue
 from balatro_bot.domain.policy import utility_value
 from balatro_bot.domain.policy.scaling_projection import (
     SCALING_XMULT_KEYS,
-    project_additive_total,
-    project_total_xmult,
+    project_end_state,
 )
 from balatro_bot.domain.policy.boss_adjustment import (
     boss_multiplier, shop_blended_multiplier,
@@ -34,6 +33,7 @@ from balatro_bot.domain.policy.sim_context import SimContext
 from balatro_bot.domain.scoring import estimate
 from balatro_bot.domain.scoring.estimate import HandScorer, score_hand
 from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
+from balatro_bot.joker_effects.parsers import current_value
 from balatro_bot.joker_effects.scoring_phase import (
     PHASE_MULT, PHASE_XMULT,
 )
@@ -1966,21 +1966,10 @@ def _joker_value(candidate: dict, run: RunView) -> float:
             # Room for Riff-Raff + 2 spawns — full value
             base_value = 2.0 if ante <= 3 else 1.0
 
-    # Scaling-joker projection: for every joker with a
-    # ScalingProfile, predict end-of-run state as (live_anchor + projected
-    # gain) and floor the sim with the same xmult × 5 / mult / 5 / chips / 50
-    # conversion used for the live anchor alone. Live anchor comes from
-    # ``ctx.lifetime`` (owned jokers' current values); projection uses
-    # per-joker trigger-rate models in ``scaling_projection``.
+    # Scaling-joker projection: floor the sim with the projected end-of-run
+    # state, through the same conversion used for a live value alone.
     if key in SCALING_REGISTRY:
-        total_xmult = project_total_xmult(key, ctx)
-        total_chips, total_mult = project_additive_total(key, ctx, candidate)
-        projected_end = {
-            "xmult": total_xmult if total_xmult > 1.0 else None,
-            "chips": total_chips if total_chips > 0 else None,
-            "mult": total_mult if total_mult > 0 else None,
-        }
-        projected_floor = _dynamic_power(projected_end)
+        projected_floor = _dynamic_power(project_end_state(ctx))
         base_value = max(base_value, projected_floor)
 
     # Hand-conditional xmult jokers read ~0 from the simulation when the
@@ -2015,26 +2004,10 @@ def _joker_value(candidate: dict, run: RunView) -> float:
     # the ante-urgency boost applies only when the joker is already firing.
     candidate_anchor = 1.0
     if ctx.lifetime is not None and key in SCALING_XMULT_KEYS:
-        # Re-parse anchor from the candidate's own effect text (covers
-        # buy-in-shop case where the candidate isn't in ctx.lifetime).
-        from balatro_bot.domain.policy.sim_context import LifetimeState
-        candidate_lt = LifetimeState.from_owned([candidate])
-        field_name = {
-            "j_madness": "madness_xmult",
-            "j_hologram": "hologram_xmult",
-            "j_caino": "caino_xmult",
-            "j_vampire": "vampire_xmult",
-            "j_obelisk": "obelisk_xmult",
-            "j_yorick": "yorick_xmult",
-            "j_campfire": "campfire_xmult",
-            "j_constellation": "constellation_xmult",
-            "j_throwback": "throwback_xmult",
-            "j_hit_the_road": "hit_the_road_xmult",
-            "j_lucky_cat": "lucky_cat_xmult",
-            "j_glass": "glass_xmult",
-        }.get(key)
-        if field_name:
-            candidate_anchor = getattr(candidate_lt, field_name, 1.0)
+        # The candidate's own xmult, which a shop candidate has outside the roster.
+        xm = current_value(candidate, "xmult", 0.0)
+        if xm > 0:
+            candidate_anchor = xm
     context = _context_scale(key, owned_jokers, ante, candidate_anchor)
 
     # Layer 4: boss-blind adjustment. In-round uses the active boss;

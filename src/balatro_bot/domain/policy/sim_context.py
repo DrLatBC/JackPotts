@@ -11,31 +11,13 @@ from typing import TYPE_CHECKING
 
 from balatro_bot.cards import joker_key
 from balatro_bot.joker_effects.parsers import current_counter, current_value
+from balatro_bot.scaling import SCALING_REGISTRY
 
 if TYPE_CHECKING:
     from balatro_bot.domain.models.deck_profile import DeckProfile
     from balatro_bot.domain.policy.run_view import RunView
     from balatro_bot.strategy import Strategy
 
-
-# Maps a scaling-xmult joker key to the ``LifetimeState`` field holding its
-# live xmult anchor (its current xmult). Jokers absent here have no live anchor (either
-# because they don't scale xmult, or because their anchor lives in a different
-# field like Yorick's remaining-to-proc counter).
-_XMULT_ANCHOR_FIELD: dict[str, str] = {
-    "j_madness": "madness_xmult",
-    "j_hologram": "hologram_xmult",
-    "j_caino": "caino_xmult",
-    "j_vampire": "vampire_xmult",
-    "j_obelisk": "obelisk_xmult",
-    "j_yorick": "yorick_xmult",
-    "j_campfire": "campfire_xmult",
-    "j_constellation": "constellation_xmult",
-    "j_throwback": "throwback_xmult",
-    "j_hit_the_road": "hit_the_road_xmult",
-    "j_lucky_cat": "lucky_cat_xmult",
-    "j_glass": "glass_xmult",
-}
 
 @dataclass(frozen=True)
 class LiveRunStats:
@@ -53,30 +35,19 @@ class LiveRunStats:
 
 @dataclass(frozen=True)
 class LifetimeState:
-    """Live run-wide counters for scaling xmult jokers.
+    """Live run-wide counters for scaling jokers.
 
-    Populated from owned joker effect text via ``from_owned``. For unowned
-    candidates the defaults (X1.0 anchors, full /23 proc distance) describe a
-    hypothetical joker that hasn't scaled yet.
+    Built from the roster's current values (``joker_effects/live_values``) via
+    ``from_owned``. A joker not in the roster reads X1.0 and a full /23 proc
+    distance: a hypothetical joker that hasn't scaled yet.
 
     Run-rate fields (``avg_discards_per_round``, ``avg_sells_per_ante``) are
     conservative defaults; ``from_owned`` overrides them from ``LiveRunStats``
     when the bot passes its observed averages.
     """
 
-    # Live xmult anchors — owned jokers' current xmult.
-    madness_xmult: float = 1.0
-    hologram_xmult: float = 1.0
-    caino_xmult: float = 1.0
-    vampire_xmult: float = 1.0
-    obelisk_xmult: float = 1.0
-    yorick_xmult: float = 1.0
-    campfire_xmult: float = 1.0
-    constellation_xmult: float = 1.0
-    throwback_xmult: float = 1.0
-    hit_the_road_xmult: float = 1.0
-    lucky_cat_xmult: float = 1.0
-    glass_xmult: float = 1.0
+    # Owned xmult scalers' current xmult, by joker key.
+    xmult_anchors: dict[str, float] = field(default_factory=dict)
 
     # Yorick-specific: cards remaining until the next proc. 23 = fresh joker.
     yorick_cards_to_proc: int = 23
@@ -101,22 +72,27 @@ class LifetimeState:
         ``avg_discards_per_round`` / ``avg_sells_per_ante`` with the bot's
         observed per-run averages.
         """
-        kwargs: dict[str, float | int] = {"unique_planets_used": unique_planets_used}
+        kwargs: dict = {"unique_planets_used": unique_planets_used}
+        anchors: dict[str, float] = {}
         if live_stats is not None:
             kwargs["avg_discards_per_round"] = live_stats.avg_discards_per_round
             kwargs["avg_sells_per_ante"] = live_stats.avg_sells_per_ante
         for joker in owned_jokers:
             k = joker_key(joker)
-            anchor_field = _XMULT_ANCHOR_FIELD.get(k)
-            if anchor_field:
+            profile = SCALING_REGISTRY.get(k)
+            if profile is not None and profile.gain_type == "xmult":
                 xm = current_value(joker, "xmult", 0.0)
                 if xm > 0:
-                    kwargs[anchor_field] = xm
+                    anchors[k] = xm
             if k == "j_yorick":
                 remaining = current_counter(joker)
                 if remaining is not None:
                     kwargs["yorick_cards_to_proc"] = max(1, remaining)
-        return cls(**kwargs)
+        return cls(xmult_anchors=anchors, **kwargs)
+
+    def xmult_anchor(self, key: str) -> float:
+        """The owned joker's current xmult; X1.0 when it isn't owned."""
+        return self.xmult_anchors.get(key, 1.0)
 
 
 @dataclass(frozen=True)
