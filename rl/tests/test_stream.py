@@ -33,6 +33,14 @@ def player(tmp_path, backend=None, **kw):
     return stream.Player(backend or SimBackend(), COPY, delay=0, out=tmp_path, **kw)
 
 
+def test_the_player_writes_into_the_stream_job_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(stream.jobs, "ROOT", tmp_path)
+    p = stream.Player(SimBackend(), COPY, delay=0)
+    assert p.out == stream.jobs.stream().folder
+    stream.jobs.stream().ask("stop")
+    assert p.stop_asked()
+
+
 def test_whole_games_are_recorded(tmp_path):
     p = player(tmp_path)
     assert p.run(3) == 3
@@ -111,7 +119,7 @@ def test_a_stop_ends_the_game_between_moves(tmp_path):
         original(factored)
         steps.append(1)
         if len(steps) == 5:
-            p.stop_file.touch()
+            p.job.ask("stop")
 
     p.move = move
     assert p.run() == 1
@@ -285,7 +293,7 @@ def test_a_status_write_that_fails_never_ends_a_game(tmp_path, monkeypatch):
     def busy(tmp, path):
         raise PermissionError(5, "Access is denied")
 
-    monkeypatch.setattr(stream, "replace_file", busy)
+    monkeypatch.setattr(stream.jobs, "replace_file", busy)
     p = player(tmp_path, seeds=SEEDS[:1])
     p.run(1)
     assert p.recent[0]["outcome"] in ("won", "lost")
@@ -332,7 +340,7 @@ def test_the_wait_comes_between_showing_a_move_and_making_it(tmp_path, monkeypat
         events.append("move")
         move(factored)
         if events.count("move") == 3:
-            p.stop_file.touch()
+            p.job.ask("stop")
 
     p.move = move_then_stop
     p.run(1)

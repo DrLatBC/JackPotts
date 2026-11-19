@@ -9,16 +9,15 @@ dies the game closes with it. The control panel's Stream tab starts this.
 
 Serves the overlay (``balatro_bot.overlay``) for OBS on OVERLAY_PORT while it runs.
 
-Writes ``bot_log/model_stream/status.json`` (phase starting / running / stopping / stopped /
-failed, with pids and settings); the player writes ``now.json`` beside it. Creating
-``bot_log/model_stream/stop`` ends the stream: the player stops between moves, then the game
-is closed.
+The stream is a job (``balatro_bot.jobs``, folder ``bot_log/model_stream/``): this writes
+its status (phase starting / running / stopping / stopped / failed, with pids and
+settings) and the player writes ``now.json`` beside it. A stop asked ends the stream:
+the player stops between moves, then the game is closed.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import socket
@@ -29,19 +28,13 @@ import zipfile
 import zlib
 from pathlib import Path
 
-from balatro_bot import overlay
-from balatro_bot.files import replace_file
+from balatro_bot import jobs, overlay
 from balatro_bot.supervisor import (
-    BASE_DIR, LOG_DIR, cfg, ensure_isolated_profile, graceful_kill,
+    BASE_DIR, cfg, ensure_isolated_profile, graceful_kill,
     kill_port_processes, tie_children_to_supervisor,
 )
 
 STREAM_PORT = 12340
-STREAM_DIR = LOG_DIR / "model_stream"
-STATUS = STREAM_DIR / "status.json"
-STOP = STREAM_DIR / "stop"
-PLAYER_LOG = STREAM_DIR / "stream.log"
-GAME_LOG = STREAM_DIR / "game.log"
 RL_PYTHON = BASE_DIR / ".venv-rl" / "Scripts" / "python.exe"
 GAME_START_TIMEOUT = 120.0
 STOP_TIMEOUT = 60.0
@@ -109,14 +102,6 @@ def unlock_all(profile_dir: Path, love_path: str) -> None:
         _write_jkr(profile, text)
 
 
-def write_status(status: dict, **changes) -> None:
-    status.update(changes, pid=os.getpid(), updated=time.time())
-    STREAM_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATUS.with_suffix(".tmp")
-    tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
-    replace_file(tmp, STATUS)
-
-
 def listening(port: int) -> bool:
     try:
         with socket.create_connection(("localhost", port), timeout=2):
@@ -140,12 +125,14 @@ def player_command(args) -> list[str]:
 
 
 def run(args) -> int:
-    status = {"phase": "starting", "model": args.model, "follow": args.follow, "deck": args.deck,
-              "stake": args.stake, "delay": args.delay, "port": args.port, "started": time.time()}
-    STOP.unlink(missing_ok=True)
-    (STREAM_DIR / "now.json").unlink(missing_ok=True)
+    job = jobs.stream()
+    status = job.claim(model=args.model, follow=args.follow, deck=args.deck, stake=args.stake,
+                       delay=args.delay, port=args.port)
+    write_status = job.report
+    player_log, game_log = job.file("stream.log"), job.file("game.log")
+    job.file("now.json").unlink(missing_ok=True)
     try:
-        server = overlay.serve(STREAM_DIR, args.overlay_port)
+        server = overlay.serve(job.folder, args.overlay_port)
         status["overlay"] = f"http://localhost:{server.server_address[1]}/"
     except OSError as e:
         server = None
@@ -157,7 +144,7 @@ def run(args) -> int:
     env["APPDATA"] = ensure_isolated_profile(args.port)
     unlock_all(Path(env["APPDATA"]) / "Balatro" / "1", cfg.love_path)
     flags = subprocess.CREATE_NO_WINDOW
-    with open(GAME_LOG, "w", encoding="utf-8") as game_out:
+    with open(game_log, "w", encoding="utf-8") as game_out:
         game = subprocess.Popen(
             [cfg.balatrobot_path, "serve", "--port", str(args.port), "--love-path", cfg.love_path,
              "--lovely-path", cfg.lovely_path],
@@ -167,29 +154,29 @@ def run(args) -> int:
     try:
         deadline = time.time() + GAME_START_TIMEOUT
         while not listening(args.port):
-            if game.poll() is not None or time.time() > deadline or STOP.exists():
-                why = ("stopped before the game opened" if STOP.exists()
-                       else last_line(GAME_LOG) or "the game did not open")
-                write_status(status, phase="stopped" if STOP.exists() else "failed", doing="", error=why)
+            if game.poll() is not None or time.time() > deadline or job.asked("stop"):
+                why = ("stopped before the game opened" if job.asked("stop")
+                       else last_line(game_log) or "the game did not open")
+                write_status(status, phase="stopped" if job.asked("stop") else "failed", doing="", error=why)
                 return 1
             time.sleep(1.0)
-        with open(PLAYER_LOG, "w", encoding="utf-8") as player_out:
+        with open(player_log, "w", encoding="utf-8") as player_out:
             player = subprocess.Popen(player_command(args), cwd=str(BASE_DIR), stdout=player_out,
                                       stderr=subprocess.STDOUT, creationflags=flags)
         write_status(status, phase="running", doing="", game_pid=game.pid, player_pid=player.pid)
         stop_seen = 0.0
         while True:
             if player.poll() is not None:
-                if STOP.exists():
+                if job.asked("stop"):
                     write_status(status, phase="stopped")
                     return 0
-                write_status(status, phase="failed", error=last_line(PLAYER_LOG) or
+                write_status(status, phase="failed", error=last_line(player_log) or
                              f"the player exited with code {player.returncode}")
                 return 1
             if game.poll() is not None:
                 write_status(status, phase="stopped", note="the game window was closed")
                 return 0
-            if STOP.exists() and not stop_seen:
+            if job.asked("stop") and not stop_seen:
                 stop_seen = time.time()
                 write_status(status, phase="stopping")
             if stop_seen and time.time() - stop_seen > STOP_TIMEOUT:
@@ -200,7 +187,7 @@ def run(args) -> int:
         if player is not None and player.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(player.pid)], capture_output=True)
         graceful_kill(game)
-        STOP.unlink(missing_ok=True)
+        job.clear()
         if server is not None:
             server.shutdown()
             server.server_close()
@@ -219,7 +206,7 @@ def main() -> int:
     try:
         return run(args)
     except Exception as e:  # the panel reads the reason from the status file
-        write_status({}, phase="failed", error=f"{type(e).__name__}: {e}")
+        jobs.stream().fail(f"{type(e).__name__}: {e}")
         raise
 
 

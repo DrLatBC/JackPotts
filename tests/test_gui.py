@@ -5,14 +5,14 @@ import os
 
 import pytest
 
-from balatro_bot import gui, supervisor
+from balatro_bot import gui, jobs, supervisor
 
 
 @pytest.fixture
 def status_file(tmp_path, monkeypatch):
-    path = tmp_path / "supervisor_status.json"
-    monkeypatch.setattr(gui, "STATUS_FILE", path)
-    monkeypatch.setattr(supervisor, "STATUS_FILE", path)
+    monkeypatch.setattr(jobs, "ROOT", tmp_path)
+    path = jobs.batch().file("status.json")
+    path.parent.mkdir(parents=True)
     return path
 
 
@@ -51,6 +51,11 @@ def test_status_of_a_live_supervisor_is_read(status_file):
 def test_finished_or_dead_supervisor_reads_as_none(status_file, payload):
     status_file.write_text(json.dumps(payload))
     assert gui.read_status() is None
+
+
+def test_dead_supervisor_reads_as_a_failed_batch(status_file):
+    status_file.write_text(json.dumps({"phase": "running", "pid": 999999999, "session": 9}))
+    assert gui.read_status_file()["phase"] == "failed"
 
 
 def test_missing_or_garbled_status_reads_as_none(status_file):
@@ -237,6 +242,10 @@ def test_panel_notifies_once_when_its_batch_ends(monkeypatch):
     watch(panel, None, {**final, "phase": "paused", "resume": {}})
     assert sent[-1][0] == "Batch #178 paused"
 
+    watch(panel, {"session": 178}, None)
+    watch(panel, None, {**final, "phase": "failed"})
+    assert sent[-1][0] == "Batch #178 failed"
+
 
 def test_tray_clicks_and_second_launch_open_the_panel():
     import tkinter as tk
@@ -270,12 +279,9 @@ def test_batch_children_run_below_normal_priority_but_stream_does_not(sup):
 def no_launch(tmp_path, monkeypatch):
     """Point the panel's files at tmp_path and record supervisor launches instead of running them."""
     launches = []
-    monkeypatch.setattr(gui, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(jobs, "ROOT", tmp_path)
     monkeypatch.setattr(gui, "SETTINGS_FILE", tmp_path / "gui_settings.json")
-    monkeypatch.setattr(gui, "STOP_FILE", tmp_path / "supervisor.stop")
-    monkeypatch.setattr(gui, "STATUS_FILE", tmp_path / "supervisor_status.json")
-    monkeypatch.setattr(gui, "CONSOLE_LOG", tmp_path / "supervisor_console.log")
-    monkeypatch.setattr(gui.subprocess, "Popen", lambda cmd, **kw: launches.append((cmd, kw)))
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda cmd, **kw: launches.append((cmd, kw)))
     return launches
 
 
@@ -305,7 +311,7 @@ def test_start_saved_batch_leaves_a_running_batch_alone(no_launch, monkeypatch, 
 def test_start_saved_batch_leaves_a_paused_batch_alone(no_launch, monkeypatch):
     monkeypatch.setattr(gui, "read_status", lambda: None)
     monkeypatch.setattr(gui, "ports_in_use", lambda: False)
-    gui.STATUS_FILE.write_text(json.dumps({"phase": "paused", "resume": {}}))
+    jobs.batch().report({"phase": "paused", "resume": {}})
     assert not gui.start_saved_batch()
     assert no_launch == []
 
@@ -314,13 +320,8 @@ def test_start_saved_batch_leaves_a_paused_batch_alone(no_launch, monkeypatch):
 def sup_files(sup, tmp_path, monkeypatch):
     """A supervisor whose pause, stop and command files live in tmp_path and whose games never launch."""
     monkeypatch.setattr(supervisor, "WINS_DIR", tmp_path / "wins")
-    monkeypatch.setattr(supervisor, "PAUSE_FILE", tmp_path / "supervisor.pause")
-    monkeypatch.setattr(supervisor, "STOP_FILE", tmp_path / "supervisor.stop")
-    monkeypatch.setattr(supervisor, "COMMANDS_DIR", tmp_path / "commands")
-    monkeypatch.setattr(gui, "COMMANDS_DIR", tmp_path / "commands")
     monkeypatch.setattr(supervisor, "kill_port_processes", lambda ports: 0)
     monkeypatch.setattr(supervisor.Supervisor, "start_slot", lambda self, slot: setattr(slot, "state", "running"))
-    (tmp_path / "commands").mkdir()
     return sup
 
 
@@ -340,7 +341,7 @@ def test_panel_adds_and_removes_instances_mid_batch(sup_files, tmp_path):
     assert status["slots"][1]["state"] == "removed"
     # The removed slot's share of the batch ends at the 3 games it played.
     assert status["total_expected"] == 10 + 3
-    assert not list((tmp_path / "commands").iterdir())
+    assert jobs.batch().take() == []
 
 
 def test_paused_batch_resumes_with_its_counts(sup_files, tmp_path):
@@ -352,7 +353,7 @@ def test_paused_batch_resumes_with_its_counts(sup_files, tmp_path):
     sup.remove_slot(sup.slots[1].port)
     sup.paused = True
     sup.shutdown()
-    saved = json.loads(supervisor.STATUS_FILE.read_text(encoding="utf-8"))
+    saved = jobs.batch().status()
     assert saved["phase"] == "paused" and gui.paused_status(saved)
 
     resumed = supervisor.Supervisor.from_pause_state(saved["resume"], sim_python=None)
@@ -442,3 +443,19 @@ def test_the_stream_tab_notifies_only_when_a_stream_fails():
         tab.phase = phase
         tab._notify()
     assert told == ["Stream failed"]
+
+
+@pytest.mark.parametrize("finished, phase", [(True, "finished"), (False, "stopped")])
+def test_a_batch_that_played_every_game_ends_finished(sup_files, finished, phase):
+    sup = sup_files
+    jobs.batch().ask("stop")
+    sup.finished = finished
+    sup.shutdown()
+    assert jobs.batch().status()["phase"] == phase
+    assert not jobs.batch().asked("stop")
+
+
+def test_the_panel_stops_and_pauses_through_the_batch_requests(sup_files):
+    jobs.batch().report({"phase": "running"})
+    jobs.batch().ask("pause")
+    assert gui.read_status()["phase"] == "pausing"

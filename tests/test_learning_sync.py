@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from balatro_bot import learning, learning_sync
+from balatro_bot import jobs, learning, learning_sync
 from balatro_bot.learning_sync import Uploader
 
 
@@ -45,9 +45,7 @@ class FakeDashboard:
 @pytest.fixture
 def files(tmp_path, monkeypatch):
     monkeypatch.setattr(learning, "RL_DATA", tmp_path / "rl")
-    monkeypatch.setattr(learning, "TRAIN_DIR", tmp_path / "log" / "training")
-    monkeypatch.setattr(learning, "STREAM_DIR", tmp_path / "log" / "stream")
-    (tmp_path / "log" / "training").mkdir(parents=True)
+    monkeypatch.setattr(jobs, "ROOT", tmp_path / "log")
     return tmp_path
 
 
@@ -163,7 +161,7 @@ def test_one_broken_run_does_not_stop_the_others(files, monkeypatch):
 
 
 def _stream(root, games, phase="running"):
-    folder = root / "log" / "stream"
+    folder = jobs.stream().folder
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "status.json").write_text(json.dumps({"phase": phase, "pid": 0}))
     (folder / "now.json").write_text(json.dumps({"checkpoint": "latest (update 3)", "game": {"seed": "X"},

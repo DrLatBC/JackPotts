@@ -28,20 +28,15 @@ from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
-from balatro_bot import learning
+from balatro_bot import jobs, learning
 from balatro_bot.eval_compare import describe
-from balatro_bot.learning import pid_alive
 from balatro_bot.learning_sync import Uploader as LearningUploader
-from balatro_bot.supervisor import (
-    BASE_DIR, BASE_PORT, COMMANDS_DIR, LOG_DIR, MAX_INSTANCES, PAUSE_FILE, PORT_SPAN, PYTHON,
-    STATUS_FILE, STOP_FILE,
-)
+from balatro_bot.supervisor import BASE_PORT, LOG_DIR, MAX_INSTANCES, PORT_SPAN, PYTHON
 
 ICON_FILE = Path(__file__).parent / "assets" / "jackpotts.ico"
 # Without its own app ID, Windows groups the window under pythonw.exe and shows Python's icon.
 APP_ID = "DrLatBC.JackPotts.ControlPanel"
 SETTINGS_FILE = LOG_DIR / "gui_settings.json"
-CONSOLE_LOG = LOG_DIR / "supervisor_console.log"
 DASHBOARD_URL = "https://jackpotts.drlat.dev/dashboard"
 REFRESH_MS = 2000
 
@@ -81,7 +76,7 @@ STATE_COLOURS = {
     "cooldown": RED, "dead": RED, "done": MUTED, "stopped": DIM,
 }
 PHASE_COLOURS = {"running": GREEN, "stopping": YELLOW, "pausing": YELLOW, "paused": GOLD, "starting": BLUE,
-                 "outside": PURPLE, "idle": BORDER}
+                 "outside": PURPLE, "failed": RED, "idle": BORDER}
 TRAIN_COLOURS = {"idle": DIM, "starting": BLUE, "running": GREEN, "stopping": YELLOW,
                  "stopped": MUTED, "finished": GOLD, "failed": RED, "outside": PURPLE}
 
@@ -99,19 +94,14 @@ def px(n: float) -> int:
 
 
 def read_status_file() -> dict | None:
-    """The status file as last written, whether or not its supervisor is alive."""
-    try:
-        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    """The batch's last status, live or not (a dead supervisor's reads as failed)."""
+    return jobs.batch().status()
 
 
 def read_status() -> dict | None:
-    """The supervisor's latest status, or None when no supervisor is alive."""
+    """The batch's status while its supervisor is live, else None."""
     status = read_status_file()
-    if status is None or status.get("phase") == "stopped" or not pid_alive(int(status.get("pid", 0))):
-        return None
-    return status
+    return status if status is not None and status.get("phase") in jobs.LIVE else None
 
 
 def listening_ports(netstat_output: str) -> set[int]:
@@ -142,19 +132,12 @@ def ports_in_use(count: int = PORT_SPAN) -> bool:
 
 def set_explore_rate(port: int, rate: float) -> None:
     """Set an instance's explore rate; its bot switches at the start of its next game."""
-    path = LOG_DIR / str(port) / "explore_rate.txt"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(f"{round(rate, 2)}")
-    os.replace(tmp, path)
+    jobs.write_text(LOG_DIR / str(port) / "explore_rate.txt", f"{round(rate, 2)}")
 
 
 def send_command(command: dict) -> None:
     """Queue an add/remove request; the running supervisor carries it out on its next tick."""
-    COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
-    path = COMMANDS_DIR / f"{time.time_ns()}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(command), encoding="utf-8")
-    os.replace(tmp, path)
+    jobs.batch().send(command)
 
 
 def paused_status(status_file: dict | None) -> dict | None:
@@ -180,27 +163,12 @@ def save_settings(changes: dict) -> None:
 def launch_batch(settings: dict) -> None:
     """Start the supervisor windowless with these settings and remember them for the panel."""
     save_settings(settings)
-    STOP_FILE.unlink(missing_ok=True)
-    STATUS_FILE.unlink(missing_ok=True)
-    _spawn_supervisor(supervisor_command(settings))
+    jobs.batch().spawn(supervisor_command(settings))
 
 
 def resume_paused_batch(finish: bool = False) -> None:
     """Carry on the paused batch, or with finish, end it (post its finish and run stats)."""
-    STOP_FILE.unlink(missing_ok=True)
-    _spawn_supervisor([PYTHON, "-m", "balatro_bot.supervisor", "--finish-paused" if finish else "--resume"])
-
-
-def _spawn_supervisor(cmd: list[str]) -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONSOLE_LOG, "w", encoding="utf-8") as out:
-        subprocess.Popen(
-            cmd,
-            cwd=str(BASE_DIR),
-            stdout=out,
-            stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
+    jobs.batch().spawn([PYTHON, "-m", "balatro_bot.supervisor", "--finish-paused" if finish else "--resume"])
 
 
 def start_saved_batch() -> bool:
@@ -1113,7 +1081,8 @@ class TrainTab(tk.Frame):
                         justify="left")
         note.pack(anchor="w", fill="x")
         note.bind("<Configure>", lambda e: note.configure(wraplength=e.width))
-        tip(state, lambda: learning.console_tail(self.selected) or "No output yet")
+        tip(state, lambda: (jobs.learning_run(self.selected).console_tail() if self.selected else "")
+            or "No output yet")
 
         cards = tk.Frame(right, bg=BG)
         cards.pack(fill="x", pady=(px(10), 0))
@@ -1225,7 +1194,7 @@ class TrainTab(tk.Frame):
             return
         save_settings(settings)
         run = settings["train_run"]
-        self._launched(learning.launch_training(learning.train_command(settings), run), run)
+        self._launched(jobs.learning_run(run).spawn(learning.train_command(settings)), run)
 
     def resume(self) -> None:
         name, hours = self.selected, self._hours()
@@ -1236,7 +1205,7 @@ class TrainTab(tk.Frame):
             return
         state = learning.run_state(name)
         cmd = learning.resume_command(state["args"], hours)
-        self._launched(learning.launch_training(cmd, name, append=True), name)
+        self._launched(jobs.learning_run(name).spawn(cmd, append=True), name)
 
     def _launched(self, proc: subprocess.Popen, run: str) -> None:
         self.proc, self.launched_at, self.launched_run, self.early = proc, time.time(), run, None
@@ -1249,7 +1218,7 @@ class TrainTab(tk.Frame):
         if not messagebox.askyesno("JackPotts", f"Stop {self.selected} after this update? "
                                    "It saves, and Resume carries it on.", parent=self.panel.root):
             return
-        learning.train_file(self.selected, ".stop").touch()
+        jobs.learning_run(self.selected).ask("stop")
         self.refresh()
 
     # ── Refresh ──
@@ -1264,7 +1233,7 @@ class TrainTab(tk.Frame):
             elif self.proc.poll() is not None:
                 # Gone before its first status: torch missing, a bad flag and the like.
                 self.early = {"run": self.launched_run, "phase": "failed", "updated": time.time(),
-                              "error": learning.console_tail(self.launched_run)
+                              "error": jobs.learning_run(self.launched_run).console_tail()
                               or f"Exited with code {self.proc.returncode}."}
                 self.proc = None
         if self.early is not None:
@@ -1618,14 +1587,14 @@ class StreamTab(tk.Frame):
         if batch_active() and not self.panel._overlap_ok("A bot batch"):
             return
         save_settings(settings)
-        self.proc = learning.launch_stream(learning.stream_command(settings))
+        self.proc = jobs.stream().spawn(learning.stream_command(settings))
         self.launched_at, self.early = time.time(), None
         self.refresh()
 
     def stop(self) -> None:
         if self.phase not in ("starting", "running"):
             return
-        learning.stream_file("stop").touch()
+        jobs.stream().ask("stop")
         self.refresh()
 
     # ── Refresh ──
@@ -1637,7 +1606,7 @@ class StreamTab(tk.Frame):
             if fresh:
                 self.proc = None
             elif self.proc.poll() is not None:
-                self.early = {"phase": "failed", "error": _last_line(learning.stream_file("launcher.log"))
+                self.early = {"phase": "failed", "error": jobs.stream().console_tail()
                               or f"Exited with code {self.proc.returncode}."}
                 self.proc = None
         if self.early is not None:
@@ -1651,8 +1620,6 @@ class StreamTab(tk.Frame):
             phase = "idle"
         else:
             phase = status["phase"]
-            if phase == "running" and learning.stream_file("stop").exists():
-                phase = "stopping"
         self.status, self.now, self.phase = status, now if phase != "idle" else None, phase
         self._notify()
 
@@ -1743,14 +1710,6 @@ class StreamTab(tk.Frame):
         return STREAM_COLOURS.get(self.phase, MUTED), text
 
 
-def _last_line(path: Path) -> str:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    return next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
-
-
 class ControlPanel:
     def __init__(self, root: tk.Tk) -> None:
         global _scale
@@ -1763,6 +1722,7 @@ class ControlPanel:
         self.pending = "starting"
         self.running = False
         self.paused: dict | None = None
+        self.failed: dict | None = None
         self.compact = False
         self.full_geometry = f"{px(1180)}x{px(740)}"
         self.watched_session: int | None = None
@@ -2111,7 +2071,7 @@ class ControlPanel:
         if not messagebox.askyesno("JackPotts", "Stop the batch? Games in progress are dropped.",
                                    parent=self.root):
             return
-        STOP_FILE.touch()
+        jobs.batch().ask("stop")
         self.stop_requested = True
         self.refresh(reschedule=False)
 
@@ -2119,7 +2079,7 @@ class ControlPanel:
         """Close every game but keep the batch open, so Resume picks up the same counts."""
         if read_status() is None:
             return
-        PAUSE_FILE.touch()
+        jobs.batch().ask("pause")
         self.pause_requested = True
         self.refresh(reschedule=False)
 
@@ -2161,7 +2121,7 @@ class ControlPanel:
         if self.watched_session is None:
             return
         if final and final.get("session") == self.watched_session:
-            verb = "paused" if paused_status(final) else "ended"
+            verb = "paused" if paused_status(final) else "failed" if final["phase"] == "failed" else "ended"
             self.tray.notify(f"Batch #{self.watched_session} {verb}", batch_summary(final))
         self.watched_session = None
 
@@ -2174,22 +2134,30 @@ class ControlPanel:
             return "starting" if status["phase"] == "starting" else "running"
         if launching:
             return self.pending
-        return "paused" if self.paused else "outside" if outside else "idle"
+        if self.paused:
+            return "paused"
+        return "failed" if self.failed else "outside" if outside else "idle"
 
     def refresh(self, reschedule: bool = True) -> None:
         status = read_status()
+        # A supervisor that has claimed the batch but not yet written its first snapshot.
+        claimed = status is not None and "slots" not in status
+        if claimed:
+            status = None
         last = status or read_status_file()
         # A just-launched supervisor gets a minute to write its first status.
-        launching = (status is None and time.time() - self.launched_at < 60
-                     and (last or {}).get("updated", 0) < self.launched_at)
+        launching = claimed or (status is None and time.time() - self.launched_at < 60
+                                and (last or {}).get("updated", 0) < self.launched_at)
         self.paused = paused_status(last) if status is None and not launching else None
+        self.failed = (last if status is None and not launching and last and last.get("phase") == "failed"
+                       else None)
         outside = status is None and not launching and not self.paused and ports_in_use()
         self.running = status is not None or launching or outside or self.paused is not None
         self._watch_for_finish(status, last)
 
         phase = self._phase(status, launching, outside)
 
-        can_start = phase in ("idle", "paused")
+        can_start = phase in ("idle", "paused") or (phase == "failed" and not outside)
         can_pause = phase in ("running", "starting")
         can_stop = phase in ("running", "starting", "paused")
         for btn, on in ((self.start_btn, can_start), (self.pause_btn, can_pause), (self.stop_btn, can_stop)):
@@ -2219,6 +2187,7 @@ class ControlPanel:
             "stopping": "Stopping: closing games, uploading results and running stats…",
             "pausing": "Pausing: closing games. Counts are kept.",
             "paused": "Paused. Resume carries on with the same counts; Stop ends the batch.",
+            "failed": f"Batch #{(self.failed or {}).get('session')} failed: {(self.failed or {}).get('error')}",
         }.get(phase, "Closing hides the panel to the tray. Batches keep running."))
         self.train.refresh()
         self.stream.refresh()

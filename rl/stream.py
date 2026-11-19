@@ -12,7 +12,7 @@ one starts.
 
 Writes ``bot_log/model_stream/now.json`` (the game being played, totals, recent games) after
 every move, appends each finished game to ``bot_log/model_stream/games.jsonl``, and stops
-between moves once ``bot_log/model_stream/stop`` appears.
+between moves once a stop is asked of the stream job (``balatro_bot.jobs``).
 """
 
 from __future__ import annotations
@@ -44,10 +44,9 @@ from rl.model import Prepared, weigh
 from rl.ordering import bot_order, order_can_change
 from rl.train import load_model
 from balatro_bot.domain.scoring.play_order import hand_order_for_play  # noqa: E402
-from balatro_bot.files import replace_file  # noqa: E402
+from balatro_bot import jobs  # noqa: E402
 from fork_view import strip  # noqa: E402
 
-STREAM = Path(__file__).resolve().parent.parent / "bot_log" / "model_stream"
 # Moves the live game can't make are left out of what the model may pick.
 LEGALITY = "balatrobot"
 MAX_REFUSALS = 20
@@ -195,13 +194,14 @@ class UpstreamView:
 
 class Player:
     def __init__(self, backend, model_path: Path, *, follow: bool = False, deck: str = "BLUE",
-                 stake: str = "WHITE", delay: float = 1.5, out: Path = STREAM,
+                 stake: str = "WHITE", delay: float = 1.5, out: Path | None = None,
                  seeds=None) -> None:
-        self.adapter = LiveAdapter(backend, bundle_dir=out / "divergences", label="stream")
+        self.out = Path(out) if out is not None else jobs.stream().folder
+        self.job = jobs.Job(self.out, "stream")
+        self.adapter = LiveAdapter(backend, bundle_dir=self.out / "divergences", label="stream")
         self.model_path = Path(model_path)
         self.follow = follow
         self.deck, self.stake, self.delay = deck, stake, delay
-        self.out = out
         self.seeds = iter(seeds) if seeds is not None else None
         self.model = None
         self.checkpoint = ""
@@ -214,12 +214,8 @@ class Player:
 
     # -- files ------------------------------------------------------------------
 
-    @property
-    def stop_file(self) -> Path:
-        return self.out / "stop"
-
     def stop_asked(self) -> bool:
-        return self.stop_file.exists()
+        return self.job.asked("stop")
 
     def write_now(self, **changes) -> None:
         self.now.update(changes)
@@ -229,10 +225,8 @@ class Player:
                 "first updates": self.first_updates, "game": self.now, **self.totals,
                 "mean ante": round(sum(self.antes) / len(self.antes), 2) if self.antes else None,
                 "recent": self.recent}
-        tmp = self.out / "now.tmp"
         try:
-            tmp.write_text(json.dumps(body, indent=2))
-            replace_file(tmp, self.out / "now.json")
+            jobs.write_json(self.out / "now.json", body)
         except OSError:
             pass  # what the panel shows; the next move writes it again
 

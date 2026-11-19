@@ -27,9 +27,10 @@ times how much more likely the playing policy found its move than the copy does
 (log-probabilities). ``beta`` falls linearly to zero over the first ``--fade`` share
 of the run. Everything is written under ``rl/data/ppo/<run>/``.
 
-``train`` also keeps ``bot_log/training/<run>.json`` current for the control panel,
-stops between updates (saved, ready for ``--resume``) once ``bot_log/training/<run>.stop``
-appears, and refuses to start a run another live process is playing.
+``train`` is a job (``balatro_bot.jobs``, folder ``bot_log/training/<run>/``): it keeps the
+run's status current for the control panel, stops between updates (saved, ready for
+``--resume``) once a stop is asked, and refuses to start a run another live process is
+playing.
 """
 
 from __future__ import annotations
@@ -37,7 +38,6 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
-import os
 import shutil
 import sys
 import time
@@ -56,13 +56,12 @@ from rl.selfplay import WIN_BONUS, SelfPlay, advantages, same_seed_scores
 from rl.train import heads, load_model, save_model
 
 from balatro_bot.eval_compare import compare, describe  # noqa: E402  (src is on the path once rl is imported)
-from balatro_bot.files import replace_file  # noqa: E402
+from balatro_bot import jobs  # noqa: E402
+from balatro_bot.jobs import write_json  # noqa: E402
 
 DATA = Path(__file__).resolve().parent / "data"
 PPO = DATA / "ppo"
 BELOW_NORMAL = 0x4000
-# The control panel's folder (balatro_bot's default log_dir); balatro_bot isn't in .venv-rl.
-TRAINING = Path(__file__).resolve().parent.parent / "bot_log" / "training"
 
 
 def below_normal_priority() -> None:
@@ -141,83 +140,19 @@ def replace_ns(args: argparse.Namespace, **changes) -> argparse.Namespace:
     return argparse.Namespace(**{**vars(args), **changes})
 
 
-def write_json(path: Path, obj) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, indent=2))
-    if not replace_file(tmp, path):
-        raise PermissionError(f"{path} stayed open elsewhere; the new copy is in {tmp}")
-
-
 # -- status for the control panel ------------------------------------------------
 
 
-def status_path(run: str) -> Path:
-    return TRAINING / f"{run}.json"
-
-
-def stop_path(run: str) -> Path:
-    return TRAINING / f"{run}.stop"
-
-
 def report(status: dict, **changes) -> None:
-    """Merge the changes into the run's status and write it out; a write that doesn't get
-    through is left for the next one (the status only feeds the control panel)."""
-    status.update(changes, pid=os.getpid(), updated=time.time())
-    try:
-        TRAINING.mkdir(parents=True, exist_ok=True)
-        write_json(status_path(status["run"]), status)
-    except OSError:
-        pass
-
-
-def pid_alive(pid: int) -> bool:
-    if sys.platform != "win32":
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return False
-        return True
-    query_limited_information, still_active = 0x1000, 259
-    kernel = ctypes.windll.kernel32
-    handle = kernel.OpenProcess(query_limited_information, False, pid)
-    if not handle:
-        return False
-    code = ctypes.c_ulong()
-    ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))
-    kernel.CloseHandle(handle)
-    return bool(ok) and code.value == still_active
-
-
-def read_status(run: str) -> dict:
-    try:
-        return json.loads(status_path(run).read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def playing_elsewhere(run: str) -> int | None:
-    """The pid of another live process playing this run, if there is one."""
-    status = read_status(run)
-    pid = int(status.get("pid", 0))
-    if status.get("phase") == "running" and pid != os.getpid() and pid_alive(pid):
-        return pid
-    return None
+    """Merge the changes into the run's status and write it out."""
+    jobs.learning_run(status["run"]).report(status, **changes)
 
 
 def claim(run: str) -> dict:
-    """Refuse when another process is playing this run, else mark it as ours.
-
-    Two processes on one run folder overwrite each other's checkpoints and both append
-    to its log. The status is written before the model loads to keep the window in
-    which two starts can both pass this check short.
-    """
-    pid = playing_elsewhere(run)
-    if pid is not None:
-        raise SystemExit(f"{run} is already being played by process {pid}")
-    stop_path(run).unlink(missing_ok=True)
-    status = {"run": run, "phase": "running", "doing": "starting"}
-    report(status)
-    return status
+    """Refuse when another process is playing this run, else mark it as ours. The status
+    is written before the model loads to keep the window in which two starts can both
+    pass this check short."""
+    return jobs.learning_run(run).claim(run=run, doing="starting")
 
 
 def progress(state: dict, args) -> dict:
@@ -244,23 +179,6 @@ def last_eval(out: Path) -> dict:
     """The run's newest evaluation, for a resumed run's first status."""
     evals = sorted(out.glob("eval_u*.json"))
     return eval_numbers(json.loads(evals[-1].read_text())["summary"]) if evals else {}
-
-
-def stop_requested(run: str) -> bool:
-    """True once a stop has been asked for this run; the request is used up."""
-    try:
-        stop_path(run).unlink()
-    except FileNotFoundError:
-        return False
-    return True
-
-
-def report_failure(run: str, error: str) -> None:
-    """Mark the run failed if this process claimed it; a refusal before the claim leaves
-    the status of whoever played the run last."""
-    status = read_status(run)
-    if status.get("pid") == os.getpid():
-        report(status, phase="failed", doing="", error=error)
 
 
 # -- fit-value ----------------------------------------------------------------
@@ -371,7 +289,7 @@ def train(args) -> int:
                          deck=deck, stake=stake, win_bonus=args.win_bonus)
     rng = np.random.default_rng(args.seed + state["updates"])
     eval_seeds = [(eval_seed(i), deck, stake) for i in range(1, args.eval_games + 1)]
-    report(status, copy=meta["copy"], beta=state["beta"], doing="playing",
+    report(status, phase="running", copy=meta["copy"], beta=state["beta"], doing="playing",
            method="BRANCHES" if args.branch_rate else "SAME SEED", deck=args.deck, stake=args.stake,
            **{"win bonus": args.win_bonus}, **progress(state, args), **last_numbers(log_path),
            **last_eval(out))
@@ -381,8 +299,9 @@ def train(args) -> int:
     began = time.perf_counter() - state["seconds"]
     learn_args = replace_ns(args, value_coef=0.0) if args.plays > 1 else args
     while state["seconds"] < args.hours * 3600:
-        if stop_requested(args.run):
+        if jobs.learning_run(args.run).asked("stop"):
             report(status, phase="stopped", doing="")
+            jobs.learning_run(args.run).clear()
             return 0
         t0 = time.perf_counter()
         beta = state["beta"] if state["fade_seconds"] <= 0 else \
@@ -472,8 +391,8 @@ def train(args) -> int:
     evaluate_and_report(model, out, state, eval_seeds, status)
     if args.final_check:
         final_check(model, copy, out, state, args.final_check, status, setup)
-    stop_path(args.run).unlink(missing_ok=True)
     report(status, phase="finished", doing="")
+    jobs.learning_run(args.run).clear()
     return 0
 
 
@@ -703,10 +622,10 @@ def main() -> int:
         return train(args)
     except SystemExit as e:
         if e.code not in (0, None):
-            report_failure(args.run, str(e.code))
+            jobs.learning_run(args.run).fail(str(e.code))
         raise
     except BaseException as e:
-        report_failure(args.run, f"{type(e).__name__}: {e}" if str(e) else type(e).__name__)
+        jobs.learning_run(args.run).fail(f"{type(e).__name__}: {e}" if str(e) else type(e).__name__)
         raise
 
 

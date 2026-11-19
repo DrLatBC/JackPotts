@@ -7,7 +7,7 @@ from argparse import Namespace
 
 import pytest
 
-from balatro_bot import stream
+from balatro_bot import jobs, stream
 
 
 class FakeProc:
@@ -30,11 +30,9 @@ class FakeProc:
 
 @pytest.fixture
 def launcher(tmp_path, monkeypatch):
-    monkeypatch.setattr(stream, "STREAM_DIR", tmp_path)
-    monkeypatch.setattr(stream, "STATUS", tmp_path / "status.json")
-    monkeypatch.setattr(stream, "STOP", tmp_path / "stop")
-    monkeypatch.setattr(stream, "PLAYER_LOG", tmp_path / "stream.log")
-    monkeypatch.setattr(stream, "GAME_LOG", tmp_path / "game.log")
+    """The stream's job folder in tmp_path, with stand-ins for everything it starts."""
+    monkeypatch.setattr(jobs, "ROOT", tmp_path)
+    folder = jobs.stream().folder
     monkeypatch.setattr(stream, "tie_children_to_supervisor", lambda: True)
     monkeypatch.setattr(stream, "kill_port_processes", lambda ports: 0)
     monkeypatch.setattr(stream, "ensure_isolated_profile", lambda port: str(tmp_path / "profile"))
@@ -56,7 +54,7 @@ def launcher(tmp_path, monkeypatch):
     monkeypatch.setattr(stream.subprocess, "Popen", popen)
     args = Namespace(model="rl/data/ppo/r1/latest.pt", follow=True, deck="BLUE", stake="WHITE", delay=1.5,
                      port=12340, overlay_port=0)
-    return tmp_path, procs, args
+    return folder, procs, args
 
 
 def status(tmp_path):
@@ -181,28 +179,6 @@ def test_unlock_all_writes_what_the_games_unlock_all_leaves(love, tmp_path):
 def test_unlock_all_makes_a_profile_from_nothing(love, tmp_path):
     stream.unlock_all(tmp_path / "new" / "1", love)
     assert read_jkr(tmp_path / "new" / "1" / "profile.jkr") == 'return {["all_unlocked"]=true,}'
-
-
-def test_replace_file_waits_out_a_reader(tmp_path, monkeypatch):
-    from balatro_bot import files
-
-    target, tmp = tmp_path / "now.json", tmp_path / "now.tmp"
-    target.write_text("old")
-    tmp.write_text("new")
-    real, refusals = files.os.replace, [2]
-
-    def replace(src, dst):
-        if refusals[0]:
-            refusals[0] -= 1
-            raise PermissionError(5, "Access is denied")
-        real(src, dst)
-
-    monkeypatch.setattr(files.os, "replace", replace)
-    monkeypatch.setattr(files.time, "sleep", lambda s: None)
-    assert files.replace_file(tmp, target) and target.read_text() == "new"
-    refusals[0] = 999
-    tmp.write_text("newer")
-    assert not files.replace_file(tmp, target, tries=3) and target.read_text() == "new"
 
 
 def test_the_overlay_is_served_while_the_stream_runs(launcher, monkeypatch):

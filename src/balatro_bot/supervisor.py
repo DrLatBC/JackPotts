@@ -26,7 +26,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from balatro_bot import dashboard_client
+from balatro_bot import dashboard_client, jobs
 from balatro_bot.config import SupervisorConfig
 
 # ---------------------------------------------------------------------------
@@ -61,14 +61,9 @@ SERVER_STARTUP_WAIT = cfg.server_startup_wait
 SERVER_STAGGER = cfg.server_stagger
 BOT_STAGGER = cfg.bot_stagger
 POLL_INTERVAL = cfg.poll_interval
-# The GUI reads STATUS_FILE to show the batch, creates STOP_FILE to ask for a
-# clean shutdown and PAUSE_FILE to pause, and drops add/remove requests into
-# COMMANDS_DIR; the terminal supervisor honours all of them too. A paused
-# batch lives on in STATUS_FILE (phase "paused") until --resume or --finish-paused.
-STATUS_FILE = LOG_DIR / "supervisor_status.json"
-STOP_FILE = LOG_DIR / "supervisor.stop"
-PAUSE_FILE = LOG_DIR / "supervisor.pause"
-COMMANDS_DIR = LOG_DIR / "supervisor_commands"
+# The batch is a job (balatro_bot.jobs): the panel reads its status, asks it to stop
+# or pause and queues add/remove commands; a terminal supervisor honours them too. A
+# paused batch lives on in its status (phase "paused") until --resume or --finish-paused.
 MAX_INSTANCES = 100
 # Removed slots keep their port so their logs and counts stay theirs; a batch
 # hands out at most this many ports from its base port.
@@ -591,6 +586,7 @@ class Supervisor:
         self.bot_python = PYPY_PYTHON if on_pypy else PYTHON
         self.running = True
         self.paused = False
+        self.finished = False
         self.resumed = False
         self.session_num = 0
         self.session_start: float = 0.0
@@ -639,10 +635,6 @@ class Supervisor:
 
     def setup(self) -> None:
         WINS_DIR.mkdir(parents=True, exist_ok=True)
-        STOP_FILE.unlink(missing_ok=True)
-        PAUSE_FILE.unlink(missing_ok=True)
-        shutil.rmtree(COMMANDS_DIR, ignore_errors=True)
-        COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
         for slot in self.slots:
             (LOG_DIR / str(slot.port)).mkdir(parents=True, exist_ok=True)
 
@@ -931,13 +923,8 @@ class Supervisor:
         log.info("%s (port %d): removed", slot.name, slot.port)
 
     def apply_commands(self) -> None:
-        """Carry out add/remove requests the control panel dropped in COMMANDS_DIR, oldest first."""
-        for path in sorted(COMMANDS_DIR.glob("*.json")):
-            try:
-                cmd = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                cmd = {}
-            path.unlink(missing_ok=True)
+        """Carry out the add/remove requests the control panel queued, oldest first."""
+        for cmd in jobs.batch().take():
             if cmd.get("op") == "add":
                 self.add_slot(cmd["deck"], cmd["stake"])
             elif cmd.get("op") == "remove":
@@ -1031,8 +1018,7 @@ class Supervisor:
                 lost_at[ante] = lost_at.get(ante, 0) + 1
         return {
             "phase": phase,
-            "pid": os.getpid(),
-            "updated": time.time(),
+            "started": self.session_start,
             "session": self.session_num,
             "games_per_instance": self.games,
             "slots": slots,
@@ -1051,12 +1037,7 @@ class Supervisor:
         }
 
     def _write_status(self, status: dict) -> None:
-        tmp = STATUS_FILE.with_suffix(".tmp")
-        try:
-            tmp.write_text(json.dumps(status), encoding="utf-8")
-            os.replace(tmp, STATUS_FILE)
-        except OSError as e:
-            log.warning("Could not write status file: %s", e)
+        jobs.batch().report(status)
 
     def print_status(self) -> None:
         status = self._status("running")
@@ -1132,7 +1113,7 @@ class Supervisor:
 
         self._write_status(self._status("starting"))
         for i, slot in enumerate(to_start):
-            if not self.running or STOP_FILE.exists() or PAUSE_FILE.exists():
+            if not self.running or jobs.batch().asked("stop") or jobs.batch().asked("pause"):
                 break
             self.start_slot(slot)
             self._write_status(self._status("starting"))
@@ -1141,13 +1122,11 @@ class Supervisor:
 
         last_status = 0.0
         while self.running:
-            if STOP_FILE.exists():
-                log.info("Stop file found, shutting down")
-                STOP_FILE.unlink(missing_ok=True)
+            if jobs.batch().asked("stop"):
+                log.info("Stop asked, shutting down")
                 break
-            if PAUSE_FILE.exists():
-                log.info("Pause file found, pausing")
-                PAUSE_FILE.unlink(missing_ok=True)
+            if jobs.batch().asked("pause"):
+                log.info("Pause asked, pausing")
                 self.paused = True
                 break
 
@@ -1164,6 +1143,7 @@ class Supervisor:
                 self.print_status()
                 done = sum(1 for s in self.slots if s.state == "done")
                 print(f"\n  All princesses have returned ({done} finished).")
+                self.finished = True
                 break
 
             time.sleep(1.0)
@@ -1188,11 +1168,13 @@ class Supervisor:
             for slot in self.live_slots():
                 slot.state = "stopped"
             self._write_status({**self._status("paused"), "resume": self.pause_state()})
+            jobs.batch().clear()
             print("  Batch paused.")
             return
         if self.session_num > 0:
             self.post_run()
-        self._write_status(self._status("stopped"))
+        self._write_status(self._status("finished" if self.finished else "stopped"))
+        jobs.batch().clear()
         print("  All princesses recalled.")
 
     def _atexit_abandon(self) -> None:
@@ -1339,10 +1321,7 @@ def main() -> None:
 
     pause_state = None
     if args.resume or args.finish_paused:
-        try:
-            saved = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            saved = {}
+        saved = jobs.batch().status() or {}
         if saved.get("phase") != "paused" or "resume" not in saved:
             parser.error("no paused batch to resume or finish")
         pause_state = saved["resume"]
@@ -1371,8 +1350,9 @@ def main() -> None:
         return
 
     if args.finish_paused:
-        setup_supervisor_logging()
         sup = Supervisor.from_pause_state(pause_state, sim_python)
+        jobs.batch().claim()
+        setup_supervisor_logging()
         sup.shutdown()
         return
 
@@ -1398,6 +1378,8 @@ def main() -> None:
             sim_python=sim_python,
             kernel=kernel,
         )
+
+    jobs.batch().claim()
 
     def on_sigint(sig, frame):
         sup.shutdown()

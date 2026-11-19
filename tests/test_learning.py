@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from balatro_bot import learning
+from balatro_bot import jobs, learning
 
 SETTINGS = {"train_run": "r1", "train_copy": "b187", "train_hours": 1.0, "train_beta": 0.1,
             "train_method": "SAME SEED", "train_bonus": 8.0, "train_deck": "BLUE", "train_stake": "WHITE"}
@@ -17,15 +17,15 @@ SETTINGS = {"train_run": "r1", "train_copy": "b187", "train_hours": 1.0, "train_
 def rl_files(tmp_path, monkeypatch):
     """A throwaway rl/data and bot_log for the learning-run side of the panel."""
     monkeypatch.setattr(learning, "RL_DATA", tmp_path / "rl")
-    monkeypatch.setattr(learning, "TRAIN_DIR", tmp_path / "log" / "training")
-    monkeypatch.setattr(learning, "STREAM_DIR", tmp_path / "log" / "stream")
+    monkeypatch.setattr(jobs, "ROOT", tmp_path / "log")
     (tmp_path / "rl" / "models").mkdir(parents=True)
-    (tmp_path / "log" / "training").mkdir(parents=True)
     return tmp_path
 
 
 def _status(run, **fields):
-    learning.train_file(run, ".json").write_text(json.dumps({"run": run, **fields}))
+    path = jobs.learning_run(run).file("status.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"run": run, **fields}))
 
 
 def _saved_run(root, name, *, seconds, hours, log=True, latest=True):
@@ -176,16 +176,18 @@ def test_copies_lists_the_model_files(rl_files):
 ])
 def test_training_phase(rl_files, payload, stop, phase):
     _status("r", **payload)
+    if stop:
+        jobs.learning_run("r").ask("stop")
     status = learning.read_trainings()["r"]
-    assert learning.training_phase(status, stop) == phase
+    assert status["phase"] == phase
     if payload["phase"] == "running" and phase == "failed":
         assert status["error"]
 
 
 def test_no_runs_or_a_garbled_status_is_idle(rl_files):
     assert learning.read_trainings() == {}
-    assert learning.training_phase(None, False) == "idle"
-    learning.train_file("r", ".json").write_text("{not json")
+    _status("r")
+    jobs.learning_run("r").file("status.json").write_text("{not json")
     assert learning.read_trainings() == {}
 
 
@@ -215,28 +217,6 @@ def _st(phase, updated):
 ])
 def test_follow(statuses, current, followed):
     assert learning.follow(statuses, current) == followed
-
-
-def test_launch_training_clears_the_runs_stop_and_hides_the_window(rl_files, monkeypatch):
-    seen = {}
-    monkeypatch.setattr(learning.subprocess, "Popen", lambda cmd, **kw: seen.update(cmd=cmd, **kw) or "proc")
-    learning.train_file("r", ".stop").touch()
-    learning.train_file("other", ".stop").touch()
-    learning.train_file("r", ".log").write_text("old output\n")
-    assert learning.launch_training(["x"], "r", append=True) == "proc"
-    assert not learning.train_file("r", ".stop").exists()
-    assert learning.train_file("other", ".stop").exists()
-    assert seen["creationflags"] & learning.subprocess.CREATE_NO_WINDOW
-    assert learning.train_file("r", ".log").read_text() == "old output\n"
-    learning.launch_training(["x"], "r")
-    assert learning.train_file("r", ".log").read_text() == ""
-
-
-def test_console_tail_is_the_runs_last_printed_line(rl_files):
-    assert learning.console_tail("r") == ""
-    assert learning.console_tail(None) == ""
-    learning.train_file("r", ".log").write_text("u   1 0.03h\nTraceback\nValueError: bad\n\n")
-    assert learning.console_tail("r") == "ValueError: bad"
 
 
 def test_training_summary_shows_progress_and_the_last_eval():
@@ -320,8 +300,8 @@ def test_a_status_wins_over_the_files_and_shows_a_pending_stop(rl_files):
     status = learning.read_trainings()["live"]
     assert learning.run_overview("live", status)["phase"] == "running"
     assert learning.run_overview("live", status)["update"] == 9
-    learning.train_file("live", ".stop").touch()
-    assert learning.run_overview("live", status)["phase"] == "stopping"
+    jobs.learning_run("live").ask("stop")
+    assert learning.run_overview("live", learning.read_trainings()["live"])["phase"] == "stopping"
 
 
 def test_a_folder_without_a_run_is_left_out(rl_files):
@@ -358,12 +338,13 @@ def test_history_reads_again_only_when_the_files_grow(rl_files):
 # ── The stream ──
 
 def test_stream_status_of_a_dead_launcher_reads_as_failed(rl_files):
-    learning.STREAM_DIR.mkdir(parents=True)
-    learning.stream_file("status.json").write_text(json.dumps({"phase": "running", "pid": 999999999}))
+    job = jobs.stream()
+    job.folder.mkdir(parents=True)
+    job.file("status.json").write_text(json.dumps({"phase": "running", "pid": 999999999}))
     status, now = learning.read_stream()
     assert status["phase"] == "failed" and status["error"] and now is None
-    learning.stream_file("status.json").write_text(json.dumps({"phase": "running", "pid": os.getpid()}))
-    learning.stream_file("now.json").write_text(json.dumps({"games": 3}))
+    job.file("status.json").write_text(json.dumps({"phase": "running", "pid": os.getpid()}))
+    job.file("now.json").write_text(json.dumps({"games": 3}))
     status, now = learning.read_stream()
     assert status["phase"] == "running" and now["games"] == 3
 
@@ -391,34 +372,6 @@ def test_stream_command_follows_only_a_runs_latest(rl_files):
     assert cmd[cmd.index("--deck") + 1] == "RED" and cmd[cmd.index("--delay") + 1] == "0.5"
     fixed = learning.stream_command({**settings, "stream_checkpoint": "u00011"})
     assert "--follow" not in fixed
-
-
-def test_launch_stream_clears_a_stale_stop(rl_files, monkeypatch):
-    seen = {}
-    monkeypatch.setattr(learning.subprocess, "Popen", lambda cmd, **kw: seen.update(cmd=cmd, **kw) or "proc")
-    learning.STREAM_DIR.mkdir(parents=True)
-    learning.stream_file("stop").touch()
-    assert learning.launch_stream(["x"]) == "proc"
-    assert not learning.stream_file("stop").exists()
-    assert seen["creationflags"] & learning.subprocess.CREATE_NO_WINDOW
-
-
-def test_a_read_that_lands_on_a_write_keeps_the_last_good_copy(tmp_path, monkeypatch):
-    path = tmp_path / "status.json"
-    path.write_text(json.dumps({"phase": "running"}))
-    assert learning.read_json(path) == {"phase": "running"}
-    real = type(path).read_text
-
-    def busy(self, *a, **k):
-        if self == path:
-            raise PermissionError(13, "Access is denied")
-        return real(self, *a, **k)
-
-    monkeypatch.setattr(type(path), "read_text", busy)
-    assert learning.read_json(path) == {"phase": "running"}
-    monkeypatch.undo()
-    path.unlink()
-    assert learning.read_json(path) is None
 
 
 def test_choice_of_reads_back_what_model_choice_gives(rl_files):

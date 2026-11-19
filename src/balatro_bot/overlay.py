@@ -61,10 +61,10 @@ def serve(folder: Path, port: int = OVERLAY_PORT) -> ThreadingHTTPServer:
 
 
 def main() -> int:
-    from balatro_bot.supervisor import LOG_DIR
+    from balatro_bot import jobs
 
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--dir", type=Path, default=LOG_DIR / "model_stream")
+    ap.add_argument("--dir", type=Path, default=jobs.stream().folder)
     ap.add_argument("--port", type=int, default=OVERLAY_PORT)
     args = ap.parse_args()
     server = serve(args.dir, args.port)

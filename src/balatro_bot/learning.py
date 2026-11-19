@@ -1,26 +1,24 @@
 """Learning runs and the stream, as files and processes: what the control panel reads,
 the commands it launches, and nothing that needs Tk or torch.
 
-Learning runs are ``rl.ppo train`` (``rl/data/ppo/<run>/``, with per-run status, stop
-and console files in ``bot_log/training/``). The stream is ``balatro_bot.stream``
-(``bot_log/model_stream/``): the visible game played by a model.
+Learning runs are ``rl.ppo train`` (``rl/data/ppo/<run>/``). The stream is
+``balatro_bot.stream``: the visible game played by a model. Both are jobs
+(``balatro_bot.jobs``), which own their status, stop requests and launching.
 """
 
 from __future__ import annotations
 
-import ctypes
 import json
-import subprocess
 import time
 from pathlib import Path
 
+from balatro_bot import jobs
 from balatro_bot.eval_compare import compare
-from balatro_bot.stream import STREAM_DIR
-from balatro_bot.supervisor import BASE_DIR, LOG_DIR, PYTHON
+from balatro_bot.jobs import read_json
+from balatro_bot.supervisor import BASE_DIR, PYTHON
 
 RL_PYTHONW = BASE_DIR / ".venv-rl" / "Scripts" / "pythonw.exe"
 RL_DATA = BASE_DIR / "rl" / "data"
-TRAIN_DIR = LOG_DIR / "training"
 # The train flags the panel doesn't show: every run's, then each method's own.
 TRAIN_FIXED = ["--fade", "0", "--eval-every", "0.5", "--eval-games", "1000", "--final-check", "5000",
                "--threads", "4"]
@@ -29,25 +27,11 @@ METHOD_FIXED = {
     "BRANCHES": ["--branch-rate", "0.05", "--decisions-per-step", "2000"],
 }
 METHODS = list(METHOD_FIXED)
-TRAIN_ACTIVE = ("starting", "running", "stopping")
+TRAIN_ACTIVE = jobs.LIVE
 RUN_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 # A run with no status file whose log changed this recently may still be playing from
 # a terminal on code older than the status file; the panel won't offer to resume it.
 OUTSIDE_SECS = 600
-
-
-def pid_alive(pid: int) -> bool:
-    """True when a process with this pid is still running (Windows)."""
-    process_query_limited_information = 0x1000
-    still_active = 259
-    kernel32 = ctypes.windll.kernel32
-    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-    if not handle:
-        return False
-    code = ctypes.c_ulong()
-    ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-    kernel32.CloseHandle(handle)
-    return bool(ok) and code.value == still_active
 
 
 def run_dir(name: str) -> Path:
@@ -66,24 +50,6 @@ def valid_run_name(name: str) -> bool:
 def run_taken(name: str) -> bool:
     """True when a run of this name has finished an update; train refuses to start it again."""
     return valid_run_name(name) and (run_dir(name) / "log.jsonl").exists()
-
-
-_LAST_GOOD: dict[Path, dict] = {}
-
-
-def read_json(path: Path) -> dict | None:
-    """A JSON file another process rewrites while the panel reads. None once it is gone;
-    the last good copy when this read lands on a write (Windows refuses the read while
-    the writer swaps the file in)."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        _LAST_GOOD.pop(path, None)
-        return None
-    except (OSError, ValueError):
-        return _LAST_GOOD.get(path)
-    _LAST_GOOD[path] = data
-    return data
 
 
 def run_state(name: str) -> dict | None:
@@ -189,37 +155,10 @@ def resume_command(saved_args: dict, hours: float | None = None) -> list[str]:
     return cmd + ["--resume"]
 
 
-def train_file(run: str, suffix: str) -> Path:
-    """A run's status (.json), stop request (.stop) or console output (.log)."""
-    return TRAIN_DIR / f"{run}{suffix}"
-
-
-def launch_training(cmd: list[str], run: str, append: bool = False) -> subprocess.Popen:
-    """Start rl.ppo windowless; it outlives the panel."""
-    TRAIN_DIR.mkdir(parents=True, exist_ok=True)
-    train_file(run, ".stop").unlink(missing_ok=True)
-    with open(train_file(run, ".log"), "a" if append else "w", encoding="utf-8") as out:
-        return subprocess.Popen(
-            cmd,
-            cwd=str(BASE_DIR),
-            stdout=out,
-            stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
-
-
 def read_trainings() -> dict[str, dict]:
-    """Every learning run's last status by name; a run whose process is gone without
-    saying so reads as failed."""
-    statuses = {}
-    for path in TRAIN_DIR.glob("*.json"):
-        status = read_json(path)
-        if status is None:
-            continue
-        if status.get("phase") == "running" and not pid_alive(int(status.get("pid", 0))):
-            status = {**status, "phase": "failed", "error": "The process ended without saving its status."}
-        statuses[path.stem] = status
-    return statuses
+    """Every learning run's status by name (``Job.status``: a dead process reads as
+    failed, a stop asked as stopping)."""
+    return {job.name: status for job in jobs.learning_runs() if (status := job.status()) is not None}
 
 
 def follow(statuses: dict[str, dict], current: str | None) -> str | None:
@@ -236,23 +175,6 @@ def follow(statuses: dict[str, dict], current: str | None) -> str | None:
     if current in statuses or not statuses:
         return current
     return newest(statuses)
-
-
-def training_phase(status: dict | None, stop_asked: bool) -> str:
-    if status is None:
-        return "idle"
-    if status["phase"] == "running" and stop_asked:
-        return "stopping"
-    return status["phase"]
-
-
-def console_tail(run: str | None) -> str:
-    """The last line the run printed."""
-    try:
-        lines = train_file(run, ".log").read_text(encoding="utf-8", errors="replace").splitlines()
-    except (OSError, TypeError):
-        return ""
-    return next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
 
 
 def training_summary(status: dict) -> str:
@@ -363,7 +285,7 @@ def run_overview(name: str, status: dict | None, now: float | None = None) -> di
     if status is not None:
         row.update({k: v for k, v in status.items() if v is not None})
         row["updated"] = max(activity, status.get("updated", 0))
-        row["phase"] = training_phase(status, train_file(name, ".stop").exists())
+        row["phase"] = status["phase"]
         row["vs start"] = eval_vs_start(name)
         return row
     row["vs start"] = eval_vs_start(name)
@@ -428,19 +350,10 @@ class History:
 # ── The stream ──
 
 
-def stream_file(name: str) -> Path:
-    """``status.json`` (the launcher), ``now.json`` (the player), ``stop``, ``games.jsonl``."""
-    return STREAM_DIR / name
-
-
 def read_stream() -> tuple[dict | None, dict | None]:
-    """The launcher's status (one whose process is gone while marked live reads as
-    failed) and the player's game and totals."""
-    status, now = read_json(stream_file("status.json")), read_json(stream_file("now.json"))
-    if (status and status.get("phase") in ("starting", "running", "stopping")
-            and not pid_alive(int(status.get("pid", 0)))):
-        status = {**status, "phase": "failed", "error": "The stream process ended without saying why."}
-    return status, now
+    """The launcher's status (``Job.status``) and the player's game and totals."""
+    job = jobs.stream()
+    return job.status(), read_json(job.file("now.json"))
 
 
 def model_sources() -> list[str]:
@@ -481,14 +394,3 @@ def stream_command(settings: dict) -> list[str]:
     cmd = [PYTHON, "-m", "balatro_bot.stream", "--model", str(path), "--deck", settings["stream_deck"],
            "--stake", settings["stream_stake"], "--delay", str(settings["stream_delay"])]
     return cmd + (["--follow"] if follow else [])
-
-
-def launch_stream(cmd: list[str]) -> subprocess.Popen:
-    """Start the stream windowless; the game window it opens is the only one that shows."""
-    STREAM_DIR.mkdir(parents=True, exist_ok=True)
-    stream_file("stop").unlink(missing_ok=True)
-    with open(stream_file("launcher.log"), "w", encoding="utf-8") as out:
-        return subprocess.Popen(
-            cmd, cwd=str(BASE_DIR), stdout=out, stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
-        )

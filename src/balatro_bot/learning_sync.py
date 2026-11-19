@@ -15,7 +15,7 @@ import logging
 import threading
 from pathlib import Path
 
-from balatro_bot import dashboard_client, learning
+from balatro_bot import dashboard_client, jobs, learning
 from balatro_bot.eval_compare import describe
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ class Uploader:
         if status is None and now is None:
             return
         now = {k: v for k, v in (now or {}).items() if k != "recent"}  # the games go one by one
-        games_path = learning.stream_file("games.jsonl")
+        games_path = jobs.stream().file("games.jsonl")
         mark = (json.dumps([status, now], sort_keys=True, default=str), _size(games_path))
         if mark == self.stream_seen:
             return

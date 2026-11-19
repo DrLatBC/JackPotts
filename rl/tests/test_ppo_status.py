@@ -10,22 +10,24 @@ from argparse import Namespace
 import pytest
 
 from rl import ppo
+from balatro_bot import jobs
 
 
 @pytest.fixture
 def files(tmp_path, monkeypatch):
-    monkeypatch.setattr(ppo, "TRAINING", tmp_path / "training")
+    monkeypatch.setattr(jobs, "ROOT", tmp_path)
     monkeypatch.setattr(ppo, "PPO", tmp_path / "ppo")
     return tmp_path
 
 
 def written(run):
-    return json.loads(ppo.status_path(run).read_text())
+    return json.loads(jobs.learning_run(run).file("status.json").read_text())
 
 
 def put_status(run, **fields):
-    ppo.TRAINING.mkdir(parents=True, exist_ok=True)
-    ppo.status_path(run).write_text(json.dumps({"run": run, **fields}))
+    path = jobs.learning_run(run).file("status.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"run": run, **fields}))
 
 
 STATE = {"updates": 7, "seconds": 1800.0, "games": 7168, "beta": 0.1}
@@ -59,16 +61,6 @@ def test_report_merges_into_the_running_status(files):
     assert written("r1")["phase"] == "stopped" and written("r1")["eval"]["update"] == 6
 
 
-def test_a_stop_request_reaches_only_its_run_and_is_seen_once(files):
-    ppo.TRAINING.mkdir(parents=True)
-    ppo.stop_path("other").touch()
-    assert not ppo.stop_requested("r1")
-    ppo.stop_path("r1").touch()
-    assert ppo.stop_requested("r1")
-    assert not ppo.stop_path("r1").exists() and ppo.stop_path("other").exists()
-    assert not ppo.stop_requested("r1")
-
-
 def test_last_eval_is_the_newest_file(tmp_path):
     assert ppo.last_eval(tmp_path) == {}
     for update in (0, 12, 3):
@@ -85,11 +77,16 @@ def test_a_resumed_run_starts_with_its_last_updates_numbers(tmp_path):
 
 def test_claim_refuses_a_run_another_live_process_plays(files):
     other = os.getppid()
-    assert ppo.pid_alive(other)
+    assert jobs.pid_alive(other)
     put_status("r1", phase="running", pid=other, update=12)
     with pytest.raises(SystemExit, match=f"process {other}"):
         ppo.claim("r1")
     assert written("r1") == {"run": "r1", "phase": "running", "pid": other, "update": 12}
+
+
+def test_a_stop_reaches_only_its_run(files):
+    jobs.learning_run("other").ask("stop")
+    assert not jobs.learning_run("r1").asked("stop")
 
 
 @pytest.mark.parametrize("previous", [
@@ -99,23 +96,23 @@ def test_claim_refuses_a_run_another_live_process_plays(files):
 ])
 def test_claim_takes_a_run_nobody_plays(files, previous):
     put_status("r1", **previous)
-    ppo.stop_path("r1").touch()
+    jobs.learning_run("r1").ask("stop")
     status = ppo.claim("r1")
-    assert (status["phase"], status["pid"]) == ("running", os.getpid())
+    assert (status["phase"], status["pid"]) == ("starting", os.getpid())
     assert written("r1")["doing"] == "starting"
-    assert not ppo.stop_path("r1").exists()
+    assert not jobs.learning_run("r1").asked("stop")
 
 
 def test_failure_keeps_this_processs_numbers(files):
     ppo.report({"run": "r1", "phase": "running", "update": 4})
-    ppo.report_failure("r1", "RuntimeError: out of memory")
+    jobs.learning_run("r1").fail("RuntimeError: out of memory")
     w = written("r1")
     assert (w["phase"], w["update"], w["error"]) == ("failed", 4, "RuntimeError: out of memory")
 
 
 def test_failure_leaves_a_status_this_process_never_claimed(files):
     put_status("r1", phase="finished", pid=DEAD_PID, update=99)
-    ppo.report_failure("r1", "no start.pt")
+    jobs.learning_run("r1").fail("no start.pt")
     assert written("r1") == {"run": "r1", "phase": "finished", "pid": DEAD_PID, "update": 99}
 
 
@@ -136,7 +133,7 @@ def test_main_refusing_a_taken_name_leaves_its_status(files, monkeypatch):
 
 def test_main_refusing_a_run_played_elsewhere_leaves_its_status(files, monkeypatch):
     put_status("busy", phase="running", pid=os.getppid(), update=5)
-    assert "already being played" in _main(monkeypatch, "--run", "busy", "--resume")
+    assert "already running" in _main(monkeypatch, "--run", "busy", "--resume")
     assert written("busy") == {"run": "busy", "phase": "running", "pid": os.getppid(), "update": 5}
 
 

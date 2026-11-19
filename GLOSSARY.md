@@ -115,6 +115,18 @@ _Avoid_: Run (a run is one game), session
 One game of Balatro from the first ante until a win or a loss.
 _Avoid_: Episode
 
+**Job**:
+One long-running process the control panel starts, watches and stops: a batch, a learning run or the stream. It goes on whether or not the panel is open.
+_Avoid_: Task, process (in conversation)
+
+**Learning run**:
+One training of a model from a start, played for a set number of hours.
+_Avoid_: Run (alone), training session
+
+**Stream**:
+A model playing the visible game, move for move, for viewers.
+_Avoid_: Live run
+
 **Mismatch**:
 A hand where the bot's predicted score differs from the score the game reported.
 _Avoid_: Scoring bug, divergence

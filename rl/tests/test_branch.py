@@ -20,6 +20,7 @@ from rl.playback import copy_env, env_view, make_env
 from rl.ppo import scored
 from rl.selfplay import game_points
 from rl.train import save_model
+from balatro_bot import jobs
 
 
 @pytest.fixture(scope="module")
@@ -201,7 +202,7 @@ def test_the_panels_deck_and_stake_names_map_to_the_engines():
 
 
 def test_a_short_branch_run_writes_its_log_decisions_and_status(model, tmp_path, monkeypatch):
-    monkeypatch.setattr(ppo, "TRAINING", tmp_path / "training")
+    monkeypatch.setattr(jobs, "ROOT", tmp_path)
     monkeypatch.setattr(ppo, "PPO", tmp_path / "ppo")
     scored_by_money(monkeypatch)
     start = tmp_path / "start.pt"
@@ -220,7 +221,7 @@ def test_a_short_branch_run_writes_its_log_decisions_and_status(model, tmp_path,
     assert decisions["update"] == 1 and decisions["all"]["n"] == line["decisions"]
     state = json.loads((out / "state.json").read_text())
     assert state["args"]["deck"] == "RED" and state["args"]["win_bonus"] == 16.0
-    assert json.loads((tmp_path / "training" / "br.json").read_text())["phase"] == "finished"
+    assert json.loads((tmp_path / "training" / "br" / "status.json").read_text())["phase"] == "finished"
 
 
 def test_the_pull_alone_moves_the_policy_toward_its_start(model, batch):
