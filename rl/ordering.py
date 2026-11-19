@@ -18,7 +18,7 @@ sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "sim" / "jackdaw_adapter"))
 
 from balatro_bot.domain.models.deck_profile import DeckProfile  # noqa: E402
-from balatro_bot.domain.scoring.play_order import hand_order_for_play, sort_play_order  # noqa: E402
+from balatro_bot.domain.scoring.play_order import play_plan, sort_play_order  # noqa: E402
 from balatro_bot.infrastructure.state_adapter import adapt_state  # noqa: E402
 from balatro_bot.strategy import compute_strategy  # noqa: E402
 from fork_view import augment  # noqa: E402
@@ -73,15 +73,15 @@ def bot_order(game, cards) -> list[int]:
     )
 
 
-def put_in_order(game, cards) -> tuple[int, ...]:
+def put_in_order(game, cards, step=None) -> tuple[int, ...]:
     """Reorder the game's hand so ``cards`` sit in the bot's play order among their own
-    slots, every other card where it was.
-    Returns the hand positions to play: the cards as given when they need no reorder."""
+    slots, every other card where it was. Each single swap goes through ``step``
+    (``game.step`` by default). Returns the hand positions to play."""
     if not order_can_change(game, cards):
         return tuple(sorted(cards))
-    order = bot_order(game, cards)
-    if order == sorted(order):
-        return tuple(order)
-    for at in left_moves(hand_order_for_play(order, len(game.hand))):
-        game.step(A.SwapHandLeft(at))
-    return tuple(sorted(order))
+    rearrange, played = play_plan(bot_order(game, cards), len(game.hand))
+    if rearrange is not None:
+        step = step or game.step
+        for at in left_moves(rearrange):
+            step(A.SwapHandLeft(at))
+    return tuple(played)

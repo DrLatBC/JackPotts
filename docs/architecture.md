@@ -34,7 +34,9 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 
 | File | Role |
 |------|------|
-| `src/balatro_bot/bot.py` | Game loop, polls state, dispatches actions, collects per-game data |
+| `src/balatro_bot/bot.py` | Game loop: observe, decide, dispatch, record; replay and dashboard post |
+| `src/balatro_bot/dispatcher.py` | Sends one action: rearrange-then-play, retries and forced skips |
+| `src/balatro_bot/game_recorder.py` | The game's record and its dashboard payload |
 | `src/balatro_bot/cli.py` | CLI entry (`balatro-bot`) — flags, logging setup, `run_bot()` wiring |
 | `src/balatro_bot/engine.py` | Priority-ordered rule engine |
 | `src/balatro_bot/context.py` | `RoundContext` — per-tick cached context with boss blind mutations; exposes `card_protection` |

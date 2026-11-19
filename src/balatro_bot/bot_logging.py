@@ -1,94 +1,62 @@
-"""Game loop logging helpers — scoring diagnostics, state transitions, action summaries."""
+"""Game log text: state transitions, actions, scoring diagnostics. These functions write
+log lines only; the game's record is kept by ``game_recorder``."""
 
 from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
 
-from balatro_bot.bot_format import fmt_card, format_deck_snapshot
+from balatro_bot.bot_format import fmt_card
 from balatro_bot.cards import joker_key
 from balatro_bot.domain.models.card import Card
-from balatro_bot.domain.policy.exploration import explorer
-
-if TYPE_CHECKING:
-    from balatro_bot.bot import GameLoopState
 
 log = logging.getLogger("balatro_bot")
 _stream_log = logging.getLogger("balatro_stream")
 _scoring_log = logging.getLogger("balatro_scoring")
 
 
+def _target_text(target: int | str | None) -> str | None:
+    return f"{target:,}" if isinstance(target, int) else target
+
+
 # ---------------------------------------------------------------------------
 # Round / blind result
 # ---------------------------------------------------------------------------
 
-def log_blind_result(gs: GameLoopState, result: str = "WON") -> None:
-    """Log round summary for the current blind."""
-    if not gs.current_blind_name:
-        return
-    target_str = (
-        f"{gs.current_blind_target:,}"
-        if isinstance(gs.current_blind_target, int)
-        else gs.current_blind_target
-    )
-    hands_used = gs.total_hands_played - gs.hands_at_blind_start
-    discards_used = gs.total_discards_used - gs.discards_at_blind_start
+def log_blind_result(
+    blind_name: str, scored: int, target: int | str | None, result: str,
+    hands_used: int, discards_used: int,
+) -> None:
+    """Round summary for a finished blind."""
     log.info(
         "[ROUND] %s: scored %s / needed %s — %s | %d hands, %d discards",
-        gs.current_blind_name, f"{gs.max_chips_this_blind:,}",
-        target_str, result, hands_used, discards_used,
+        blind_name, f"{scored:,}", _target_text(target), result, hands_used, discards_used,
     )
     if result == "WON":
         _stream_log.info(
             "%s WON — %s / %s | %d hands, %d discards",
-            gs.current_blind_name, f"{gs.max_chips_this_blind:,}",
-            target_str, hands_used, discards_used,
+            blind_name, f"{scored:,}", _target_text(target), hands_used, discards_used,
         )
-
-    # Accumulate for dashboard reporting
-    from balatro_bot.domain.policy.playing import BOSS_BLINDS
-    is_boss = gs.current_blind_name in BOSS_BLINDS if gs.current_blind_name else False
-    gs.round_results.append({
-        "ante": gs.ante_at_blind_start or gs.last_ante or 0,
-        "blind_name": gs.current_blind_name,
-        "is_boss": is_boss,
-        "scored": gs.max_chips_this_blind,
-        "needed": gs.current_blind_target if isinstance(gs.current_blind_target, int) else 0,
-        "won": result == "WON",
-        "hands_used": hands_used,
-        "discards_used": discards_used,
-    })
 
 
 # ---------------------------------------------------------------------------
 # Per-state logging helpers
 # ---------------------------------------------------------------------------
 
-def log_ante_transition(gs: GameLoopState, state: dict) -> None:
-    """Log roster, strategy, hand levels when ante changes."""
-    ante_num = state.get("ante_num")
-    if ante_num is None or ante_num == gs.last_ante:
-        return
+def log_ante(state: dict, deck_snapshot: str, strategy: str) -> None:
+    """Roster, deck, strategy and hand levels at the start of an ante."""
+    from balatro_bot.joker_effects import parse_effect_value
 
+    ante_num = state.get("ante_num")
     joker_cards = state.get("jokers", {}).get("cards", [])
     hand_levels = state.get("hands", {})
     money = state.get("money", 0)
 
-    # Roster with effect values — also store scaling for dashboard
-    from balatro_bot.joker_effects import parse_effect_value
     roster_parts = []
     for j in joker_cards:
         label = j.get("label", "?")
         effect_text = j.get("value", {}).get("effect", "")
         parsed = parse_effect_value(effect_text) if effect_text else {}
-        # Store latest scaling values for dashboard payload
-        if any(parsed.get(k) for k in ("chips", "mult", "xmult")):
-            gs.joker_scaling[label] = {
-                "chips": parsed.get("chips"),
-                "mult": parsed.get("mult"),
-                "xmult": parsed.get("xmult"),
-            }
         if parsed.get("xmult"):
             roster_parts.append(f"{label}(X{parsed['xmult']:.1f})")
         elif parsed.get("mult"):
@@ -97,25 +65,18 @@ def log_ante_transition(gs: GameLoopState, state: dict) -> None:
             roster_parts.append(f"{label}(+{parsed['chips']:.0f}chips)")
         else:
             roster_parts.append(label)
-
     log.info(
         "[ANTE %s] Roster (%d jokers): [%s]",
         ante_num, len(joker_cards),
         ", ".join(roster_parts) if roster_parts else "none",
     )
-
-    deck_cards = state.get("cards", {}).get("cards", [])
-    deck_snapshot = format_deck_snapshot(deck_cards)
     log.info("[ANTE %s] Deck %s", ante_num, deck_snapshot)
+    log.info("[ANTE %s] Strategy: %s", ante_num, strategy)
 
-    from balatro_bot.strategy import compute_strategy
-    strat = compute_strategy(joker_cards, hand_levels)
-    log.info("[ANTE %s] Strategy: %s", ante_num, strat.describes())
-
-    leveled = []
-    for ht, data in hand_levels.items():
-        if hasattr(data, "get") and data.get("level", 1) > 1:
-            leveled.append(f"{ht}(lv{data['level']})")
+    leveled = [
+        f"{ht}(lv{data['level']})" for ht, data in hand_levels.items()
+        if hasattr(data, "get") and data.get("level", 1) > 1
+    ]
     if leveled:
         log.info("[ANTE %s] Money: $%d | Levels: %s", ante_num, money, ", ".join(leveled))
     else:
@@ -127,51 +88,17 @@ def log_ante_transition(gs: GameLoopState, state: dict) -> None:
     _stream_log.info("Jokers: %s", ", ".join(joker_names) if joker_names else "(none)")
     _stream_log.info("Money: $%d", money)
 
-    # Capture ante snapshot for dashboard
-    joker_roster_data = []
-    for j in joker_cards:
-        label = j.get("label", "?")
-        scaling = gs.joker_scaling.get(label, {})
-        joker_roster_data.append({
-            "name": label,
-            "chips": scaling.get("chips"),
-            "mult": scaling.get("mult"),
-            "xmult": scaling.get("xmult"),
-        })
-    leveled_dict = {}
-    for ht, data in hand_levels.items():
-        if hasattr(data, "get") and data.get("level", 1) > 1:
-            leveled_dict[ht] = data["level"]
-    gs.ante_snapshots.append({
-        "ante": ante_num,
-        "money": money,
-        "joker_roster": joker_roster_data,
-        "hand_levels": leveled_dict or None,
-        "deck_size": len(deck_cards),
-        "deck_snapshot": deck_snapshot,
-        "strategy": strat.describes(),
-    })
 
-    gs.last_ante = ante_num
+def log_shop(state: dict) -> None:
+    """The shop's stock."""
+    def priced(cards):
+        return [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})" for c in cards]
 
-
-def log_shop_state(gs: GameLoopState, state: dict) -> None:
-    """Log shop inventory when it changes."""
     shop_cards = state.get("shop", {}).get("cards", [])
-    packs = state.get("packs", {}).get("cards", [])
-    vouchers = state.get("vouchers", {}).get("cards", [])
-    shop_id = tuple(c.get("label", "") for c in shop_cards)
-    if shop_id == gs.last_logged_shop:
-        return
-
-    jokers_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
-                    for c in shop_cards if c.get("set") == "JOKER"]
-    consumables_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
-                         for c in shop_cards if c.get("set") not in ("JOKER",)]
-    packs_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
-                   for c in packs]
-    vouchers_avail = [f"{c.get('label','?')}(${c.get('cost',{}).get('buy','?')})"
-                      for c in vouchers]
+    jokers_avail = priced(c for c in shop_cards if c.get("set") == "JOKER")
+    consumables_avail = priced(c for c in shop_cards if c.get("set") not in ("JOKER",))
+    packs_avail = priced(state.get("packs", {}).get("cards", []))
+    vouchers_avail = priced(state.get("vouchers", {}).get("cards", []))
     parts = []
     if jokers_avail:
         parts.append("jokers: " + ", ".join(jokers_avail))
@@ -181,98 +108,22 @@ def log_shop_state(gs: GameLoopState, state: dict) -> None:
         parts.append("packs: " + ", ".join(packs_avail))
     if vouchers_avail:
         parts.append("vouchers: " + ", ".join(vouchers_avail))
-    money = state.get("money", 0)
-    log.info("Shop ($%d): %s", money, " | ".join(parts) if parts else "(empty)")
-
-    # Capture shop offers for dashboard
-    ante_num = state.get("ante_num")
-    for c in shop_cards:
-        card_set = c.get("set", "").lower()
-        item_type = card_set if card_set in ("joker", "tarot", "planet", "spectral") else card_set
-        gs.shop_events.append({
-            "ante": ante_num,
-            "event_type": "offer",
-            "item_name": c.get("label", "?"),
-            "item_type": item_type,
-            "cost": c.get("cost", {}).get("buy"),
-            "money_after": money,
-        })
-    for c in packs:
-        gs.shop_events.append({
-            "ante": ante_num,
-            "event_type": "offer",
-            "item_name": c.get("label", "?"),
-            "item_type": "pack",
-            "cost": c.get("cost", {}).get("buy"),
-            "money_after": money,
-        })
-    for c in vouchers:
-        gs.shop_events.append({
-            "ante": ante_num,
-            "event_type": "offer",
-            "item_name": c.get("label", "?"),
-            "item_type": "voucher",
-            "cost": c.get("cost", {}).get("buy"),
-            "money_after": money,
-        })
-
-    gs.last_logged_shop = shop_id
+    log.info("Shop ($%d): %s", state.get("money", 0), " | ".join(parts) if parts else "(empty)")
 
 
-def log_blind_transition(gs: GameLoopState, state: dict) -> None:
-    """Detect blind select changes, log previous blind result, set up new blind tracking."""
-    blinds = state.get("blinds", {})
-    blind_id = tuple(
-        (k, b.get("name", ""), b.get("status", ""))
-        for k, b in blinds.items() if isinstance(b, dict)
-    )
-    if blind_id == gs.last_logged_blind:
-        return
-
-    for key, b in blinds.items():
-        if isinstance(b, dict) and b.get("status") in ("SELECT", "CURRENT"):
-            name = b.get("name", "?")
-            score = b.get("score", "?")
-            # Log previous blind summary before overwriting
-            if gs.current_blind_name and gs.max_chips_this_blind > 0:
-                log_blind_result(gs, "WON")
-            log.info("Blind: %s (need %s chips)", name, score)
-            _stream_log.info("")
-            _stream_log.info("--- %s — need %s chips ---", name, f"{score:,}" if isinstance(score, int) else score)
-            gs.current_blind_name = name
-            gs.current_blind_target = score
-            gs.max_chips_this_blind = 0
-            state.pop("_boss_disabled", None)
-            gs.hands_at_blind_start = gs.total_hands_played
-            gs.discards_at_blind_start = gs.total_discards_used
-            # Snapshot ante at blind start — Balatro bumps ante_num once the
-            # boss is defeated, so reading gs.last_ante at round completion
-            # lands the boss row on the next ante.
-            ante_now = state.get("ante_num")
-            if ante_now is None:
-                log.warning(
-                    "Blind %r started without ante_num in state — falling "
-                    "back to last_ante=%s; round may be misattributed",
-                    name, gs.last_ante,
-                )
-                gs.ante_at_blind_start = gs.last_ante or 0
-            else:
-                gs.ante_at_blind_start = ante_now
-            gs.hand_context_logged = False
-            break
-    gs.last_logged_blind = blind_id
+def log_blind(name: str, score: int | str) -> None:
+    """A blind coming up."""
+    log.info("Blind: %s (need %s chips)", name, score)
+    _stream_log.info("")
+    _stream_log.info("--- %s — need %s chips ---", name, f"{score:,}" if isinstance(score, int) else score)
 
 
-def log_hand_state(gs: GameLoopState, state: dict) -> None:
-    """Log hand composition and first-hand-of-blind context."""
-    hand_cards = state.get("hand", {}).get("cards", [])
-    hand_id = tuple(c.get("label", "") for c in hand_cards)
-    if hand_id == gs.last_logged_hand:
-        return
-
+def log_hand(hand_cards: list, prev_labels: list) -> None:
+    """The hand held, with the cards drawn since ``prev_labels`` and any debuffs."""
     hand_str = ", ".join(fmt_card(c) for c in hand_cards)
-    if gs.prev_hand_labels:
-        remaining = list(gs.prev_hand_labels)
+    drew_str = ""
+    if prev_labels:
+        remaining = list(prev_labels)
         drew = []
         for c in hand_cards:
             lbl = c.get("label", "")
@@ -281,41 +132,38 @@ def log_hand_state(gs: GameLoopState, state: dict) -> None:
             else:
                 drew.append(fmt_card(c))
         drew_str = f" | drew: [{', '.join(drew)}]" if drew else ""
-    else:
-        drew_str = ""
     debuffed = [fmt_card(c) for c in hand_cards
                 if isinstance(c.get("state", {}), dict) and c["state"].get("debuff")]
     debuff_str = f" | DEBUFFED: [{', '.join(debuffed)}]" if debuffed else ""
     log.info("Hand: [%s]%s%s", hand_str, drew_str, debuff_str)
-    gs.prev_hand_labels = [c.get("label", "") for c in hand_cards]
-    gs.last_logged_hand = hand_id
 
-    # First hand of a new blind — log context once
-    if not gs.hand_context_logged and gs.current_blind_name:
-        rnd = state.get("round", {})
-        from balatro_bot.domain.scoring.search import best_hand as _bh
-        from balatro_bot.infrastructure.state_adapter import adapt_state
-        # Typed cards and jokers: hand search caches its per-card and per-lineup facts on them.
-        snap = adapt_state(state)
-        bh = _bh(snap.hand_cards, snap.hand_levels, jokers=snap.jokers, joker_limit=snap.joker_limit)
-        best_score = bh.total if bh else 0
-        best_name = bh.hand_name if bh else "?"
-        blind_need = gs.current_blind_target or 0
-        can_win = best_score >= blind_need if blind_need else False
-        log.info(
-            "[HAND] Best: %s for %s | Blind: %s needs %s | Hands: %d | %s",
-            best_name, f"{best_score:,}", gs.current_blind_name,
-            f"{blind_need:,}" if isinstance(blind_need, int) else blind_need,
-            rnd.get("hands_left", 0),
-            "CAN WIN" if can_win else "NEED MORE",
-        )
-        _stream_log.info(
-            "Best: %s for %s | Hands: %d | %s",
-            best_name, f"{best_score:,}",
-            rnd.get("hands_left", 0),
-            "CAN WIN" if can_win else "NEED MORE",
-        )
-        gs.hand_context_logged = True
+
+def log_hand_context(state: dict, blind_name: str, blind_target: int | str | None) -> None:
+    """The best hand on offer at the first hand of a blind, against what the blind needs."""
+    from balatro_bot.domain.scoring.search import best_hand as _bh
+    from balatro_bot.infrastructure.state_adapter import adapt_state
+
+    rnd = state.get("round", {})
+    # Typed cards and jokers: hand search caches its per-card and per-lineup facts on them.
+    snap = adapt_state(state)
+    bh = _bh(snap.hand_cards, snap.hand_levels, jokers=snap.jokers, joker_limit=snap.joker_limit)
+    best_score = bh.total if bh else 0
+    best_name = bh.hand_name if bh else "?"
+    blind_need = blind_target or 0
+    can_win = best_score >= blind_need if blind_need else False
+    log.info(
+        "[HAND] Best: %s for %s | Blind: %s needs %s | Hands: %d | %s",
+        best_name, f"{best_score:,}", blind_name,
+        f"{blind_need:,}" if isinstance(blind_need, int) else blind_need,
+        rnd.get("hands_left", 0),
+        "CAN WIN" if can_win else "NEED MORE",
+    )
+    _stream_log.info(
+        "Best: %s for %s | Hands: %d | %s",
+        best_name, f"{best_score:,}",
+        rnd.get("hands_left", 0),
+        "CAN WIN" if can_win else "NEED MORE",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -323,13 +171,13 @@ def log_hand_state(gs: GameLoopState, state: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def log_action(
-    gs: GameLoopState, game_state: str, method: str, params: dict | None,
-    action: object, card_detail: str, state: dict,
+    seq: int, game_state: str, method: str, params: dict | None,
+    action: object, card_detail: str, state: dict, blind_target: int | str | None,
 ) -> None:
     """Log action to both main and stream loggers."""
     log.info(
         "[#%d] %s -> %s(%s)%s | %s",
-        gs.actions_taken, game_state, method, params or "",
+        seq, game_state, method, params or "",
         card_detail, getattr(action, "reason", ""),
     )
 
@@ -344,7 +192,7 @@ def log_action(
             hand_name_str = getattr(action, "hand_name", "") or "?"
             score_str = f"{score_val:,}"
             chips_remaining = state.get("round", {}).get("chips", 0)
-            blind_need = gs.current_blind_target if isinstance(gs.current_blind_target, int) else 0
+            blind_need = blind_target if isinstance(blind_target, int) else 0
             remaining = blind_need - chips_remaining if blind_need else 0
             _stream_log.info(
                 "Play %s \u2192 %s / %s needed",
@@ -367,13 +215,22 @@ def log_action(
 
 
 # ---------------------------------------------------------------------------
-# Play snapshot + joker changes + game over
+# Play snapshot + game over
 # ---------------------------------------------------------------------------
+
+def find_current_blind(state: dict) -> tuple[str, int | str] | None:
+    """Find the current/selected blind from game state. Returns (name, score) or None."""
+    for b in state.get("blinds", {}).values():
+        if isinstance(b, dict) and b.get("status") == "CURRENT":
+            return b.get("name", "?"), b.get("score", "?")
+    for b in state.get("blinds", {}).values():
+        if isinstance(b, dict) and b.get("status") == "SELECT":
+            return b.get("name", "?"), b.get("score", "?")
+    return None
+
 
 def build_play_snapshot(state: dict, params: dict, action: object) -> dict:
     """Build the pre-play snapshot dict for scoring diagnostics."""
-    from balatro_bot.bot import find_current_blind
-
     hand_cards_snap = state.get("hand", {}).get("cards", [])
     play_indices = set(params.get("cards", []))
 
@@ -412,51 +269,25 @@ def build_play_snapshot(state: dict, params: dict, action: object) -> dict:
     }
 
 
-def detect_joker_changes(gs: GameLoopState, state: dict) -> None:
-    """Detect joker roster changes, log strategy shift, handle Luchador sell."""
-    cur_joker_keys = {joker_key(j) for j in state.get("jokers", {}).get("cards", [])}
-    if cur_joker_keys != gs.prev_joker_keys and gs.prev_joker_keys:
-        from balatro_bot.strategy import compute_strategy as _cs
-        new_strat = _cs(state.get("jokers", {}).get("cards", []), state.get("hands", {}))
-        log.info("[STRAT] %s", new_strat.describes())
-        # Luchador sold during a boss blind → boss effect disabled
-        if "j_luchador" in gs.prev_joker_keys and "j_luchador" not in cur_joker_keys:
-            from balatro_bot.domain.policy.playing import BOSS_BLINDS
-            if gs.current_blind_name in BOSS_BLINDS:
-                state["_boss_disabled"] = True
-                log.info("[BOSS] Luchador sold — %s effect disabled", gs.current_blind_name)
-    gs.prev_joker_keys = cur_joker_keys
-
-
-def log_game_over(gs: GameLoopState, state: dict) -> None:
-    """Log game over summary and handle win capture."""
-    from balatro_bot.bot import _win_handler
-
-    # Capture chips from the final state
-    final_chips = state.get("round", {}).get("chips", 0)
-    if final_chips > gs.max_chips_this_blind:
-        gs.max_chips_this_blind = final_chips
-
-    # Log final round summary if died on a blind
-    log_blind_result(gs, "LOST")
-
+def log_game_over(state: dict, *, won: bool, actions: int, hands: int, discards: int) -> None:
+    """Game over summary."""
     ante = state.get("ante_num", "?")
     round_num = state.get("round_num", "?")
     seed = state.get("seed", "?")
-    if gs.actually_won:
+    if won:
         log.info(
             "Game over: VICTORY (died in endless) | seed=%s ante=%s round=%s | %d actions taken",
-            seed, ante, round_num, gs.actions_taken,
+            seed, ante, round_num, actions,
         )
     elif state.get("won", False):
         log.info(
             "Game over: DEFEAT (state.won=true but never reached ante 9) | seed=%s ante=%s round=%s | %d actions taken",
-            seed, ante, round_num, gs.actions_taken,
+            seed, ante, round_num, actions,
         )
     else:
         log.info(
             "Game over: DEFEAT | seed=%s ante=%s round=%s | %d actions taken",
-            seed, ante, round_num, gs.actions_taken,
+            seed, ante, round_num, actions,
         )
         _stream_log.info("")
         _stream_log.info("GAME OVER at Ante %s", ante)
@@ -465,13 +296,8 @@ def log_game_over(gs: GameLoopState, state: dict) -> None:
         "Summary: $%d | jokers: [%s] | hands=%d discards=%d",
         state.get("money", 0),
         ", ".join(joker_names) if joker_names else "none",
-        gs.total_hands_played, gs.total_discards_used,
+        hands, discards,
     )
-
-    if _win_handler:
-        if gs.actually_won:
-            _win_handler.flush_win(seed)
-        # Don't reset on loss — bot.py captures log_text for dashboard first
 
 
 # ---------------------------------------------------------------------------
@@ -876,92 +702,3 @@ def deck_composition(cards: list[dict]) -> dict:
         comp["enhancements"][enh] = comp["enhancements"].get(enh, 0) + 1
         comp["seals"][seal] = comp["seals"].get(seal, 0) + 1
     return comp
-
-
-def build_decision_state(gs: "GameLoopState", state: dict) -> dict:
-    """Game state at a shop or pack decision, close to what the game shows.
-
-    Kept raw (keys, effect text, counts) rather than the bot's derived
-    features so records stay usable when valuation code changes.
-    """
-    from balatro_bot.cards import _modifier, joker_key
-    from balatro_bot.joker_effects import parse_effect_value
-
-    joker_info = state.get("jokers", {})
-    jokers = []
-    for j in joker_info.get("cards", []) or []:
-        effect = (j.get("value") or {}).get("effect", "") or ""
-        parsed = parse_effect_value(effect) if effect else {}
-        mod = _modifier(j)
-        jokers.append({
-            "key": joker_key(j),
-            "edition": mod.get("edition"),
-            "stickers": [k for k in ("eternal", "perishable", "rental") if mod.get(k)] or None,
-            "sell": (j.get("cost") or {}).get("sell"),
-            "effect": effect or None,
-            "chips": parsed.get("chips"),
-            "mult": parsed.get("mult"),
-            "xmult": parsed.get("xmult"),
-        })
-    cons_info = state.get("consumables", {})
-    used_vouchers = state.get("used_vouchers", {})
-    hand_levels = {
-        ht: d.get("level") for ht, d in (state.get("hands") or {}).items()
-        if hasattr(d, "get") and (d.get("level") or 1) > 1
-    }
-    deck_cards = (state.get("cards", {}).get("cards", []) or []) + (state.get("hand", {}).get("cards", []) or [])
-    game_state = state.get("state", "")
-    return {
-        "money": state.get("money"),
-        "ante": state.get("ante_num"),
-        "round": state.get("round_num"),
-        "shop_visit_seq": gs.shop_visit_seq if game_state == "SHOP" else None,
-        "pack_seq": gs.pack_seq if game_state != "SHOP" else None,
-        "jokers": jokers,
-        "joker_limit": joker_info.get("limit"),
-        "consumables": [c.get("key") for c in cons_info.get("cards", []) or []],
-        "consumable_limit": cons_info.get("limit"),
-        "vouchers": sorted(used_vouchers.keys()) if isinstance(used_vouchers, dict) else [],
-        "hand_levels": hand_levels,
-        "deck": deck_composition(deck_cards),
-        "blinds": [
-            {"name": b.get("name"), "status": b.get("status")}
-            for b in (state.get("blinds") or {}).values() if isinstance(b, dict)
-        ],
-        "shop": shop_offer_items(state) if game_state == "SHOP" else None,
-        "pack": pack_offer_items(state) if game_state != "SHOP" else None,
-    }
-
-
-def record_decision(
-    gs: "GameLoopState",
-    decision: dict,
-    decision_state: dict | None,
-    game_state: str,
-    method: str,
-    params: dict | None,
-    money_before: int,
-    money_after: int | None,
-    error: str | None = None,
-) -> None:
-    """Append one shop/pack decision to the game's decision log."""
-    detail = {
-        k: v for k, v in decision.items()
-        if k not in ("kind", "continuation", "chosen_idx", "policy")
-    }
-    if explorer().rate > 0:
-        detail["explore_rate"] = explorer().rate
-    gs.decisions.append({
-        "seq": gs.actions_taken,
-        "kind": decision.get("kind"),
-        "game_state": game_state,
-        "policy": decision.get("policy", "greedy"),
-        "continuation": bool(decision.get("continuation")),
-        "chosen_idx": decision.get("chosen_idx"),
-        "action": [method, params],
-        "money_before": money_before,
-        "money_after": money_after,
-        "error": error,
-        "state": decision_state,
-        "detail": detail or None,
-    })

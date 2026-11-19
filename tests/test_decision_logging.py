@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from balatro_bot.bot_logging import build_decision_state, deck_composition, record_decision
+from balatro_bot.bot_logging import deck_composition
+from balatro_bot.game_recorder import build_decision_state, record_decision
 from balatro_bot.domain.policy.pack_policy import choose_from_buffoon_pack, choose_from_planet_pack
 from balatro_bot.domain.policy.shop_evaluator import ShopEvaluator
 from balatro_bot.engine import RuleEngine

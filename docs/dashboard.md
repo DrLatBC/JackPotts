@@ -23,7 +23,7 @@ supervisor.py
   --> spawns N bot instances with --dashboard-batch-id
 
 bot.py (per game)
-  --> GameLoopState collects action_log, ante_snapshots,
+  --> GameRecorder collects action_log, ante_snapshots,
       hand_scores, shop_events, joker tracking, hand types
   --> dashboard_client.post_game(batch_id, data)     # buffers in memory
 
