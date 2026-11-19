@@ -97,6 +97,10 @@ How eagerly the shop makes variance spends, such as rerolls and packs.
 An ordered set of shop steps (buy, sell, reorder, reroll, open pack, use consumable) ranked as one unit. The bot runs one step per tick and checks the rest again before each one.
 _Avoid_: Shop move, combo
 
+**Shop view**:
+Everything one shop decision is made from: the run view, the budget, each owned joker's value and sell price, what is for sale (cards, packs, vouchers), the consumables held, joker and consumable slots, and the rerolls made this shop. Every kind of action plan is built from the shop view.
+_Avoid_: Shop state, shop context
+
 **Joker value**:
 What one joker is worth to this run right now: its scoring gain against the real deck and roster, adjusted for synergy, ante urgency and likely bosses. It is the single price used to buy, sell, pick from packs and pick Hex targets.
 _Avoid_: Joker score, EV delta (in conversation)
