@@ -18,7 +18,7 @@ from balatro_bot.domain.policy.targeting import find_tarot_targets
 
 if TYPE_CHECKING:
     from typing import Any
-    from balatro_bot.domain.models.deck_profile import DeckProfile
+    from balatro_bot.domain.policy.run_view import RunView
     from balatro_bot.strategy import Strategy
 
 log = logging.getLogger("balatro_bot")
@@ -159,14 +159,8 @@ def choose_from_planet_pack(
 
 def choose_from_buffoon_pack(
     cards: list[dict],
-    owned_jokers: list[dict],
-    hand_levels: dict,
-    ante: int,
-    joker_limit: int,
-    strat: Strategy,
+    run: "RunView",
     always_buy_keys: set[str],
-    deck_profile: DeckProfile | None = None,
-    blind_name: str | None = None,
     options_out: list[dict] | None = None,
 ) -> tuple[int, float, str]:
     """Pick the best joker from a Buffoon pack.
@@ -174,13 +168,13 @@ def choose_from_buffoon_pack(
     Returns (best_index, best_score, reason_string). When *options_out* is
     given, every card's score, or the reason it was ruled out, is appended.
     """
-    from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+    from balatro_bot.domain.policy.shop_valuation import joker_value
     from balatro_bot.scaling import check_anti_synergy
 
     from balatro_bot.domain.policy.shop import _is_negative
 
-    owned_keys = {joker_key(j) for j in owned_jokers}
-    slots_full = len(owned_jokers) >= joker_limit
+    owned_keys = {joker_key(j) for j in run.roster}
+    slots_full = len(run.roster) >= run.joker_limit
 
     best_idx = 0
     best_score = -1.0
@@ -204,12 +198,7 @@ def choose_from_buffoon_pack(
             _record_option(options_out, i, card, excluded="anti_synergy")
             continue
 
-        score = evaluate_joker_value(
-            card, owned_jokers=owned_jokers,
-            hand_levels=hand_levels, ante=ante, strategy=strat,
-            joker_limit=joker_limit, deck_profile=deck_profile,
-            blind_name=blind_name,
-        )
+        score = joker_value(card, run)
         # S-tier jokers get a massive boost
         if key in always_buy_keys:
             score = max(score, _S_TIER_MIN_SCORE)
@@ -255,10 +244,8 @@ SPECTRAL_SCORES: dict[str, float] = {
 
 def score_spectral_card(
     card: dict,
-    jokers: list[dict],
+    run: "RunView",
     joker_slots: dict,
-    ante: int,
-    hand_levels: dict,
     strat: Strategy | None,
 ) -> float:
     """Score a spectral card for pack pick decisions.
@@ -272,6 +259,8 @@ def score_spectral_card(
     if score == 0.0:
         return 0.0
 
+    jokers = list(run.roster)
+    ante = run.ante
     joker_keys = {joker_key(j) for j in jokers}
     # Hex/Ectoplasm pick a random *editionless* joker. If every joker already
     # has an edition (Foil/Holo/Poly/Negative), the game silently no-ops.
@@ -288,7 +277,7 @@ def score_spectral_card(
             score = 0.0
         else:
             # Nuanced Hex evaluation — considers joker dominance and ante
-            score = evaluate_hex(jokers, ante, hand_levels)
+            score = evaluate_hex(run)
     elif key == "c_ankh":
         if joker_slots.get("count", 0) >= joker_slots.get("limit", 5):
             score = 0.0
@@ -327,10 +316,8 @@ def score_spectral_card(
 
 def choose_from_spectral_pack(
     cards: list[dict],
-    jokers: list[dict],
+    run: "RunView",
     joker_slots: dict,
-    ante: int,
-    hand_levels: dict,
     hand_cards: list[dict],
     strat: Strategy | None,
     options_out: list[dict] | None = None,
@@ -343,6 +330,8 @@ def choose_from_spectral_pack(
     """
     from balatro_bot.strategy import compute_strategy
 
+    jokers = list(run.roster)
+    hand_levels = run.hand_levels
     best_idx = None
     best_score = 0.0
     # Familiar/Grim/Incantation need ≥2 hand cards (one gets destroyed,
@@ -354,7 +343,7 @@ def choose_from_spectral_pack(
         if key in random_destroy and len(hand_cards) < 2:
             _record_option(options_out, i, card, excluded="hand_too_small")
             continue
-        score = score_spectral_card(card, jokers, joker_slots, ante, hand_levels, strat)
+        score = score_spectral_card(card, run, joker_slots, strat)
         _record_option(options_out, i, card, score)
         if score > best_score:
             best_score = score

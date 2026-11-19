@@ -9,7 +9,8 @@ Order while The Order's value is still scored with Shortcut in the roster.
 
 from __future__ import annotations
 
-from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+from balatro_bot.domain.policy.run_view import RunView
+from balatro_bot.domain.policy.shop_valuation import joker_value
 from balatro_bot.strategy import compute_strategy
 from tests.conftest import joker
 
@@ -38,14 +39,7 @@ def _owned() -> list[dict]:
 
 def _value(card_key: str, owned: list[dict]) -> float:
     strat = compute_strategy(owned, HAND_LEVELS)
-    return evaluate_joker_value(
-        joker(card_key, card_key),
-        owned_jokers=owned,
-        hand_levels=HAND_LEVELS,
-        ante=4,
-        strategy=strat,
-        joker_limit=5,
-    )
+    return joker_value(joker(card_key, card_key), RunView.of(owned, HAND_LEVELS, 4, strategy=strat, joker_limit=5))
 
 
 def test_order_value_drops_when_shortcut_removed() -> None:
@@ -200,10 +194,10 @@ def _dagger_state(monkeypatch) -> dict:
     """Dagger with two equally good meals: one on each side of it."""
     from balatro_bot.domain.policy import shop_evaluator
 
-    def joker_worth(candidate, *args, **kwargs):
+    def joker_worth(candidate, run):
         return 0.5 if candidate["key"] in ("j_even_steven", "j_delayed_grat") else 6.0
 
-    monkeypatch.setattr(shop_evaluator, "evaluate_joker_value", joker_worth)
+    monkeypatch.setattr(shop_evaluator, "joker_value", joker_worth)
     state = _shop_state(money=17)
     state["ante_num"] = 7
     owned = [
@@ -246,6 +240,7 @@ def test_better_dagger_fodder_is_still_moved_into_place(monkeypatch) -> None:
     assert order.index(1) == order.index(2) + 1  # Even Steven lands right of Dagger
 
     owned = state["jokers"]["cards"]
-    state["jokers"]["cards"] = [owned[i] for i in order]
+    state = {k: v for k, v in state.items() if not k.startswith("_")}  # the next tick's state
+    state["jokers"] = {**state["jokers"], "cards": [owned[i] for i in order]}
     again = ev.evaluate(state)
     assert not (isinstance(again, RearrangeJokers) and "to Dagger" in again.reason)

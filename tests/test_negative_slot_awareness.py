@@ -2,11 +2,12 @@
 
 Covers:
 - Negative edition: slot bypass, force-buy, pack picking
-- Edition valuation: Polychrome > Holo > Foil bonus in evaluate_joker_value
+- Edition valuation: Polychrome > Holo > Foil bonus in joker_value
 """
 
 from __future__ import annotations
 
+from balatro_bot.domain.policy.run_view import RunView
 from balatro_bot.domain.policy.shop import _is_negative
 from balatro_bot.domain.policy.pack_policy import choose_from_buffoon_pack
 from balatro_bot.strategy import compute_strategy
@@ -63,10 +64,7 @@ def test_buffoon_pack_picks_negative_when_full():
         _shop_joker("j_jolly", "Jolly Joker", 0, edition="NEGATIVE"),
     ]
 
-    best_idx, best_score, reason = choose_from_buffoon_pack(
-        cards, owned, hand_levels, ante=3, joker_limit=5,
-        strat=strat, always_buy_keys=set(),
-    )
+    best_idx, best_score, reason = choose_from_buffoon_pack(cards, RunView.of(owned, hand_levels, 3, joker_limit=5, strategy=strat), set())
     assert best_idx == 1  # the Negative one
 
 
@@ -89,10 +87,7 @@ def test_buffoon_pack_skips_all_when_full_no_negative():
         _shop_joker("j_jolly", "Jolly Joker", 0),
     ]
 
-    best_idx, best_score, reason = choose_from_buffoon_pack(
-        cards, owned, hand_levels, ante=3, joker_limit=5,
-        strat=strat, always_buy_keys=set(),
-    )
+    best_idx, best_score, reason = choose_from_buffoon_pack(cards, RunView.of(owned, hand_levels, 3, joker_limit=5, strategy=strat), set())
     # All candidates skipped, score stays at default -1
     assert best_score == -1.0
 
@@ -102,7 +97,7 @@ def test_buffoon_pack_skips_all_when_full_no_negative():
 
 def test_negative_treated_as_force_buy():
     """Negative edition should get force-buy treatment with a high floor value."""
-    from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+    from balatro_bot.domain.policy.shop_valuation import joker_value
 
     owned = [
         joker("j_joker", "Joker"),
@@ -118,10 +113,7 @@ def test_negative_treated_as_force_buy():
     neg_card = _shop_joker("j_jolly", "Jolly Joker", 0, edition="NEGATIVE")
 
     # The shop loop gives Negative a floor of 10.0 (same as ALWAYS_BUY)
-    neg_score = evaluate_joker_value(
-        neg_card, owned_jokers=owned, hand_levels=hand_levels,
-        ante=3, strategy=strat, joker_limit=5,
-    )
+    neg_score = joker_value(neg_card, RunView.of(owned, hand_levels, 3, strategy=strat, joker_limit=5))
     neg_score = max(neg_score, 10.0)  # mimic shop logic
 
     assert neg_score >= 10.0
@@ -145,10 +137,7 @@ def test_negative_in_pack_gets_high_floor():
         _shop_joker("j_jolly", "Jolly Joker", 0, edition="NEGATIVE"),
     ]
 
-    best_idx, best_score, reason = choose_from_buffoon_pack(
-        cards, owned, hand_levels, ante=3, joker_limit=5,
-        strat=strat, always_buy_keys=set(),
-    )
+    best_idx, best_score, reason = choose_from_buffoon_pack(cards, RunView.of(owned, hand_levels, 3, joker_limit=5, strategy=strat), set())
     # Negative should win with its high floor
     assert best_idx == 1
     assert best_score >= 10.0
@@ -159,16 +148,13 @@ def test_negative_in_pack_gets_high_floor():
 
 def _eval(key: str, edition: str | None = None) -> float:
     """Evaluate a joker with optional edition against a standard build."""
-    from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+    from balatro_bot.domain.policy.shop_valuation import joker_value
 
     owned = [joker("j_joker", "Joker"), joker("j_duo", "Duo")]
     hand_levels = {"Pair": {"level": 3, "chips": 20, "mult": 4, "played": 5}}
     strat = compute_strategy(owned, hand_levels)
     card = _shop_joker(key, key, 4, edition=edition)
-    return evaluate_joker_value(
-        card, owned_jokers=owned, hand_levels=hand_levels,
-        ante=3, strategy=strat, joker_limit=5,
-    )
+    return joker_value(card, RunView.of(owned, hand_levels, 3, strategy=strat, joker_limit=5))
 
 
 def test_polychrome_boosts_value():

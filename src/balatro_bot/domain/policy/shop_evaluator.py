@@ -20,13 +20,11 @@ from balatro_bot.constants import (
     PLANET_KEYS, SAFE_CONSUMABLE_TAROTS, SAFE_SPECTRAL_CONSUMABLES,
     SPECTRAL_TARGETING, TARGETING_TAROTS,
 )
-from balatro_bot.domain.models.deck_profile import DeckProfile
 from balatro_bot.domain.policy.consumable_policy import score_consumable, evaluate_hex
 from balatro_bot.domain.policy.exploration import Choice, explorer
 from balatro_bot.domain.policy.roster_order import describe_order, roster_order
-from balatro_bot.domain.policy.shop_valuation import (
-    _KEY_TO_CATEGORY, evaluate_joker_value,
-)
+from balatro_bot.domain.policy.run_view import run_view
+from balatro_bot.domain.policy.shop_valuation import _KEY_TO_CATEGORY, joker_value
 from balatro_bot.joker_effects.parsers import _ab_chips, _ab_mult, _ab_xmult
 from balatro_bot.scaling import SELL_PROTECTED, check_anti_synergy
 from balatro_bot.strategy import card_lean, compute_strategy
@@ -34,8 +32,7 @@ from balatro_bot.strategy import card_lean, compute_strategy
 if TYPE_CHECKING:
     from typing import Any
 
-    from balatro_bot.domain.policy.sim_context import LiveRunStats
-    from balatro_bot.strategy import Strategy
+    from balatro_bot.domain.policy.run_view import RunView
 
 log = logging.getLogger("balatro_bot")
 
@@ -185,20 +182,11 @@ class JokerScore:
     effective_value: float  # max(ev_delta, fodder_value) for ranking
 
 
-def score_roster(
-    owned: list[dict],
-    hand_levels: dict,
-    strategy: Strategy,
-    joker_limit: int = 5,
-    deck_profile: DeckProfile | None = None,
-    ante: int = 1,
-    unique_planets_used: int = 0,
-    live_stats: "LiveRunStats | None" = None,
-    money: int = 0,
-) -> list[JokerScore]:
+def score_roster(run: RunView) -> list[JokerScore]:
     """Compute live EV delta for each owned joker."""
     scores: list[JokerScore] = []
 
+    owned = run.roster
     dagger_owned = any(joker_key(j) == "j_ceremonial" for j in owned)
 
     for i, j in enumerate(owned):
@@ -207,14 +195,7 @@ def score_roster(
         sell_value = j.get("cost", {}).get("sell", 0)
 
         # EV delta: how much does removing this joker hurt scoring?
-        ev = evaluate_joker_value(
-            j, owned_jokers=owned, hand_levels=hand_levels,
-            ante=ante, strategy=strategy, joker_limit=joker_limit,
-            deck_profile=deck_profile,
-            unique_planets_used=unique_planets_used,
-            live_stats=live_stats,
-            money=money,
-        )
+        ev = joker_value(j, run)
 
         # Fodder value: if Dagger is owned and this isn't Dagger itself,
         # compute how much mult Dagger gains from eating this joker
@@ -252,29 +233,6 @@ class ActionPlan:
 # ---------------------------------------------------------------------------
 # Shop item scoring
 # ---------------------------------------------------------------------------
-
-def _score_shop_joker(
-    card: dict,
-    owned: list[dict],
-    hand_levels: dict,
-    strategy: Strategy,
-    ante: int,
-    joker_limit: int,
-    deck_profile: DeckProfile | None,
-    unique_planets_used: int = 0,
-    live_stats: "LiveRunStats | None" = None,
-    money: int = 0,
-) -> float:
-    """Score a shop joker using the valuation engine."""
-    return evaluate_joker_value(
-        card, owned_jokers=owned, hand_levels=hand_levels,
-        ante=ante, strategy=strategy, joker_limit=joker_limit,
-        deck_profile=deck_profile,
-        unique_planets_used=unique_planets_used,
-        live_stats=live_stats,
-        money=money,
-    )
-
 
 def _score_pack(
     label: str, money: int, owned_jokers: list[dict], ante: int,
@@ -413,18 +371,17 @@ def _score_voucher(
 
 def _campfire_sell_candidates(
     consumables: list[dict],
-    owned_jokers: list[dict],
-    hand_levels: dict,
-    ante: int,
+    run: RunView,
 ) -> list[tuple[int, str, float]]:
     """Return (index, label, feed_value) for consumables worth selling to Campfire.
 
     Returns empty list if Campfire is not owned.
     """
+    owned_jokers = list(run.roster)
     if not any(joker_key(j) == "j_campfire" for j in owned_jokers):
         return []
 
-    strat = compute_strategy(owned_jokers, hand_levels)
+    strat = compute_strategy(owned_jokers, run.hand_levels)
     all_useful = (
         SAFE_CONSUMABLE_TAROTS
         | set(TARGETING_TAROTS)
@@ -449,7 +406,7 @@ def _campfire_sell_candidates(
 
         # Hex: sell if not worth using
         if key == "c_hex":
-            hex_score = evaluate_hex(owned_jokers, ante, hand_levels)
+            hex_score = evaluate_hex(run)
             if hex_score <= 0.0:
                 candidates.append((i, label, 3.0))
             continue
@@ -507,7 +464,7 @@ def _invisible_plan(
     if best is None:
         return None, first_seen_round, False
 
-    # Ante-scaled threshold on the same ~0-15 scale evaluate_joker_value uses.
+    # Ante-scaled threshold on the same ~0-15 scale joker_value uses.
     threshold = 3.0 if ante <= 3 else 3.0 + (ante - 3) * 1.5
     if best.ev_delta < threshold:
         return None, first_seen_round, False
@@ -652,7 +609,6 @@ class ShopEvaluator:
         owned = joker_info.get("cards", [])
         joker_limit = joker_info.get("limit", 5)
         joker_count = joker_info.get("count", 0)
-        hand_levels = state.get("hands", {})
         shop = state.get("shop", {})
         packs = state.get("packs", {})
         vouchers = state.get("vouchers", {})
@@ -663,38 +619,13 @@ class ShopEvaluator:
         consumables_info = state.get("consumables", {})
         consumables = consumables_info.get("cards", [])
 
-        # Count unique Planets used this run — feeds Satellite ROI valuator
-        # via evaluate_joker_value. Mod exposes consumeable_usage as
-        # {center_key: {count, set}} (see balatrobot/gamestate.lua).
-        usage_raw = state.get("consumeable_usage", {})
-        unique_planets_used = 0
-        if isinstance(usage_raw, dict):
-            unique_planets_used = sum(
-                1 for v in usage_raw.values()
-                if isinstance(v, dict) and v.get("set") == "Planet"
-            )
-
-        deck_profile = self._get_deck_profile(state)
-        strat = compute_strategy(owned, hand_levels, deck_profile=deck_profile)
+        run = run_view(state)
+        strat = run.strategy
         budget = compute_budget(money, ante, joker_count, owned_jokers=owned,
                                 owned_vouchers=owned_vouchers)
 
-        # bot.py attaches its observed per-run averages (discards/round,
-        # sells/ante) on the state dict. Thread into every valuation call so
-        # scaling-xmult projections reflect real play behavior instead of the
-        # conservative 1.5/1.5 defaults.
-        live_stats = state.get("_live_stats")
-
-        money = state.get("money", 0)
-
         # ── Score roster ──
-        roster = score_roster(
-            owned, hand_levels, strat,
-            joker_limit=joker_limit, deck_profile=deck_profile, ante=ante,
-            unique_planets_used=unique_planets_used,
-            live_stats=live_stats,
-            money=money,
-        )
+        roster = score_roster(run)
 
         # ── Enumerate all candidate plans ──
         candidates: list[ActionPlan] = []
@@ -747,12 +678,7 @@ class ShopEvaluator:
             if conflict:
                 continue
 
-            shop_value = _score_shop_joker(
-                card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
-                unique_planets_used=unique_planets_used,
-                live_stats=live_stats,
-                money=money,
-            )
+            shop_value = joker_value(card, run)
 
             # Riff-Raff slot reservation: penalize buys that fill spawn slots
             riff_raff_owned = any(joker_key(j) == "j_riff_raff" for j in owned)
@@ -813,14 +739,7 @@ class ShopEvaluator:
                         # roster so synergies/amplification from the joker
                         # we're about to sell don't inflate the buyer.
                         post_sell_owned = owned[:sc.index] + owned[sc.index + 1:]
-                        post_sell_strategy = compute_strategy(post_sell_owned, hand_levels, deck_profile=deck_profile)
-                        shop_value_post = _score_shop_joker(
-                            card, post_sell_owned, hand_levels,
-                            post_sell_strategy, ante, joker_limit, deck_profile,
-                            unique_planets_used=unique_planets_used,
-                            live_stats=live_stats,
-                            money=money,
-                        )
+                        shop_value_post = joker_value(card, run.with_roster(post_sell_owned))
                         upgrade_delta = shop_value_post - sc.ev_delta
                     opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
                                                        budget.scoring_aggression,
@@ -962,7 +881,7 @@ class ShopEvaluator:
                 ))
 
         # 8. Campfire feeding (sell consumables)
-        campfire_candidates = _campfire_sell_candidates(consumables, owned, hand_levels, ante)
+        campfire_candidates = _campfire_sell_candidates(consumables, run)
         for idx, label, feed_value in campfire_candidates:
             candidates.append(ActionPlan(
                 steps=[SellConsumable(idx, reason=f"Campfire: sell {label} (+X0.25 mult)")],
@@ -977,12 +896,7 @@ class ShopEvaluator:
         if diet_idx is not None:
             # Only sell if nothing great in shop
             shop_has_great = any(
-                card.get("set") == "JOKER" and _score_shop_joker(
-                    card, owned, hand_levels, strat, ante, joker_limit, deck_profile,
-                    unique_planets_used=unique_planets_used,
-                    live_stats=live_stats,
-                    money=money,
-                ) >= 6.0
+                card.get("set") == "JOKER" and joker_value(card, run) >= 6.0
                 for card in shop.get("cards", [])
             )
             if not shop_has_great:
@@ -1126,19 +1040,6 @@ class ShopEvaluator:
                 return False
 
         return True
-
-    @staticmethod
-    def _get_deck_profile(state: dict[str, Any]) -> DeckProfile:
-        """Get or build+cache a DeckProfile."""
-        cached = state.get("_deck_profile")
-        if cached is not None:
-            return cached
-        from balatro_bot.domain.models.card import card_from_dict
-        deck_cards = [card_from_dict(c) for c in state.get("cards", {}).get("cards", [])]
-        hand_cards = [card_from_dict(c) for c in state.get("hand", {}).get("cards", [])]
-        profile = DeckProfile.from_cards(deck_cards + hand_cards)
-        state["_deck_profile"] = profile
-        return profile
 
 
 # ---------------------------------------------------------------------------

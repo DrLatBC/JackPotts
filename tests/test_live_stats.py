@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+from balatro_bot.domain.policy.run_view import RunView
+from balatro_bot.domain.policy.shop_valuation import joker_value
 from balatro_bot.domain.policy.sim_context import (
     LifetimeState,
     LiveRunStats,
@@ -49,8 +50,7 @@ class TestSimContextBuild:
     def test_build_threads_live_stats(self):
         live = LiveRunStats(avg_discards_per_round=4.0, avg_sells_per_ante=0.2)
         ctx = SimContext.build(
-            candidate=_joker("j_joker", {"mult": 4, "x_mult": 1}), owned_jokers=[], hand_levels=_levels(),
-            strategy=None, ante=1, live_stats=live,
+            _joker("j_joker", {"mult": 4, "x_mult": 1}), RunView.of([], _levels(), 1, live_stats=live),
         )
         assert ctx.lifetime is not None
         assert ctx.lifetime.avg_discards_per_round == 4.0
@@ -63,8 +63,8 @@ class TestEvaluateJokerValueThreading:
         cand = _joker("j_yorick", {"xmult": 1, "discards": 23, "x_mult": 1, "yorick_discards": 23})
         low = LiveRunStats(avg_discards_per_round=0.5, avg_sells_per_ante=0.5)
         high = LiveRunStats(avg_discards_per_round=3.5, avg_sells_per_ante=0.5)
-        v_low = evaluate_joker_value(cand, [], _levels(), ante=2, live_stats=low)
-        v_high = evaluate_joker_value(cand, [], _levels(), ante=2, live_stats=high)
+        v_low = joker_value(cand, RunView.of([], _levels(), 2, live_stats=low))
+        v_high = joker_value(cand, RunView.of([], _levels(), 2, live_stats=high))
         assert v_high > v_low, f"High-discard run should value Yorick more: {v_low} vs {v_high}"
 
     def test_campfire_high_sell_rate_beats_low(self):
@@ -72,6 +72,6 @@ class TestEvaluateJokerValueThreading:
         cand = _joker("j_campfire", {"extra": 0.25, "x_mult": 1.0})
         low = LiveRunStats(avg_discards_per_round=1.5, avg_sells_per_ante=0.1)
         high = LiveRunStats(avg_discards_per_round=1.5, avg_sells_per_ante=3.0)
-        v_low = evaluate_joker_value(cand, [], _levels(), ante=3, live_stats=low)
-        v_high = evaluate_joker_value(cand, [], _levels(), ante=3, live_stats=high)
+        v_low = joker_value(cand, RunView.of([], _levels(), 3, live_stats=low))
+        v_high = joker_value(cand, RunView.of([], _levels(), 3, live_stats=high))
         assert v_high > v_low, f"High-sell run should value Campfire more: {v_low} vs {v_high}"

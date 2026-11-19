@@ -10,6 +10,7 @@ from balatro_bot.constants import (
     SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
 )
 from balatro_bot.domain.policy.exploration import Choice, explorer
+from balatro_bot.domain.policy.run_view import run_view
 from balatro_bot.domain.policy.targeting import clone_reorder
 from balatro_bot.strategy import card_lean, compute_strategy, JOKER_HAND_AFFINITY
 
@@ -193,7 +194,6 @@ def _best_pack_pick_value(state: dict[str, Any], cards: list[dict], jokers: list
     hand_levels = state.get("hands", {})
     hand_cards = state.get("hand", {}).get("cards", [])
     strat = compute_strategy(jokers, hand_levels)
-    ante = state.get("ante_num", 1)
 
     # Arcana (tarot)
     if any(c.get("key", "") in (set(NO_TARGET_TAROTS) | set(TARGETING_TAROTS)) for c in cards):
@@ -204,7 +204,7 @@ def _best_pack_pick_value(state: dict[str, Any], cards: list[dict], jokers: list
     if any(c.get("key", "") in SPECTRAL_SCORES for c in cards):
         joker_slots = state.get("jokers", {})
         _, best_score, _, _ = choose_from_spectral_pack(
-            cards, jokers, joker_slots, ante, hand_levels, hand_cards, strat,
+            cards, run_view(state), joker_slots, hand_cards, strat,
         )
         return best_score
 
@@ -361,25 +361,10 @@ class PickFromBuffoonPack:
                 self.last_decision = _pack_decision(self.name, state, [], None, reason)
                 return PackAction(card_index=None, reason=reason)
 
-        owned_jokers = joker_slots.get("cards", [])
-        hand_levels = state.get("hands", {})
-        ante = state.get("ante_num", 1)
-        joker_limit = joker_slots.get("limit", 5)
-        strat = compute_strategy(owned_jokers, hand_levels)
-
-        from balatro_bot.domain.policy.shop import ALWAYS_BUY, _get_deck_profile
-        blind_name = next(
-            (b.get("name") for b in state.get("blinds", {}).values()
-             if isinstance(b, dict) and b.get("status") == "CURRENT"),
-            None,
-        )
+        from balatro_bot.domain.policy.shop import ALWAYS_BUY
         options: list[dict] = []
         best_idx, best_score, reason = choose_from_buffoon_pack(
-            cards, owned_jokers, hand_levels, ante, joker_limit, strat,
-            always_buy_keys=ALWAYS_BUY,
-            deck_profile=_get_deck_profile(state),
-            blind_name=blind_name,
-            options_out=options,
+            cards, run_view(state), always_buy_keys=ALWAYS_BUY, options_out=options,
         )
         self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)
         best_idx, _ = _explore_pick(self.last_decision, state, best_idx)
@@ -408,14 +393,13 @@ class PickFromSpectralPack:
 
         jokers = state.get("jokers", {}).get("cards", [])
         joker_slots = state.get("jokers", {})
-        ante = state.get("ante_num", 1)
         hand_levels = state.get("hands", {})
         hand_cards = state.get("hand", {}).get("cards", [])
         strat = compute_strategy(jokers, hand_levels) if jokers else None
 
         options: list[dict] = []
         best_idx, best_score, reason, targets = choose_from_spectral_pack(
-            cards, jokers, joker_slots, ante, hand_levels, hand_cards, strat,
+            cards, run_view(state), joker_slots, hand_cards, strat,
             options_out=options,
         )
         self.last_decision = _pack_decision(self.name, state, options, best_idx, reason)

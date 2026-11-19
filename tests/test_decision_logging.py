@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from balatro_bot.bot_logging import build_decision_state, deck_composition, record_decision
+from balatro_bot.domain.policy.run_view import RunView
 from balatro_bot.domain.policy.pack_policy import choose_from_buffoon_pack, choose_from_planet_pack
 from balatro_bot.domain.policy.shop_evaluator import ShopEvaluator
 from balatro_bot.engine import RuleEngine
@@ -102,7 +103,7 @@ class TestPackOptions:
         pack[0]["set"] = "JOKER"
         strat = compute_strategy([], HAND_LEVELS)
         options: list[dict] = []
-        choose_from_buffoon_pack(pack, owned, HAND_LEVELS, 1, 5, strat, set(), options_out=options)
+        choose_from_buffoon_pack(pack, RunView.of(owned, HAND_LEVELS, 1, joker_limit=5, strategy=strat), set(), options_out=options)
         assert options == [{"idx": 0, "key": "j_jolly", "excluded": "slots_full"}]
 
     def test_planet_rule_sets_last_decision(self):

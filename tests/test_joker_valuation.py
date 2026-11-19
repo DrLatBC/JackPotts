@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tests.conftest import card, joker, live_joker
 from balatro_bot.domain.models.deck_profile import DeckProfile
+from balatro_bot.domain.policy.run_view import RunView
 from balatro_bot.domain.policy.shop_valuation import (
     _make_card,
     _synthetic_hand,
@@ -11,7 +12,7 @@ from balatro_bot.domain.policy.shop_valuation import (
     _synergy_multiplier,
     _context_scale,
     _deck_composition_adjustment,
-    evaluate_joker_value,
+    joker_value,
     UTILITY_VALUE,
 )
 from balatro_bot.domain.policy.sim_context import SimContext
@@ -36,13 +37,7 @@ def _ctx(
     }
     if strategy is None:
         strategy = compute_strategy(owned, hand_levels)
-    return SimContext.build(
-        candidate=cand,
-        owned_jokers=owned,
-        hand_levels=hand_levels,
-        strategy=strategy,
-        ante=ante,
-    )
+    return SimContext.build(cand, RunView.of(owned, hand_levels, ante, strategy=strategy))
 
 
 # ---------------------------------------------------------------------------
@@ -231,14 +226,14 @@ class TestContextScale:
 
 
 # ---------------------------------------------------------------------------
-# Full evaluate_joker_value tests
+# Full joker_value tests
 # ---------------------------------------------------------------------------
 
 class TestEvaluateJokerValue:
     def test_utility_joker_has_value(self):
         """Utility jokers should get their base value."""
         j = joker("j_four_fingers")
-        val = evaluate_joker_value(j, [], {}, ante=1)
+        val = joker_value(j, RunView.of([], {}, 1))
         assert val > 0
 
     def test_scoring_joker_has_value(self):
@@ -246,7 +241,7 @@ class TestEvaluateJokerValue:
         j = joker("j_joker", "Joker")
         j["value"] = {"effect": "+4 Mult"}
         hand_levels = {"Pair": {"chips": 10, "mult": 10, "level": 1}}
-        val = evaluate_joker_value(j, [], hand_levels, ante=1)
+        val = joker_value(j, RunView.of([], hand_levels, 1))
         assert val > 0
 
     def test_xmult_joker_high_value(self):
@@ -255,22 +250,22 @@ class TestEvaluateJokerValue:
         jolly = live_joker("j_jolly", {"t_mult": 8, "x_mult": 1}, "Jolly Joker")
         hand_levels = {"Pair": {"chips": 10, "mult": 10, "level": 1}}
 
-        duo_val = evaluate_joker_value(duo, [], hand_levels, ante=5)
-        jolly_val = evaluate_joker_value(jolly, [], hand_levels, ante=5)
+        duo_val = joker_value(duo, RunView.of([], hand_levels, 5))
+        jolly_val = joker_value(jolly, RunView.of([], hand_levels, 5))
         # Duo (X2) should be worth more than Jolly (+8 mult) at ante 5
         assert duo_val > jolly_val
 
     def test_scaling_joker_uses_accumulated_value(self):
         """A scaling joker with accumulated X3.0 should be very valuable."""
         madness = live_joker("j_madness", {"extra": 0.5, "x_mult": 3.0}, "Madness")
-        val = evaluate_joker_value(madness, [], {}, ante=5)
+        val = joker_value(madness, RunView.of([], {}, 5))
         # X3.0 * 5.0 = 15.0 dynamic power, should be high
         assert val >= 10.0
 
     def test_unknown_joker_returns_zero(self):
         """An unknown joker with no effect should return 0."""
         j = joker("j_nonexistent_xyz")
-        val = evaluate_joker_value(j, [], {}, ante=1)
+        val = joker_value(j, RunView.of([], {}, 1))
         assert val == 0.0
 
 
@@ -431,37 +426,30 @@ class TestPhase3DensityAwareSim:
         # sits on the scaling-projection floor whatever the deck.
         cand = live_joker("j_wee", {"chips": 8, "chip_mod": 8, "x_mult": 1}, rarity=1)
         cand["cost"] = {"buy": 8, "sell": 4}
-        baseline = evaluate_joker_value(cand, [], self._HL, ante=2,
-                                         deck_profile=self._vanilla())  # 4 twos
+        baseline = joker_value(cand, RunView.of([], self._HL, 2, deck_profile=self._vanilla()))  # 4 twos
         heavy = {r: 4 for r in "3456789TJQKA"}
         heavy["2"] = 8
-        heavy_v = evaluate_joker_value(cand, [], self._HL, ante=2,
-                                         deck_profile=self._vanilla(heavy))
+        heavy_v = joker_value(cand, RunView.of([], self._HL, 2, deck_profile=self._vanilla(heavy)))
         light = {r: 4 for r in "3456789TJQKA"}
         light["2"] = 1
-        light_v = evaluate_joker_value(cand, [], self._HL, ante=2,
-                                         deck_profile=self._vanilla(light))
+        light_v = joker_value(cand, RunView.of([], self._HL, 2, deck_profile=self._vanilla(light)))
         assert heavy_v > baseline, f"8 twos should beat 4 twos: {baseline} → {heavy_v}"
         assert light_v < baseline, f"1 two should trail 4 twos: {baseline} → {light_v}"
 
     def test_scholar_scales_with_ace_density(self):
         cand = self._cand("j_scholar", "Aces give +20 Chips and +4 Mult", rarity=1)
-        baseline = evaluate_joker_value(cand, [], self._HL, ante=2,
-                                         deck_profile=self._vanilla())
+        baseline = joker_value(cand, RunView.of([], self._HL, 2, deck_profile=self._vanilla()))
         heavy = {r: 4 for r in "23456789TJQK"}
         heavy["A"] = 8
-        heavy_v = evaluate_joker_value(cand, [], self._HL, ante=2,
-                                         deck_profile=self._vanilla(heavy))
+        heavy_v = joker_value(cand, RunView.of([], self._HL, 2, deck_profile=self._vanilla(heavy)))
         assert heavy_v > baseline, f"8 aces should beat 4: {baseline} → {heavy_v}"
 
     # --- Steel Joker: sim-derived xmult projection ---
 
     def test_steel_joker_sim_value_scales_with_deck(self):
         cand = self._cand("j_steel_joker", "X1 Mult")
-        no_steel = evaluate_joker_value(cand, [], self._HL, ante=2,
-                                         deck_profile=self._deck())
-        with_steel = evaluate_joker_value(cand, [], self._HL, ante=2,
-                                            deck_profile=self._deck(STEEL=8))
+        no_steel = joker_value(cand, RunView.of([], self._HL, 2, deck_profile=self._deck()))
+        with_steel = joker_value(cand, RunView.of([], self._HL, 2, deck_profile=self._deck(STEEL=8)))
         assert with_steel > no_steel, (
             f"Steel Joker w/ 8 Steel cards should beat empty: {no_steel} → {with_steel}"
         )
@@ -475,15 +463,13 @@ class TestPhase3DensityAwareSim:
         ctx = _ctx(candidate=cand, ante=2)
         # No Lucky in deck → sim picks no Lucky scoring slots → delta 0
         no_lucky_ctx = SimContext.build(
-            candidate=cand, owned_jokers=[], hand_levels=self._HL,
-            strategy=ctx.strategy, ante=2, deck_profile=self._deck(),
+            cand, RunView.of([], self._HL, 2, strategy=ctx.strategy, deck_profile=self._deck()),
         )
         # Lucky-heavy deck → Monte Carlo Flush samples land Lucky cards on
         # scoring slots often enough that Lucky Cat's per-trigger bonus fires
         # measurably more than a vanilla deck (0% LUCKY density).
         with_lucky_ctx = SimContext.build(
-            candidate=cand, owned_jokers=[], hand_levels=self._HL,
-            strategy=ctx.strategy, ante=2, deck_profile=self._deck(LUCKY=16),
+            cand, RunView.of([], self._HL, 2, strategy=ctx.strategy, deck_profile=self._deck(LUCKY=16)),
         )
         d_none = _scoring_delta(no_lucky_ctx, [("Flush", 1.0)])
         d_lucky = _scoring_delta(with_lucky_ctx, [("Flush", 1.0)])
@@ -498,7 +484,7 @@ class TestPhase3DensityAwareSim:
 class TestHeldCardJokerValuation:
     """Held-phase jokers (Baron, Shoot the Moon, Raised Fist, Mime, Blackboard)
     are driven by _synthetic_held_cards in _scoring_delta.
-    These tests pin the end-to-end evaluate_joker_value behavior."""
+    These tests pin the end-to-end joker_value behavior."""
 
     _HL = {h: {"level": 1, "chips": c, "mult": m} for h, c, m in [
         ("High Card", 5, 1), ("Pair", 10, 2), ("Two Pair", 20, 2),
@@ -518,19 +504,19 @@ class TestHeldCardJokerValuation:
 
     def test_baron_empty_roster_exceeds_floor(self):
         cand = self._cand("j_baron", "Each King held in hand gives X1.5 Mult")
-        v = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
+        v = joker_value(cand, RunView.of([], self._HL, 3, deck_profile=self._VANILLA))
         # Held-card sampling from vanilla deck yields ~0.23 Kings per
         # 3-card held sample, so Baron's delta is modest until Kings accumulate.
         assert v > 0.5, f"Baron empty-roster @ ante 3 should be >0.5, got {v}"
 
     def test_shoot_the_moon_empty_roster_exceeds_floor(self):
         cand = self._cand("j_shoot_the_moon", "Each Queen held in hand gives +13 Mult")
-        v = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
+        v = joker_value(cand, RunView.of([], self._HL, 3, deck_profile=self._VANILLA))
         assert v > 3.5, f"SttM empty-roster @ ante 3 should be >3.5, got {v}"
 
     def test_raised_fist_empty_roster_exceeds_floor(self):
         cand = self._cand("j_raised_fist", "Adds 2x the rank of lowest card held in hand")
-        v = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
+        v = joker_value(cand, RunView.of([], self._HL, 3, deck_profile=self._VANILLA))
         assert v > 3.0, f"RF empty-roster @ ante 3 should be >3.0, got {v}"
 
     def test_mime_scales_with_held_phase_roster(self):
@@ -538,8 +524,8 @@ class TestHeldCardJokerValuation:
         cand = self._cand("j_mime", "Retrigger all cards held in hand")
         baron = self._cand("j_baron", "Each King held in hand gives X1.5 Mult")
         sttm = self._cand("j_shoot_the_moon", "Each Queen held in hand gives +13 Mult")
-        v_empty = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
-        v_with = evaluate_joker_value(cand, [baron, sttm], self._HL, ante=3, deck_profile=self._VANILLA)
+        v_empty = joker_value(cand, RunView.of([], self._HL, 3, deck_profile=self._VANILLA))
+        v_with = joker_value(cand, RunView.of([baron, sttm], self._HL, 3, deck_profile=self._VANILLA))
         assert v_with > 2 * max(v_empty, 0.5), (
             f"Mime value should scale ≥2× with Baron+SttM held, got {v_empty} → {v_with}"
         )
@@ -551,15 +537,15 @@ class TestHeldCardJokerValuation:
             rank_counts={r: 4 for r in "23456789TJQKA"},
             suit_counts={"H": 8, "D": 8, "S": 18, "C": 18},  # 36 S+C
         )
-        v_vanilla = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=self._VANILLA)
-        v_heavy = evaluate_joker_value(cand, [], self._HL, ante=3, deck_profile=heavy)
+        v_vanilla = joker_value(cand, RunView.of([], self._HL, 3, deck_profile=self._VANILLA))
+        v_heavy = joker_value(cand, RunView.of([], self._HL, 3, deck_profile=heavy))
         assert v_heavy >= 3.0 * v_vanilla, (
             f"Blackboard with 36 S/C should be ≥3× vanilla, got {v_vanilla} → {v_heavy}"
         )
 
 
 class TestEvaluateJokerWithDeckProfile:
-    """Integration: evaluate_joker_value respects deck_profile."""
+    """Integration: joker_value respects deck_profile."""
 
     def test_steel_joker_higher_with_steel_cards(self):
         candidate = joker("j_steel_joker", "Steel Joker")
@@ -574,10 +560,8 @@ class TestEvaluateJokerWithDeckProfile:
             + [card("2", "S") for _ in range(44)]
         )
 
-        val_none = evaluate_joker_value(candidate, owned, hl, ante=3, strategy=strat,
-                                         deck_profile=no_steel)
-        val_steel = evaluate_joker_value(candidate, owned, hl, ante=3, strategy=strat,
-                                          deck_profile=with_steel)
+        val_none = joker_value(candidate, RunView.of(owned, hl, 3, strategy=strat, deck_profile=no_steel))
+        val_steel = joker_value(candidate, RunView.of(owned, hl, 3, strategy=strat, deck_profile=with_steel))
         assert val_steel > val_none
 
 
@@ -597,14 +581,14 @@ class TestPhase4LifetimeProjection:
     def test_madness_live_anchor_drives_value(self):
         """Owned Madness at current X3.0 should reflect the live anchor."""
         madness = live_joker("j_madness", {"extra": 0.5, "x_mult": 3.0}, "Madness")
-        val = evaluate_joker_value(madness, [], self._HL, ante=3)
+        val = joker_value(madness, RunView.of([], self._HL, 3))
         # X3.0 × 5 = 15 via _dynamic_power; projection adds ~X0.75 more
         assert val >= 12.0, f"Madness @ X3.0 should read ≥12, got {val}"
 
     def test_madness_fresh_candidate_projects_forward(self):
         """Fresh Madness (X1.0) should still get a runway floor from projection."""
         cand = self._cand("j_madness", {"extra": 0.5, "x_mult": 1.0})
-        v = evaluate_joker_value(cand, [], self._HL, ante=2)
+        v = joker_value(cand, RunView.of([], self._HL, 2))
         # Projection: 0.5 × ~21 blinds × 0.5 = ~5.25 gain → ~X6.25 total → ~31 power
         # Generous bound: far more than sim baseline (~0) thanks to projection.
         assert v > 5.0, f"Fresh Madness should project forward, got {v}"
@@ -617,20 +601,20 @@ class TestPhase4LifetimeProjection:
         """
         fresh = self._cand("j_yorick", {"xmult": 1, "discards": 23, "x_mult": 1, "yorick_discards": 23})
         near = self._cand("j_yorick", {"xmult": 1, "discards": 23, "x_mult": 1, "yorick_discards": 3})
-        v_fresh = evaluate_joker_value(fresh, [fresh], self._HL, ante=5)
-        v_near = evaluate_joker_value(near, [near], self._HL, ante=5)
+        v_fresh = joker_value(fresh, RunView.of([fresh], self._HL, 5))
+        v_near = joker_value(near, RunView.of([near], self._HL, 5))
         assert v_near > v_fresh, f"Near-proc Yorick should out-value fresh: {v_fresh} vs {v_near}"
 
     def test_campfire_value_positive_at_ante(self):
         """Campfire's projection should produce positive value from this-ante sells."""
         cand = self._cand("j_campfire", {"extra": 0.25, "x_mult": 1.0})
-        v = evaluate_joker_value(cand, [], self._HL, ante=3)
+        v = joker_value(cand, RunView.of([], self._HL, 3))
         assert v > 0.5, f"Campfire should project ante-local gain, got {v}"
 
     def test_constellation_scales_with_planets_used(self):
         """Constellation value should reflect its live current xmult."""
         owned_constellation = live_joker("j_constellation", {"extra": 0.1, "x_mult": 2.0}, "Constellation")
-        v = evaluate_joker_value(owned_constellation, [], self._HL, ante=4)
+        v = joker_value(owned_constellation, RunView.of([], self._HL, 4))
         # X2.0 × 5 = 10 floor from live anchor alone
         assert v >= 9.0, f"Constellation @ X2.0 live should read ≥9, got {v}"
 
@@ -639,7 +623,7 @@ class TestPhase4LifetimeProjection:
         from balatro_bot.scaling import SCALING_REGISTRY
         assert "j_throwback" in SCALING_REGISTRY
         cand = self._cand("j_throwback", {"extra": 0.25, "x_mult": 1.0})
-        v = evaluate_joker_value(cand, [], self._HL, ante=2)
+        v = joker_value(cand, RunView.of([], self._HL, 2))
         # Any positive floor from projection, not zero
         assert v > 0.0, f"Throwback should have non-zero projection, got {v}"
 
@@ -725,7 +709,7 @@ class TestEcoOverstackGate:
 
 
 class TestValuationMemo:
-    """evaluate_joker_value reuses results across calls with the same inputs."""
+    """joker_value reuses results across calls with the same inputs."""
 
     _LEVELS = {
         "Pair": {"chips": 10, "mult": 2, "level": 1},
@@ -751,19 +735,20 @@ class TestValuationMemo:
 
         bull = live_joker("j_bull", {"extra": 2}, label="Bull")
         owned = [bull, joker("j_joker", "Joker")]
-        args = (bull, owned, self._LEVELS, 3, None, 5, None, 0, None, None)
+        poor_run = RunView.of(owned, self._LEVELS, 3, money=0)
+        rich_run = RunView.of(owned, self._LEVELS, 3, money=200)
         clear_sample_cache()
-        poor = evaluate_joker_value(bull, owned, self._LEVELS, ante=3, money=0)
-        rich = evaluate_joker_value(bull, owned, self._LEVELS, ante=3, money=200)
-        assert poor == _joker_value(*args, 0, 0)
-        assert rich == _joker_value(*args, 200, 0)
+        poor = joker_value(bull, poor_run)
+        rich = joker_value(bull, rich_run)
+        assert poor == _joker_value(bull, poor_run)
+        assert rich == _joker_value(bull, rich_run)
         assert rich > poor
 
     def test_repeat_call_returns_the_same_value(self):
         candidate = joker("j_jolly", "Jolly Joker")
         owned = [joker("j_joker", "Joker")]
-        first = evaluate_joker_value(candidate, owned, self._LEVELS, ante=2, money=10)
-        again = evaluate_joker_value(candidate, owned, self._LEVELS, ante=2, money=30)
+        first = joker_value(candidate, RunView.of(owned, self._LEVELS, 2, money=10))
+        again = joker_value(candidate, RunView.of(owned, self._LEVELS, 2, money=30))
         assert again == first
 
 

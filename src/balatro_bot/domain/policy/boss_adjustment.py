@@ -1,4 +1,4 @@
-"""Boss-blind-aware multiplier on ``evaluate_joker_value``.
+"""Boss-blind-aware multiplier on ``joker_value``.
 
 The scoring sim doesn't simulate boss debuffs, so instead of threading every
 boss effect through ``_synthetic_hand``, this module applies a

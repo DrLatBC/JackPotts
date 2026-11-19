@@ -1,6 +1,6 @@
 """Valuation SimContext — bundles every input the scoring sim needs.
 
-One frozen dataclass threaded through ``evaluate_joker_value`` →
+One frozen dataclass threaded through ``joker_value`` →
 ``_scoring_delta`` → ``_synthetic_hand``.
 """
 
@@ -14,6 +14,7 @@ from balatro_bot.joker_effects.parsers import current_counter, current_value
 
 if TYPE_CHECKING:
     from balatro_bot.domain.models.deck_profile import DeckProfile
+    from balatro_bot.domain.policy.run_view import RunView
     from balatro_bot.strategy import Strategy
 
 
@@ -214,10 +215,8 @@ class SimContext:
     # fast expected-value path for non-stochastic candidates.
     monte_carlo_samples: int = 0
 
-    # Live round/wallet state used by money-scaling jokers (Bull, Bootstraps)
-    # and discard-scaling jokers (Banner, Mystic Summit). Zero defaults when
-    # unknown; real bot calls pass current values from ``RoundContext``, and
-    # shop-phase / value-map callers pass reasonable projected averages.
+    # Wallet and the discards a round starts with, for money-scaling jokers
+    # (Bull, Bootstraps) and discard-scaling jokers (Banner, Mystic Summit).
     money: int = 0
     discards_left: int = 0
 
@@ -234,21 +233,12 @@ class SimContext:
     @classmethod
     def build(
         cls,
-        *,
         candidate: dict,
-        owned_jokers: list[dict],
-        hand_levels: dict[str, dict],
-        strategy: "Strategy",
-        ante: int,
-        joker_limit: int = 5,
-        deck_profile: "DeckProfile | None" = None,
-        unique_planets_used: int = 0,
-        blind_name: str | None = None,
+        run: "RunView",
+        *,
         monte_carlo_samples: int = 0,
-        live_stats: "LiveRunStats | None" = None,
-        money: int = 0,
-        discards_left: int = 0,
     ) -> "SimContext":
+        deck_profile = run.deck_profile
         rank_density: dict[str, float] = {}
         suit_density: dict[str, float] = {}
         enhancement_density: dict[str, float] = {}
@@ -260,28 +250,28 @@ class SimContext:
                 e: c / total for e, c in deck_profile.enhancement_counts.items()
             }
         lifetime = LifetimeState.from_owned(
-            owned_jokers,
-            unique_planets_used=unique_planets_used,
-            live_stats=live_stats,
+            run.roster,
+            unique_planets_used=run.unique_planets_used,
+            live_stats=run.live_stats,
         )
-        boss = BossBlindState.from_name(blind_name) if blind_name else None
+        boss = BossBlindState.from_name(run.boss) if run.boss else None
         return cls(
             candidate=candidate,
-            owned_jokers=tuple(owned_jokers),
-            hand_levels=hand_levels,
-            strategy=strategy,
-            ante=ante,
-            joker_limit=joker_limit,
+            owned_jokers=run.roster,
+            hand_levels=run.hand_levels,
+            strategy=run.strategy,
+            ante=run.ante,
+            joker_limit=run.joker_limit,
             deck_profile=deck_profile,
-            unique_planets_used=unique_planets_used,
+            unique_planets_used=run.unique_planets_used,
             candidate_key=candidate.get("key", "") or joker_key(candidate),
-            owned_keys=frozenset(joker_key(j) for j in owned_jokers),
+            owned_keys=frozenset(joker_key(j) for j in run.roster),
             rank_density=rank_density,
             suit_density=suit_density,
             enhancement_density=enhancement_density,
             lifetime=lifetime,
             boss=boss,
             monte_carlo_samples=monte_carlo_samples,
-            money=money,
-            discards_left=discards_left,
+            money=run.money,
+            discards_left=run.discards,
         )

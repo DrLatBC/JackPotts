@@ -44,7 +44,7 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | `src/balatro_bot/constants.py` | `RANK_ORDER`, `HAND_INFO`, etc. |
 | `src/balatro_bot/scaling.py` | `ScalingProfile` registry, anti-synergy map, derived joker sets |
 | `src/balatro_bot/joker_registry.py` | Static joker metadata (key, name, rarity, cost) auto-extracted from `game.lua` |
-| `src/balatro_bot/value_map.py` | Canonical-scenario value map generator — runs every joker through `evaluate_joker_value`; pushed to the dashboard's `/value-map` page |
+| `src/balatro_bot/value_map.py` | Canonical-scenario value map generator — runs every joker through `joker_value` against fixed synthetic run views; pushed to the dashboard's `/value-map` page |
 | `src/balatro_bot/bot_logging.py` | Game loop logging helpers |
 | `src/balatro_bot/bot_format.py` | Card/deck formatting utilities |
 
@@ -142,7 +142,7 @@ This replaces an older design with 11 siloed shop rules that couldn't trade off 
 
 ### Unified joker valuation (`SimContext`)
 
-`evaluate_joker_value(candidate, owned, …)` is the single entry point for pricing any joker — shop buys, shop sells, pack picks, Hex targeting. Inputs are bundled into a frozen `SimContext` (`domain/policy/sim_context.py`) that carries:
+`joker_value(candidate, run)` is the single entry point for pricing any joker — shop buys, shop sells, pack picks, Hex targeting. `run` is the run view (`domain/policy/run_view.py`): `run_view(state)` builds it once per tick (roster, real hand levels, ante, slots, deck profile, strategy with the deck, money, discards a round starts with, live stats, planets used, the boss only in a round), and `run.with_roster(...)` gives a what-if roster with its own strategy. The valuation derives a frozen `SimContext` (`domain/policy/sim_context.py`) from the candidate and the run view, carrying:
 
 - Candidate joker, owned jokers, joker limit, strategy
 - Hand levels, ante, deck profile (rank/suit/enhancement density)

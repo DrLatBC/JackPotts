@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from balatro_bot.domain.policy.run_view import RunView
 from balatro_bot.domain.policy.consumable_policy import (
     score_consumable,
     evaluate_hex,
@@ -152,19 +153,19 @@ class TestScoreConsumable:
 
 class TestEvaluateHex:
     def test_no_jokers(self):
-        assert evaluate_hex([], 1, HAND_LEVELS) == 0.0
+        assert evaluate_hex(RunView.of([], HAND_LEVELS, 1)) == 0.0
 
     def test_single_joker(self):
-        assert evaluate_hex([joker("j_joker")], 1, HAND_LEVELS) == 3.5
+        assert evaluate_hex(RunView.of([joker("j_joker")], HAND_LEVELS, 1)) == 3.5
 
     def test_multiple_scaling_blocked(self):
         jks = [joker("j_campfire"), joker("j_constellation")]
-        assert evaluate_hex(jks, 1, HAND_LEVELS) == 0.0
+        assert evaluate_hex(RunView.of(jks, HAND_LEVELS, 1)) == 0.0
 
     def test_late_game_penalty(self):
         jks = [joker("j_joker")]
-        early = evaluate_hex(jks, 1, HAND_LEVELS)
-        late = evaluate_hex(jks, 7, HAND_LEVELS)
+        early = evaluate_hex(RunView.of(jks, HAND_LEVELS, 1))
+        late = evaluate_hex(RunView.of(jks, HAND_LEVELS, 7))
         # Single joker always returns 3.5 regardless
         assert early == 3.5
         assert late == 3.5
@@ -310,9 +311,7 @@ class TestBuffoonPack:
             c["set"] = "JOKER"
             c["value"] = {"effect": "+4 Mult"}
         strat = compute_strategy([], HAND_LEVELS)
-        idx, score, reason = choose_from_buffoon_pack(
-            pack_cards, [], HAND_LEVELS, 1, 5, strat, set(),
-        )
+        idx, score, reason = choose_from_buffoon_pack(pack_cards, RunView.of([], HAND_LEVELS, 1, joker_limit=5, strategy=strat), set())
         assert idx in (0, 1)
         assert score >= 0
 
@@ -321,10 +320,7 @@ class TestBuffoonPack:
         pack_cards[0]["set"] = "JOKER"
         pack_cards[0]["value"] = {"effect": "Copies ability of Joker to the left"}
         strat = compute_strategy([], HAND_LEVELS)
-        idx, score, reason = choose_from_buffoon_pack(
-            pack_cards, [], HAND_LEVELS, 1, 5, strat,
-            always_buy_keys={"j_blueprint"},
-        )
+        idx, score, reason = choose_from_buffoon_pack(pack_cards, RunView.of([], HAND_LEVELS, 1, joker_limit=5, strategy=strat), {"j_blueprint"})
         assert score >= 10.0
 
     def test_madness_scaling_conflict(self):
@@ -338,9 +334,7 @@ class TestBuffoonPack:
             c["value"] = {"effect": "+4 Mult"}
         owned = [joker("j_campfire", "Campfire")]
         strat = compute_strategy(owned, HAND_LEVELS)
-        idx, score, reason = choose_from_buffoon_pack(
-            pack_cards, owned, HAND_LEVELS, 1, 5, strat, set(),
-        )
+        idx, score, reason = choose_from_buffoon_pack(pack_cards, RunView.of(owned, HAND_LEVELS, 1, joker_limit=5, strategy=strat), set())
         # Should pick Joker (index 1) not Madness (index 0)
         assert idx == 1
 
@@ -355,31 +349,29 @@ class TestSpectralPack:
         jks = [joker("j_joker")]
         hex_card = {"key": "c_hex", "label": "Hex"}
         joker_slots = {"count": 1, "limit": 5}
-        score = score_spectral_card(hex_card, jks, joker_slots, 1, HAND_LEVELS, None)
-        expected = evaluate_hex(jks, 1, HAND_LEVELS)
+        score = score_spectral_card(hex_card, RunView.of(jks, HAND_LEVELS, 1), joker_slots, None)
+        expected = evaluate_hex(RunView.of(jks, HAND_LEVELS, 1))
         assert score == expected
 
     def test_ectoplasm_blocked_early(self):
         jks = [joker("j_joker")]
         ecto = {"key": "c_ectoplasm", "label": "Ectoplasm"}
         joker_slots = {"count": 1, "limit": 5}
-        score = score_spectral_card(ecto, jks, joker_slots, 2, HAND_LEVELS, None)
+        score = score_spectral_card(ecto, RunView.of(jks, HAND_LEVELS, 2), joker_slots, None)
         assert score == 0.0
 
     def test_ectoplasm_scales_with_scaling(self):
         jks = [joker("j_campfire")]
         ecto = {"key": "c_ectoplasm", "label": "Ectoplasm"}
         joker_slots = {"count": 1, "limit": 5}
-        score = score_spectral_card(ecto, jks, joker_slots, 3, HAND_LEVELS, None)
+        score = score_spectral_card(ecto, RunView.of(jks, HAND_LEVELS, 3), joker_slots, None)
         assert score >= 6.0  # 4.5 base + 1.5 scaling
 
     def test_skip_when_nothing_useful(self):
         cards = [{"key": "c_sigil", "label": "Sigil"}, {"key": "c_ouija", "label": "Ouija"}]
         jks = [joker("j_joker")]
         joker_slots = {"count": 1, "limit": 5}
-        idx, score, reason, targets = choose_from_spectral_pack(
-            cards, jks, joker_slots, 1, HAND_LEVELS, [], None,
-        )
+        idx, score, reason, targets = choose_from_spectral_pack(cards, RunView.of(jks, HAND_LEVELS, 1), joker_slots, [], None)
         assert idx is None
         assert "skip" in reason
 

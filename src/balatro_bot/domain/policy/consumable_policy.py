@@ -15,6 +15,7 @@ from balatro_bot.constants import (
     IMMEDIATE_TARGETING, SAFE_SPECTRAL_CONSUMABLES, SPECTRAL_TARGETING,
     SCALING_JOKERS, FACE_RANKS_TAROT,
 )
+from balatro_bot.domain.policy.run_view import run_view
 from balatro_bot.domain.scoring.draws import flush_draw
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.strategy import LEAN_FLOOR
@@ -26,6 +27,7 @@ from balatro_bot.domain.policy.targeting import (
 if TYPE_CHECKING:
     from typing import Any
     from balatro_bot.strategy import Strategy
+    from balatro_bot.domain.policy.run_view import RunView
     from balatro_bot.domain.scoring.search import HandCandidate
 
 log = logging.getLogger("balatro_bot")
@@ -327,15 +329,16 @@ def _score_targeting_tarot(
 # ---------------------------------------------------------------------------
 
 
-def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict, *, blind_name: str | None = None) -> float:
+def evaluate_hex(run: "RunView") -> float:
     """Score Hex usage/pick. Returns 0.0 to skip, or positive score.
 
     Hex adds Polychrome (x1.5) to a random joker and destroys the rest.
     Worth it when one joker dominates the roster and the rest are expendable.
     """
-    from balatro_bot.strategy import compute_strategy
-    from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+    from balatro_bot.domain.policy.shop_valuation import joker_value
 
+    jokers = list(run.roster)
+    ante = run.ante
     if not jokers:
         return 0.0
     if len(jokers) <= 1:
@@ -347,11 +350,7 @@ def evaluate_hex(jokers: list[dict], ante: int, hand_levels: dict, *, blind_name
     if scaling_count >= 2:
         return 0.0
 
-    strat = compute_strategy(jokers, hand_levels)
-    values = []
-    for j in jokers:
-        val = evaluate_joker_value(j, jokers, hand_levels, ante, strat, blind_name=blind_name)
-        values.append((j, val))
+    values = [(j, joker_value(j, run)) for j in jokers]
     values.sort(key=lambda x: x[1], reverse=True)
 
     best_val = values[0][1]
@@ -459,12 +458,7 @@ def score_use_now(
         if key == "c_hex":
             if not editionless_jokers:
                 return (0.0, None)
-            blind_name = next(
-                (b.get("name") for b in state.get("blinds", {}).values()
-                 if isinstance(b, dict) and b.get("status") == "CURRENT"),
-                None,
-            )
-            hex_val = evaluate_hex(jokers, ante, hand_levels, blind_name=blind_name)
+            hex_val = evaluate_hex(run_view(state))
             if hex_val <= 0.0:
                 return (0.0, None)
             return (hex_val, ("use", idx, f"use Hex (score={hex_val:.1f})"))

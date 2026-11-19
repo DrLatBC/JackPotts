@@ -98,6 +98,10 @@ _Avoid_: Shop move, combo
 What one joker is worth to this run right now: its scoring gain against the real deck and roster, adjusted for synergy, ante urgency and likely bosses. It is the single price used to buy, sell, pick from packs and pick Hex targets.
 _Avoid_: Joker score, EV delta (in conversation)
 
+**Run view**:
+Everything the bot knows about the run right now that a joker's value depends on: the roster, hand levels, ante, joker slots, deck, build, money, discards a round gives, how the bot has been playing, planets used, and the boss when in a round. Every joker value is priced against the run view.
+_Avoid_: Valuation inputs, sim context
+
 **Value map**:
 A table of joker values computed across standard scenarios (archetype by ante), published to the dashboard so valuation changes can be compared between batches.
 

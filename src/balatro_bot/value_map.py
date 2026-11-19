@@ -9,17 +9,15 @@ The output is a list of rows; each row contains the joker metadata plus a
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from balatro_bot.domain.models.deck_profile import DeckProfile
-from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+from balatro_bot.domain.policy.run_view import RunView
+from balatro_bot.domain.policy.shop_valuation import joker_value
 from balatro_bot.joker_effects.parsers import parse_effect_value
 from balatro_bot.joker_registry import JOKERS, RARITY_LABEL
 from balatro_bot.scaling import ALL_SCALING
 from balatro_bot.strategy import compute_strategy
-
-if TYPE_CHECKING:
-    from balatro_bot.strategy import Strategy
 
 
 # ---------------------------------------------------------------------------
@@ -159,13 +157,13 @@ def build_value_map() -> list[dict[str, Any]]:
         )
         values: dict[str, float] = {}
         for label, owned, ante in SCENARIOS:
-            strategy: Strategy = compute_strategy(owned, _HAND_LEVELS)
+            run = RunView.of(
+                owned, _HAND_LEVELS, ante,
+                strategy=compute_strategy(owned, _HAND_LEVELS),
+                deck_profile=_VANILLA_DECK, money=20, discards=2,
+            )
             try:
-                v = evaluate_joker_value(
-                    cand, owned, _HAND_LEVELS, ante,
-                    strategy=strategy, deck_profile=_VANILLA_DECK,
-                    money=20, discards_left=2,
-                )
+                v = joker_value(cand, run)
             except Exception:  # defensive — never let one joker break the map
                 v = 0.0
             values[label] = round(v, 2)

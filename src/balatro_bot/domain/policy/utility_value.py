@@ -1,7 +1,7 @@
 """ROI-based valuation for economic/utility jokers.
 
 Converts a joker's expected net dollars over the rest of the run into the
-same 0-15 scale used by ``shop_valuation.evaluate_joker_value``. Reference
+same 0-15 scale used by ``shop_valuation.joker_value``. Reference
 implementations for three primitives:
 
   - Flat per-round income       (Golden Joker)

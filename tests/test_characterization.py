@@ -10,7 +10,8 @@ from __future__ import annotations
 from balatro_bot.context import RoundContext
 from balatro_bot.domain.scoring.estimate import score_hand
 from balatro_bot.domain.scoring.search import best_hand, discard_candidates
-from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+from balatro_bot.domain.policy.run_view import RunView
+from balatro_bot.domain.policy.shop_valuation import joker_value
 from balatro_bot.strategy import compute_strategy
 from tests.conftest import card, joker
 
@@ -137,7 +138,7 @@ class TestDiscardCharacterization:
         assert first.chase_hand == "High Card"
 
 
-# ── evaluate_joker_value() ──────────────────────────────────────────
+# ── joker_value() ──────────────────────────────────────────
 
 
 class TestJokerValuationCharacterization:
@@ -145,14 +146,14 @@ class TestJokerValuationCharacterization:
         j = joker("j_four_fingers", "Four Fingers")
         levels = {"Pair": {"chips": 10, "mult": 2, "level": 1}}
         strat = compute_strategy([], levels)
-        v = evaluate_joker_value(j, owned_jokers=[], hand_levels=levels, ante=3, strategy=strat)
+        v = joker_value(j, RunView.of([], levels, 3, strategy=strat))
         assert v == 2.5
 
     def test_scoring_joker(self) -> None:
         j = _joker_with_effect("j_joker", "Joker", "+4 Mult")
         levels = {"Pair": {"chips": 10, "mult": 2, "level": 1}, "Flush": {"chips": 35, "mult": 4, "level": 1}}
         strat = compute_strategy([], levels)
-        v = evaluate_joker_value(j, owned_jokers=[], hand_levels=levels, ante=3, strategy=strat)
+        v = joker_value(j, RunView.of([], levels, 3, strategy=strat))
         assert v > 3.0  # exact: ~3.37, but allow minor float drift
 
     def test_xmult_beats_flat_mult_when_aligned(self) -> None:
@@ -165,8 +166,8 @@ class TestJokerValuationCharacterization:
 
         # Empty roster: flat mult wins (no Pair build commitment yet).
         strat_empty = compute_strategy([], levels)
-        v_flat_empty = evaluate_joker_value(j_flat, owned_jokers=[], hand_levels=levels, ante=3, strategy=strat_empty)
-        v_xmult_empty = evaluate_joker_value(j_xmult, owned_jokers=[], hand_levels=levels, ante=3, strategy=strat_empty)
+        v_flat_empty = joker_value(j_flat, RunView.of([], levels, 3, strategy=strat_empty))
+        v_xmult_empty = joker_value(j_xmult, RunView.of([], levels, 3, strategy=strat_empty))
         assert v_flat_empty > v_xmult_empty
 
         # Pair-aligned roster: Duo's X2 mult dominates on every hand.
@@ -174,8 +175,8 @@ class TestJokerValuationCharacterization:
         jolly = _joker_with_effect("j_jolly", "Jolly Joker", "+8 Mult if hand contains a Pair")
         pair_roster = [sly, jolly]
         strat_pair = compute_strategy(pair_roster, levels)
-        v_flat_pair = evaluate_joker_value(j_flat, owned_jokers=pair_roster, hand_levels=levels, ante=3, strategy=strat_pair)
-        v_xmult_pair = evaluate_joker_value(j_xmult, owned_jokers=pair_roster, hand_levels=levels, ante=3, strategy=strat_pair)
+        v_flat_pair = joker_value(j_flat, RunView.of(pair_roster, levels, 3, strategy=strat_pair))
+        v_xmult_pair = joker_value(j_xmult, RunView.of(pair_roster, levels, 3, strategy=strat_pair))
         assert v_xmult_pair > v_flat_pair
 
 

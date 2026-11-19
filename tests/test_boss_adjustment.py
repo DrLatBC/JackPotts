@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from balatro_bot.domain.policy.run_view import RunView
 from balatro_bot.domain.policy.boss_adjustment import (
     BossBlindState,
     boss_multiplier,
     shop_blended_multiplier,
 )
-from balatro_bot.domain.policy.shop_valuation import evaluate_joker_value
+from balatro_bot.domain.policy.shop_valuation import joker_value
 
 
 def _levels() -> dict:
@@ -88,21 +89,11 @@ class TestShopBlended:
 
 class TestIntegration:
     def test_photograph_plant_drops_value(self):
-        base = evaluate_joker_value(
-            _joker("j_photograph"), owned_jokers=[], hand_levels=_levels(), ante=2,
-        )
-        plant = evaluate_joker_value(
-            _joker("j_photograph"), owned_jokers=[], hand_levels=_levels(), ante=2,
-            blind_name="The Plant",
-        )
+        base = joker_value(_joker("j_photograph"), RunView.of([], _levels(), 2))
+        plant = joker_value(_joker("j_photograph"), RunView.of([], _levels(), 2, boss="The Plant"))
         assert plant < base * 0.2
 
     def test_acrobat_needle_lifts_value(self):
-        base = evaluate_joker_value(
-            _joker("j_acrobat"), owned_jokers=[], hand_levels=_levels(), ante=2,
-        )
-        needle = evaluate_joker_value(
-            _joker("j_acrobat"), owned_jokers=[], hand_levels=_levels(), ante=2,
-            blind_name="The Needle",
-        )
+        base = joker_value(_joker("j_acrobat"), RunView.of([], _levels(), 2))
+        needle = joker_value(_joker("j_acrobat"), RunView.of([], _levels(), 2, boss="The Needle"))
         assert needle > base

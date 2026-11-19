@@ -1,6 +1,6 @@
 """Unified joker valuation system.
 
-Single entry point ``evaluate_joker_value()`` produces a comparable float for
+Single entry point ``joker_value()`` produces a comparable float for
 any joker, used for both buy and sell decisions.
 
 Three layers:
@@ -46,12 +46,11 @@ from balatro_bot.strategy import (
     JOKER_RANK_AFFINITY,
     JOKER_SUIT_AFFINITY,
     Strategy,
-    compute_strategy,
 )
 
 if TYPE_CHECKING:
     from balatro_bot.domain.models.deck_profile import DeckProfile
-    from balatro_bot.domain.policy.sim_context import LiveRunStats
+    from balatro_bot.domain.policy.run_view import RunView
 
 # ---------------------------------------------------------------------------
 # Scoring category metadata
@@ -1302,7 +1301,7 @@ def _scoring_delta_legacy(
     # Card Sharp only fires when the played hand type already has
     # played_this_round > 0. Fresh hand_levels dicts always have 0, so the
     # sim would zero Card Sharp out. Synthesize a repeat-play state for this
-    # evaluation — the proc-rate correction in evaluate_joker_value then
+    # evaluation — the proc-rate correction in joker_value then
     # discounts for the fact that not every hand is a repeat.
     candidate_key_early = ctx.candidate_key
     if "j_card_sharp" in (set(ctx.owned_keys) | {candidate_key_early}):
@@ -1314,7 +1313,7 @@ def _scoring_delta_legacy(
     # Mystic Summit fires at discards_left <= 0. With Mystic in the roster
     # the bot actively burns discards to 0 to guarantee the proc on the
     # finisher. Force discards_left=0 for this eval; proc-rate correction
-    # in evaluate_joker_value then discounts for the fact that not every
+    # in joker_value then discounts for the fact that not every
     # hand of a round is at zero discards.
     sim_discards_left = ctx.discards_left
     if "j_mystic_summit" in (set(ctx.owned_keys) | {candidate_key_early}):
@@ -1810,69 +1809,46 @@ def _deck_composition_adjustment(
 # one values the same at any money, so money is left out of its memo key.
 _MONEY_SCORING_KEYS = frozenset({"j_bull", "j_bootstraps"})
 
-# evaluate_joker_value results by the text of every input. A shop visit asks
+# joker_value results by the text of the candidate and run view. A shop visit asks
 # for the same roster and shop jokers again on each tick that changed nothing
 # they depend on (a pack or voucher bought, a reroll, money spent).
 _VALUE_MEMO: dict[str, float] = {}
 _VALUE_MEMO_MAX = 256
 
 
-def evaluate_joker_value(
-    candidate: dict,
-    owned_jokers: list[dict],
-    hand_levels: dict[str, dict],
-    ante: int,
-    strategy: Strategy | None = None,
-    joker_limit: int = 5,
-    deck_profile: DeckProfile | None = None,
-    unique_planets_used: int = 0,
-    blind_name: str | None = None,
-    live_stats: "LiveRunStats | None" = None,
-    money: int = 0,
-    discards_left: int = 0,
-) -> float:
-    """Unified joker valuation. Returns ~0.0 to ~15.0.
+def joker_value(candidate: dict, run: RunView) -> float:
+    """The candidate's joker value against the run view. Returns ~0.0 to ~15.0.
 
-    Higher = more valuable to the current build.
-    Used for both buy and sell decisions.
+    Higher = more valuable to the current build. Used for every buy, sell,
+    pack pick and Hex decision.
     """
     money_matters = (
         joker_key(candidate) in _MONEY_SCORING_KEYS
-        or any(joker_key(j) in _MONEY_SCORING_KEYS for j in owned_jokers)
+        or any(joker_key(j) in _MONEY_SCORING_KEYS for j in run.roster)
     )
     # The candidate is taken out of the roster by identity, so its slot is part of the key.
-    owned_slot = next((i for i, j in enumerate(owned_jokers) if j is candidate), None)
+    owned_slot = next((i for i, j in enumerate(run.roster) if j is candidate), None)
     memo_key = repr((
-        candidate, owned_slot, owned_jokers, hand_levels, ante, strategy, joker_limit,
-        deck_profile, unique_planets_used, blind_name, live_stats,
-        money if money_matters else None, discards_left,
+        candidate, owned_slot, run.roster, run.hand_levels, run.ante, run.strategy,
+        run.joker_limit, run.deck_profile, run.unique_planets_used, run.boss,
+        run.live_stats, run.money if money_matters else None, run.discards,
     ))
     value = _VALUE_MEMO.get(memo_key)
     if value is None:
-        value = _joker_value(
-            candidate, owned_jokers, hand_levels, ante, strategy, joker_limit,
-            deck_profile, unique_planets_used, blind_name, live_stats, money, discards_left,
-        )
+        value = _joker_value(candidate, run)
         if len(_VALUE_MEMO) >= _VALUE_MEMO_MAX:
             _VALUE_MEMO.clear()
         _VALUE_MEMO[memo_key] = value
     return value
 
 
-def _joker_value(
-    candidate: dict,
-    owned_jokers: list[dict],
-    hand_levels: dict[str, dict],
-    ante: int,
-    strategy: Strategy | None,
-    joker_limit: int,
-    deck_profile: DeckProfile | None,
-    unique_planets_used: int,
-    blind_name: str | None,
-    live_stats: "LiveRunStats | None",
-    money: int,
-    discards_left: int,
-) -> float:
+def _joker_value(candidate: dict, run: RunView) -> float:
+    owned_jokers = list(run.roster)
+    ante = run.ante
+    strategy = run.strategy
+    joker_limit = run.joker_limit
+    deck_profile = run.deck_profile
+    unique_planets_used = run.unique_planets_used
     cand_key = candidate.get("key", "") or joker_key(candidate)
 
     # Hard blacklist — jokers whose effect is too conditional / too weak /
@@ -1882,8 +1858,6 @@ def _joker_value(
     if cand_key in _BLACKLISTED_JOKERS:
         return 0.1
 
-    if strategy is None:
-        strategy = compute_strategy(owned_jokers, hand_levels, deck_profile=deck_profile)
     owned_key_set = {joker_key(j) for j in owned_jokers}
     # Turn on Monte Carlo sampling only when a stochastic joker is
     # involved. The expected-value path stays the default for speed.
@@ -1891,21 +1865,7 @@ def _joker_value(
         cand_key in _STOCHASTIC_KEYS or owned_key_set & _STOCHASTIC_KEYS
     ) else 0
 
-    ctx = SimContext.build(
-        candidate=candidate,
-        owned_jokers=owned_jokers,
-        hand_levels=hand_levels,
-        strategy=strategy,
-        ante=ante,
-        joker_limit=joker_limit,
-        deck_profile=deck_profile,
-        unique_planets_used=unique_planets_used,
-        blind_name=blind_name,
-        monte_carlo_samples=mc_samples,
-        live_stats=live_stats,
-        money=money,
-        discards_left=discards_left,
-    )
+    ctx = SimContext.build(candidate, run, monte_carlo_samples=mc_samples)
     key = ctx.candidate_key
     owned_keys = set(ctx.owned_keys)
 
@@ -2078,8 +2038,8 @@ def _joker_value(
     context = _context_scale(key, owned_jokers, ante, candidate_anchor)
 
     # Layer 4: boss-blind adjustment. In-round uses the active boss;
-    # shop phase blends across the upcoming-boss pool. Note: if the caller
-    # passed a blind_name that isn't in _BOSS_TEMPLATES (non-templated boss
+    # shop phase blends across the upcoming-boss pool. Note: if the run
+    # view's boss isn't in _BOSS_TEMPLATES (non-templated boss
     # like Verdant Leaf / Cerulean Bell / Crimson Heart), from_name() returns
     # None and ctx.boss stays unset — we fall back to the shop blend even
     # mid-round. That's intentional: the blend is a reasonable prior when we
