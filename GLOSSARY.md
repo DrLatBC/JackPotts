@@ -122,6 +122,10 @@ _Avoid_: Server (alone), backend, environment
 One game server plus the bot driving it, identified by its port.
 _Avoid_: Worker, slot
 
+**Instance report**:
+The record an instance's bot keeps of what it is doing (games started and finished, that it is still moving, that it is stuck), which the supervisor reads to watch the instance.
+_Avoid_: Status (a job's), progress, log
+
 **Batch**:
 A numbered set of games played across all instances in one supervisor session. It is the unit for stats and comparisons.
 _Avoid_: Run (a run is one game), session

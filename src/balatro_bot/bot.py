@@ -16,6 +16,7 @@ from balatro_bot.engine import RuleEngine
 from balatro_bot.game_server import read_health
 from balatro_bot.game_recorder import PASSING_STATES, GameRecorder
 from balatro_bot.infrastructure.client import BalatroClient
+from balatro_bot.instance_report import Reporter
 from balatro_bot.replays import ReplayWriter, replay_record
 
 log = logging.getLogger("balatro_bot")
@@ -137,11 +138,13 @@ def run_bot(
     stream_delay: float = 0.0,
     dashboard_batch_id: int | None = None,
     replays: ReplayWriter | None = None,
+    report: Reporter | None = None,
 ) -> bool:
     """Main bot loop. Returns True if the game was won.
 
     With *replays*, a simulator game started here is saved as a replay, and the
     dashboard then gets the game's summary without the detail the replay can rebuild.
+    With *report*, the game's start, moves and end go to the instance report.
     """
 
     if start_game:
@@ -176,6 +179,8 @@ def run_bot(
         log.info("Joined existing game: state=%s", state.get("state"))
 
     explorer().reseed(state.get("seed"))
+    if report is not None:
+        report.game_started(explorer().rate)
     seed_draws(state.get("seed"))
     recorder = GameRecorder()
     dispatcher = Dispatcher(client, engine, poll_interval=poll_interval, stream_delay=stream_delay)
@@ -201,6 +206,8 @@ def run_bot(
         method, params = action.to_rpc()
         state = dispatcher.prepare(method, params, state)
         recorder.sending(game_state, method, params, action, engine.last_decision, state)
+        if report is not None:
+            report.action(recorder.actions_taken, game_state, method, params)
         sent = dispatcher.send(game_state, method, params, state)
         state = sent.state
         if sent.outcome == "acted":
@@ -211,6 +218,8 @@ def run_bot(
             recorder.timed_out()
 
     recorder.finish(state)
+    if report is not None:
+        report.game_finished(recorder.won, state.get("seed", ""), state.get("ante_num") or 0)
     # Taken after the game-over summary is logged, for wins and losses alike.
     log_text = None
     if _win_handler:

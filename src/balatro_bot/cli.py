@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
 from balatro_bot.infrastructure.client import BalatroClient
 
+from balatro_bot import instance_report
 from balatro_bot.bot import run_bot, setup_logging, wait_for_server
 from balatro_bot.domain.policy import exploration
 from balatro_bot.engine import RuleEngine
@@ -19,7 +19,7 @@ log = logging.getLogger("balatro_bot")
 
 
 def apply_explore_file(path: Path | None) -> None:
-    """Switch to the rate in *path* before a game, logging the change for the supervisor."""
+    """Switch to the rate in *path* before a game."""
     if path is None:
         return
     try:
@@ -42,7 +42,9 @@ def main() -> None:
     parser.add_argument("--seed", default=None, help="Force a specific seed")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--games", type=int, default=1, help="Number of games to play")
-    parser.add_argument("--games-offset", type=int, default=0, help="Games already completed (for progress tracking on restart)")
+    parser.add_argument("--games-offset", type=int, default=0, help="Games already completed (numbers the game headers on restart)")
+    parser.add_argument("--batch-number", type=int, default=None,
+                        help="Batch number naming the log files (default: one past the highest local one)")
     parser.add_argument("--log", default=None, help="Log file (default: growing_{port}.txt)")
     parser.add_argument("--stream-delay", type=float, default=0.0,
                         help="Seconds to pause after each bot action (used by supervisor --stream)")
@@ -57,45 +59,19 @@ def main() -> None:
     args = parser.parse_args()
     exploration.configure(args.explore)
 
-    bot_log_root = Path(__file__).resolve().parent.parent.parent / "bot_log"
-    if args.stream_log:
-        log_dir = bot_log_root / "stream"
-    else:
-        log_dir = bot_log_root / str(args.port)
-    wins_dir = bot_log_root / "wins"
+    number = args.batch_number or instance_report.next_local_number()
+    files = instance_report.batch_files(args.port, number, stream=args.stream_log)
+    log_dir = files.game_log.parent
     log_dir.mkdir(parents=True, exist_ok=True)
-    wins_dir.mkdir(exist_ok=True)
+    files.wins_log.parent.mkdir(parents=True, exist_ok=True)
 
-    num_file = bot_log_root / "next_num.txt"
-    if num_file.exists():
-        session_num = int(num_file.read_text().strip())
-    else:
-        all_nums = [
-            int(m.group(1))
-            for p in bot_log_root.glob("*/game_*.log")
-            if (m := re.match(r"game_(\d+)\.log", p.name))
-        ]
-        session_num = (max(all_nums) + 1) if all_nums else 1
-    port_nums = [
-        int(m.group(1))
-        for p in log_dir.glob("game_*.log")
-        if (m := re.match(r"game_(\d+)\.log", p.name))
-    ]
-    next_num = max(session_num, max(port_nums)) if port_nums else session_num
-
-    if args.log:
-        log_file = args.log
-    else:
-        log_file = str(log_dir / f"game_{next_num:03d}.log")
-
-    wins_file = str(wins_dir / f"wins_{args.port}_{next_num:03d}.log")
-    scoring_file = str(log_dir / f"scoring_{next_num:03d}.log")
-    stream_file = str(log_dir / f"stream_{next_num:03d}.log") if args.stream_log else None
-    progress_file = log_dir / "progress.txt"
-    setup_logging(args.verbose, log_file=log_file, wins_file=wins_file,
-                  scoring_file=scoring_file, stream_file=stream_file)
+    log_file = args.log or str(files.game_log)
+    stream_file = str(log_dir / f"stream_{number:03d}.log") if args.stream_log else None
+    setup_logging(args.verbose, log_file=log_file, wins_file=str(files.wins_log),
+                  scoring_file=str(files.scoring_log), stream_file=stream_file)
 
     replays: ReplayWriter | None = None
+    report = instance_report.Reporter(files.report)
     try:
         client = BalatroClient(host=args.host, port=args.port)
         engine = RuleEngine()
@@ -103,12 +79,11 @@ def main() -> None:
         wait_for_server(client)
         # Simulator games are kept as replays beside the instance's logs.
         if client.simulator:
-            replays = ReplayWriter(log_dir / f"replay_{next_num:03d}.jsonl.gz")
+            replays = ReplayWriter(files.replay)
 
         wins = 0
         offset = args.games_offset
         total_games = offset + args.games
-        progress_file.write_text(f"{offset}/{total_games}")
         if args.stream_log:
             (log_dir / "wins.txt").write_text(f"W: 0  L: 0")
         i = 0
@@ -125,10 +100,10 @@ def main() -> None:
                 stream_delay=args.stream_delay,
                 dashboard_batch_id=args.dashboard_batch_id,
                 replays=replays,
+                report=report,
             )
             if won:
                 wins += 1
-            progress_file.write_text(f"{offset + i + 1}/{total_games}")
             if args.stream_log:
                 games_played = offset + i + 1
                 (log_dir / "wins.txt").write_text(f"W: {wins}  L: {games_played - wins}")
@@ -141,6 +116,7 @@ def main() -> None:
         log.exception("FATAL: bot crashed")
         sys.exit(1)
     finally:
+        report.close()
         if replays is not None:
             replays.close()
 

@@ -209,6 +209,11 @@ class GameRecorder:
         return self._gs.actually_won
 
     @property
+    def actions_taken(self) -> int:
+        """Moves the game has taken this game."""
+        return self._gs.actions_taken
+
+    @property
     def explored_actions(self) -> list[int]:
         return self._gs.explored_actions
 

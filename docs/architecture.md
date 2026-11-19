@@ -125,6 +125,7 @@ Thin rule classes per game state. Each has `match(state, ctx)` and `action(state
 | `infrastructure/state_adapter.py` | Raw API dict -> typed `Snapshot` |
 | `dashboard_client.py` | HTTP client for the JackPotts dashboard (optional) |
 | `supervisor.py` | Multi-instance orchestrator with health monitoring |
+| `instance_report.py` | The instance report (bot writes events, supervisor reads them: games, wins, explore rate, heartbeats, stuck), the batch number rule and every per-batch file name |
 | `config.py` | Paths, ports, env loading |
 
 ## Key design choices

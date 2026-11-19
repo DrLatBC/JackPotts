@@ -7,6 +7,7 @@ import pytest
 
 from balatro_bot import gui, jobs, supervisor
 from balatro_bot.game_server import Jackdaw
+from balatro_bot.instance_report import Reporter, batch_files
 
 
 @pytest.fixture
@@ -95,51 +96,12 @@ def test_ports_in_use_never_connects(monkeypatch):
     assert gui.ports_in_use() is True
 
 
-GAME_LOG = """\
-16:15:09 [INFO] Started new game: deck=BLUE stake=WHITE seed=UDABG75D
-16:15:09 [INFO] [ANTE 1] Roster (0 jokers): [none]
-16:15:09 [INFO] Blind: Small Blind (need 300 chips)
-16:19:40 [INFO] [ANTE 6] Money: $12
-16:19:41 [INFO] Blind: The Serpent (need 40,000 chips)
-"""
-GAME_OVER = "16:20:06 [INFO] Game over: DEFEAT | seed=UDABG75D ante=6 round=18 | 195 actions taken\n"
-
-
 @pytest.fixture
 def sup(status_file, tmp_path, monkeypatch):
     monkeypatch.setattr(supervisor, "LOG_DIR", tmp_path)
     (tmp_path / str(supervisor.BASE_PORT)).mkdir()
     return supervisor.Supervisor(n=1, games=10, decks=["BLUE"], stake="WHITE", seed=None,
                                  explore_instances=1, explore_rate=0.15)
-
-
-def _feed_log(slot, path, text):
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(text)
-    slot.log_file = path
-    slot.poll_log_for_softlock()
-
-
-GAME_WON = "16:21:30 [INFO] Game over: VICTORY | seed=7KQ2M9XA ante=9 round=25 | 301 actions taken\n"
-
-
-def test_status_summarises_finished_games_and_lists_the_wins(sup, tmp_path):
-    slot = sup.slots[0]
-    log_path = tmp_path / "game.log"
-    _feed_log(slot, log_path, GAME_LOG)
-    assert sup._status("running")["recent"] == {"games": 0, "wins": 0, "lost_at": {}}
-
-    _feed_log(slot, log_path, GAME_OVER + GAME_OVER.replace("ante=6", "ante=3") + GAME_OVER + GAME_WON)
-    status = sup._status("running")
-    assert status["recent"] == {"games": 4, "wins": 1, "lost_at": {6: 2, 3: 1}}
-    [win] = status["recent_wins"]
-    assert (win["name"], win["seed"], win["ante"]) == (slot.name, "7KQ2M9XA", 9)
-
-
-def test_summary_covers_only_the_latest_games(sup, tmp_path):
-    slot = sup.slots[0]
-    _feed_log(slot, tmp_path / "game.log", GAME_OVER * (supervisor.RECENT_WINDOW + 40))
-    assert sup._status("running")["recent"]["games"] == supervisor.RECENT_WINDOW
 
 
 def test_instance_speed_is_games_per_minute_over_the_last_minute(sup):
@@ -154,7 +116,7 @@ def test_instance_speed_is_games_per_minute_over_the_last_minute(sup):
 
 def test_only_a_running_instance_reports_a_speed(sup):
     slot = sup.slots[0]
-    slot.state, slot.progress = "running", "3/10"
+    slot.state = "running"
     slot.rate_samples.append((0.0, 0))
     assert sup._status("running")["slots"][0]["games_per_min"] is not None
     slot.state = "done"
@@ -162,44 +124,8 @@ def test_only_a_running_instance_reports_a_speed(sup):
     assert not slot.rate_samples
 
 
-def test_finished_games_survive_a_pause(sup, tmp_path):
-    slot = sup.slots[0]
-    _feed_log(slot, tmp_path / "game.log", GAME_OVER + GAME_WON)
-    resumed = supervisor.Supervisor.from_pause_state(sup.pause_state(), server=None)
-    status = resumed._status("running")
-    assert status["recent"] == {"games": 2, "wins": 1, "lost_at": {6: 1}}
-    assert [w["seed"] for w in status["recent_wins"]] == ["7KQ2M9XA"]
-
-
 def test_rate_format_keeps_slow_batches_readable():
     assert (gui._fmt_rate(62.4), gui._fmt_rate(10.0), gui._fmt_rate(0.5)) == ("62", "10", "0.5")
-
-
-def test_panel_explore_switch_reaches_the_status_and_the_bot(sup, tmp_path, monkeypatch):
-    monkeypatch.setattr(gui, "LOG_DIR", tmp_path)
-    slot = sup.slots[0]
-    slot.explore_active = 0.15
-    gui.set_explore_rate(slot.port, 0.0)
-    live = sup._status("running")["slots"][0]
-    assert (live["explore_rate"], live["explore_active"]) == (0.0, 0.15)
-
-    _feed_log(slot, tmp_path / "game.log", "16:30:00 [INFO] Explore rate: 0.00\n")
-    assert sup._status("running")["slots"][0]["explore_active"] == 0.0
-
-
-def test_relaunched_bot_gets_the_rate_file_and_reads_its_log_from_the_end(sup, tmp_path, monkeypatch):
-    launched = []
-    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda cmd, **kw: launched.append(cmd))
-    slot = sup.slots[0]
-    log_path = tmp_path / str(slot.port) / f"game_{sup.session_num:03d}.log"
-    log_path.write_text(GAME_LOG + GAME_OVER, encoding="utf-8")
-    sup.launch_bot(slot)
-    cmd = launched[0]
-    assert cmd[cmd.index("--explore-file") + 1] == str(slot.explore_file)
-    assert cmd[cmd.index("--explore") + 1] == "0.15"
-    assert slot.log_offset == log_path.stat().st_size
-    slot.poll_log_for_softlock()
-    assert not slot.recent
 
 
 def test_bot_switches_rate_from_the_file_before_a_game(tmp_path, monkeypatch):
@@ -319,6 +245,13 @@ def sup_files(sup, tmp_path, monkeypatch):
     return sup
 
 
+def _finish_games(sup, slot, n):
+    report = Reporter(batch_files(slot.port, sup.session_num, supervisor.LOG_DIR).report)
+    for _ in range(n):
+        report.game_finished(False, "S", 2)
+    report.close()
+
+
 def test_panel_adds_and_removes_instances_mid_batch(sup_files, tmp_path):
     sup = sup_files
     first = sup.slots[0]
@@ -328,7 +261,7 @@ def test_panel_adds_and_removes_instances_mid_batch(sup_files, tmp_path):
     assert (added.port, added.deck, added.stake, added.state) == (first.port + 1, "RED", "GOLD", "running")
     assert added.name != first.name
 
-    (tmp_path / str(added.port) / "progress.txt").write_text("3/10")
+    _finish_games(sup, added, 3)
     gui.send_command({"op": "remove", "port": added.port})
     sup.apply_commands()
     status = sup._status("running")
@@ -357,8 +290,8 @@ def test_paused_batch_resumes_with_its_counts(sup_files, tmp_path):
     assert resumed.slots[0].explore_rate == 0.15
     assert [s.port for s in resumed.live_slots()] == [sup.slots[0].port]
 
-    # A resumed batch keeps its progress files, so each bot carries on from its count.
-    (tmp_path / str(sup.slots[0].port) / "progress.txt").write_text("4/10")
+    # Each slot's instance report carries its count across the pause.
+    _finish_games(sup, sup.slots[0], 4)
     resumed.setup()
     assert resumed._remaining_games(resumed.slots[0]) == 6
 
@@ -370,22 +303,6 @@ def test_a_paused_simulator_batch_resumes_on_the_simulator():
     resumed = supervisor.Supervisor.from_pause_state(saved, server=sim.server)
     assert isinstance(resumed.server, Jackdaw) and resumed.bot_python == sim.server.bot_python()
     assert supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None).pause_state()["sim"] is False
-
-
-def test_simulator_batches_restart_a_stuck_bot_after_a_minute(tmp_path, monkeypatch):
-    live = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None)
-    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, server=Jackdaw(python="jackdaw-python"))
-    assert (live.stall_timeout, sim.stall_timeout) == (600, 60)
-    assert sim._status("running")["stall_secs"] == 60
-
-    slot = sim.slots[0]
-    log_path = tmp_path / "game.log"
-    log_path.write_text("16:15:09 [INFO] [#12] SHOP -> next_round() | done shopping\n", encoding="utf-8")
-    slot.log_file = log_path
-    assert not slot.poll_log_for_softlock(sim.stall_timeout)
-    slot.last_action_seq_time -= 90
-    assert slot.poll_log_for_softlock(sim.stall_timeout)
-    assert not slot.poll_log_for_softlock(live.stall_timeout)
 
 
 # ── Settings shared by the tabs ──

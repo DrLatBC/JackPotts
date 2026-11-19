@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import random
-import re
 import shutil
 import signal
 import subprocess
@@ -24,9 +23,10 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from balatro_bot import dashboard_client, jobs
+from balatro_bot import dashboard_client, instance_report, jobs
 from balatro_bot.config import LOG_DIR, REPO, WINS_DIR, SupervisorConfig, venv_python
 from balatro_bot.game_server import GameServer, Jackdaw, LiveGame
+from balatro_bot.instance_report import GameFinished, GameStarted, Watcher
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -140,39 +140,9 @@ def _pick_princess_name(taken: set[str]) -> str:
     return random.choice(available)
 
 
-# ---------------------------------------------------------------------------
-# Soft-lock cycle detection
-# ---------------------------------------------------------------------------
-
-_MIN_REPS = 5  # require at least 5 full repetitions to flag a cycle
-_MAX_PERIOD = 4  # check cycles of period 1, 2, 3, 4
-
-_ACTION_SEQ_RE = re.compile(r"\[#(\d+)\]")
-_GAME_OVER_RE = re.compile(r"Game over: (VICTORY|DEFEAT).*?seed=(\S+) ante=(\d+)")
-_EXPLORE_RATE_RE = re.compile(r"Explore rate: ([\d.]+)")
 RECENT_WINDOW = 300  # finished games the panel's summary covers
 RECENT_WINS = 12
 RATE_WINDOW = 60.0   # seconds an instance's games-per-minute is measured over
-
-
-def _has_repeating_cycle(lines: list[str]) -> bool:
-    """Detect short repeating cycles (period 1-4) in recent log lines.
-
-    Returns True if the last N lines form a repeating pattern of any short
-    period with at least _MIN_REPS full repetitions.  Catches both single-line
-    loops (A-A-A) and multi-line cycles (A-B-A-B or A-B-C-A-B-C).
-    """
-    n = len(lines)
-    for period in range(1, _MAX_PERIOD + 1):
-        required = period * _MIN_REPS
-        if n < required:
-            continue
-        # Check from the tail: do the last `required` lines repeat with this period?
-        tail = lines[-required:]
-        pattern = tail[:period]
-        if all(tail[i] == pattern[i % period] for i in range(required)):
-            return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -192,15 +162,10 @@ class Slot:
     restart_times: list[float] = field(default_factory=list)
     consecutive_launch_failures: int = 0
     last_health: float = 0.0
-    progress: str = ""
-    wins: int = 0
     last_reason: str = ""
     log_file: Path | None = None
-    log_offset: int = 0
-    last_action_seq: int = -1
-    last_action_seq_time: float = 0.0
-    recent_lines: deque = field(default_factory=lambda: deque(maxlen=40))
-    loop_start: float = 0.0
+    # The instance report of this slot's batch; set once the batch number is known.
+    report: Watcher | None = None
     bot_launch_time: float = 0.0
     # Rate the slot is set to; the bot picks it up from explore_file at its next game.
     explore_rate: float = 0.0
@@ -245,15 +210,6 @@ class Slot:
             return True
         return False
 
-    def read_progress(self) -> str:
-        try:
-            p = LOG_DIR / str(self.port) / "progress.txt"
-            if p.exists():
-                self.progress = p.read_text().strip()
-        except OSError:
-            pass
-        return self.progress
-
     def read_explore_rate(self) -> None:
         """Pick up a rate the control panel wrote for this slot."""
         try:
@@ -267,17 +223,38 @@ class Slot:
         except OSError as e:
             log.warning("%s (port %d): could not write explore rate: %s", self.name, self.port, e)
 
-    def _track_game(self, line: str) -> None:
-        """Follow the explore rate in use and record each finished game."""
-        if m := _EXPLORE_RATE_RE.search(line):
-            self.explore_active = float(m.group(1))
-        elif m := _GAME_OVER_RE.search(line):
-            won, ante, now = m.group(1) == "VICTORY", int(m.group(3)), time.time()
-            self.recent.append([now, ante, won])
-            if won:
-                self.recent_wins.append({
-                    "name": self.name, "port": self.port, "seed": m.group(2), "ante": ante, "time": now,
-                })
+    @property
+    def games_done(self) -> int:
+        return self.report.games if self.report else 0
+
+    @property
+    def wins(self) -> int:
+        return self.report.wins if self.report else 0
+
+    def follow_report(self) -> None:
+        """Read what the bot reported since last time: the explore rate in use and each finished game."""
+        if self.report is None:
+            return
+        for event in self.report.read():
+            if isinstance(event, GameStarted):
+                self.explore_active = event.explore
+            elif isinstance(event, GameFinished):
+                self.recent.append([event.t, event.ante, event.won])
+                if event.won:
+                    self.recent_wins.append({
+                        "name": self.name, "port": self.port, "seed": event.seed, "ante": event.ante,
+                        "time": event.t,
+                    })
+
+    def soft_lock(self, now: float, stall_timeout: float) -> str | None:
+        """Why the bot counts as soft-locked: it reported itself stuck, or made no move in time."""
+        if self.report is None:
+            return None
+        if self.report.stuck:
+            return self.report.stuck
+        if self.report.stalled(now, stall_timeout):
+            return f"no move for {stall_timeout:.0f}s"
+        return None
 
     def games_per_minute(self, now: float, completed: int) -> float | None:
         """Games finished per minute over the last RATE_WINDOW seconds; None until
@@ -290,76 +267,6 @@ class Slot:
         if now - since < 10:
             return None
         return round(60 * (completed - then) / (now - since), 1)
-
-    def read_wins(self, session_num: int) -> None:
-        try:
-            p = WINS_DIR / f"wins_{self.port}_{session_num:03d}.log"
-            if p.exists():
-                self.wins = sum(1 for line in p.read_text(encoding="utf-8", errors="replace").splitlines()
-                                if line.startswith("VICTORY"))
-        except OSError:
-            pass
-
-    _LOG_PREFIX = re.compile(r"^\d{2}:\d{2}:\d{2} \S+ ")
-    _ACTION_COUNTER = re.compile(r"\[#\d+\] ")
-
-    def poll_log_for_softlock(self, stall_timeout: float = LiveGame.stall_timeout) -> bool:
-        if not self.log_file:
-            return False
-        try:
-            with self.log_file.open("rb") as fh:
-                fh.seek(self.log_offset)
-                raw = fh.read()
-                self.log_offset = fh.tell()
-        except OSError:
-            return False
-
-        for line in raw.decode("utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if line:
-                self._track_game(line)
-                m = _ACTION_SEQ_RE.search(line)
-                if m:
-                    seq = int(m.group(1))
-                    if seq != self.last_action_seq:
-                        self.last_action_seq = seq
-                        self.last_action_seq_time = time.time()
-                stripped = self._LOG_PREFIX.sub("", line)
-                stripped = self._ACTION_COUNTER.sub("", stripped)
-                self.recent_lines.append(stripped)
-
-        # Wall-clock stall backstop: catches long-period loops the cycle
-        # detector can't see (e.g. a monotonic "retry N" counter makes every
-        # line of the loop unique).
-        if (
-            self.last_action_seq_time > 0
-            and time.time() - self.last_action_seq_time >= stall_timeout
-        ):
-            return True
-
-        if len(self.recent_lines) < 20:
-            return False
-
-        if _has_repeating_cycle(list(self.recent_lines)):
-            if self.loop_start == 0.0:
-                self.loop_start = time.time()
-            return time.time() - self.loop_start >= 60
-        else:
-            self.loop_start = 0.0
-            return False
-
-
-# ---------------------------------------------------------------------------
-# Process cleanup
-# ---------------------------------------------------------------------------
-
-def compute_session_number() -> int:
-    nums = []
-    for f in LOG_DIR.glob("*/game_*.log"):
-        m = re.match(r"game_(\d+)\.log", f.name)
-        if m:
-            nums.append(int(m.group(1)))
-    return (max(nums) + 1) if nums else 1
 
 
 # ---------------------------------------------------------------------------
@@ -411,11 +318,12 @@ class Supervisor:
             "sim": isinstance(self.server, Jackdaw), "session_num": self.session_num,
             "dashboard_batch_id": self.dashboard_batch_id,
             "elapsed": time.time() - self.session_start if self.session_start else 0.0,
+            # Counts and recent games are read back from each slot's instance report.
+            "report": True,
             "slots": [{
                 "port": s.port, "name": s.name, "deck": s.deck, "stake": s.stake,
                 "explore_rate": s.explore_rate, "restarts": s.restarts, "last_reason": s.last_reason,
                 "state": s.state if s.state in ("done", "removed") else "stopped",
-                "recent": list(s.recent), "recent_wins": list(s.recent_wins),
             } for s in self.slots],
         }
 
@@ -428,8 +336,6 @@ class Supervisor:
             slot = Slot(port=s["port"], name=s["name"], deck=s["deck"], stake=s["stake"],
                         explore_rate=s["explore_rate"], restarts=s["restarts"],
                         last_reason=s["last_reason"], state=s["state"])
-            slot.recent.extend(s.get("recent", []))
-            slot.recent_wins.extend(s.get("recent_wins", []))
             sup.slots.append(slot)
         sup.session_num = state["session_num"]
         sup.dashboard_batch_id = state["dashboard_batch_id"]
@@ -453,11 +359,11 @@ class Supervisor:
             time.sleep(2)
 
         if self.resumed:
-            # Progress files carry each slot's count across the pause.
+            # Each slot's instance report carries its count across the pause.
             if self.dashboard_batch_id is not None:
                 atexit.register(self._atexit_abandon)
-            (LOG_DIR / "next_num.txt").write_text(str(self.session_num))
             for slot in self.slots:
+                self._watch(slot)
                 slot.write_explore_rate()
             return
 
@@ -513,17 +419,11 @@ class Supervisor:
             ).start()
         else:
             self.dashboard_batch_id = None
-            self.session_num = compute_session_number()
+            self.session_num = instance_report.next_local_number(LOG_DIR)
             log.warning("Dashboard unavailable — using local session number %d", self.session_num)
 
-        # cli.py reads next_num.txt per-bot to name its log files.
-        (LOG_DIR / "next_num.txt").write_text(str(self.session_num))
-
-        # Clear stale progress files from previous sessions
         for slot in self.slots:
-            p = LOG_DIR / str(slot.port) / "progress.txt"
-            if p.exists():
-                p.unlink()
+            self._watch(slot)
             slot.write_explore_rate()
 
         prune_balatrobot_logs()
@@ -547,26 +447,21 @@ class Supervisor:
         version = _code_version()
         return version + self.server.version_tag if version else version
 
+    def _watch(self, slot: Slot) -> None:
+        """Point the slot at its files for this batch and read what its report already holds."""
+        files = instance_report.batch_files(slot.port, self.session_num, LOG_DIR, stream=self.stream)
+        slot.log_file = files.game_log
+        slot.report = Watcher(files.report)
+        slot.follow_report()
+
     def launch_server(self, slot: Slot) -> None:
         slot.server_proc = self.server.start(slot.port, self._child_flags())
         slot.state = "starting"
         slot.last_health = time.time()
 
     def _remaining_games(self, slot: Slot) -> int:
-        """Parse progress.txt to find how many games are left."""
-        try:
-            p = LOG_DIR / str(slot.port) / "progress.txt"
-            if p.exists():
-                text = p.read_text().strip()
-                if "/" in text:
-                    done, _ = text.split("/", 1)
-                    completed = int(done)
-                    remaining = self.games - completed
-                    if remaining > 0:
-                        return remaining
-        except (OSError, ValueError):
-            pass
-        return self.games
+        slot.follow_report()
+        return max(self.games - slot.games_done, 0)
 
     def launch_bot(self, slot: Slot) -> None:
         games = self._remaining_games(slot)
@@ -579,6 +474,7 @@ class Supervisor:
             "--games-offset", str(completed),
             "--deck", deck,
             "--stake", slot.stake,
+            "--batch-number", str(self.session_num),
         ]
         if self.seed:
             cmd.extend(["--seed", self.seed])
@@ -599,16 +495,8 @@ class Supervisor:
             creationflags=self._child_flags(),
         )
         slot.state = "running"
-        slot.log_file = LOG_DIR / str(slot.port) / f"game_{self.session_num:03d}.log"
-        # The bot appends to the session's log, so a relaunch reads on from the end.
-        try:
-            slot.log_offset = slot.log_file.stat().st_size
-        except OSError:
-            slot.log_offset = 0
-        slot.recent_lines.clear()
-        slot.loop_start = 0.0
-        slot.last_action_seq = -1
-        slot.last_action_seq_time = 0.0
+        if slot.report is not None:
+            slot.report.bot_started()
         slot.bot_launch_time = time.time()
         log.info("%s (port %d): launching with %d games remaining [%s deck]", slot.name, slot.port, games, deck)
 
@@ -681,10 +569,9 @@ class Supervisor:
             log.warning("Add instance ignored: batch is full")
             return None
         slot = Slot(port=port, name=_pick_princess_name({s.name for s in self.slots}), deck=deck, stake=stake)
-        port_dir = LOG_DIR / str(port)
-        port_dir.mkdir(parents=True, exist_ok=True)
-        (port_dir / "progress.txt").unlink(missing_ok=True)
+        (LOG_DIR / str(port)).mkdir(parents=True, exist_ok=True)
         jobs.kill_port_processes([port])
+        self._watch(slot)
         slot.write_explore_rate()
         self.slots.append(slot)
         log.info("%s (port %d): added [%s deck, %s stake]", slot.name, port, deck, stake)
@@ -718,9 +605,10 @@ class Supervisor:
                 self.restart_slot(slot)
             return
 
-        if (not self.stream and slot.state == "running" and slot.log_file
-                and slot.poll_log_for_softlock(self.stall_timeout)):
-            log.warning("%s (port %d): soft-lock detected — restarting", slot.name, slot.port)
+        slot.follow_report()
+        why = slot.soft_lock(time.time(), self.stall_timeout) if not self.stream and slot.state == "running" else None
+        if why:
+            log.warning("%s (port %d): soft-lock detected (%s) — restarting", slot.name, slot.port, why)
             self.restart_slot(slot, reason="soft-lock detected")
             return
 
@@ -728,8 +616,7 @@ class Supervisor:
             rc = slot.bot_proc.returncode
             if rc == 0:
                 slot.state = "done"
-                slot.read_progress()
-                log.info("%s (port %d): finished (%s)", slot.name, slot.port, slot.progress)
+                log.info("%s (port %d): finished (%d/%d)", slot.name, slot.port, slot.games_done, self.games)
                 slot.kill_pair(self.server)
                 return
             else:
@@ -756,11 +643,10 @@ class Supervisor:
         slots = []
         now = time.time()
         for slot in self.slots:
-            slot.read_progress()
-            slot.read_wins(self.session_num)
+            slot.follow_report()
             slot.read_explore_rate()
-            last_action = slot.last_action_seq_time or slot.bot_launch_time
-            completed = int(slot.progress.split("/")[0]) if "/" in slot.progress else 0
+            last_action = (slot.report and slot.report.last_move) or slot.bot_launch_time
+            completed = slot.games_done
             if slot.state == "running":
                 games_per_min = slot.games_per_minute(now, completed)
             else:
@@ -777,7 +663,7 @@ class Supervisor:
                 "idle_secs": int(now - last_action) if slot.state == "running" and last_action else None,
                 "log": str(slot.log_file) if slot.log_file else "",
                 "state": slot.state,
-                "progress": slot.progress,
+                "progress": f"{completed}/{self.games}" if slot.bot_launch_time or completed else "",
                 "games_completed": completed,
                 "wins": slot.wins,
                 "restarts": slot.restarts,
@@ -984,17 +870,7 @@ class Supervisor:
         archive_dir = LOG_DIR / "archive"
         archive_dir.mkdir(exist_ok=True)
 
-        # Find all live batch numbers across port dirs
-        batch_nums: set[int] = set()
-        for port_dir in LOG_DIR.iterdir():
-            if not port_dir.name.isdigit():
-                continue
-            for f in port_dir.glob("game_*.log"):
-                m = re.match(r"game_(\d+)\.log", f.name)
-                if m:
-                    batch_nums.add(int(m.group(1)))
-
-        to_archive = sorted(batch_nums, reverse=True)[keep:]
+        to_archive = sorted(instance_report.batch_numbers(LOG_DIR), reverse=True)[keep:]
         if not to_archive:
             return
 
@@ -1007,14 +883,14 @@ class Supervisor:
                 if not port_dir.name.isdigit():
                     continue
                 port = port_dir.name
-                for stem, prefix in (("game", "game"), ("scoring", "scoring")):
-                    src = port_dir / f"{stem}_{n:03d}.log"
+                files = instance_report.batch_files(int(port), n, LOG_DIR)
+                for src in (files.game_log, files.scoring_log, files.report):
                     if src.exists():
-                        shutil.move(str(src), str(dest / f"{prefix}_{port}_{n:03d}.log"))
+                        stem, rest = src.name.split("_", 1)
+                        shutil.move(str(src), str(dest / f"{stem}_{port}_{rest}"))
                         moved += 1
-                wins_src = WINS_DIR / f"wins_{port}_{n:03d}.log"
-                if wins_src.exists():
-                    shutil.move(str(wins_src), str(dest / wins_src.name))
+                if files.wins_log.exists():
+                    shutil.move(str(files.wins_log), str(dest / files.wins_log.name))
                     moved += 1
             for md in (f"batch_{n:03d}.md", f"batch_{n:03d}_wins.md"):
                 src = stats_out / md
@@ -1093,6 +969,8 @@ def main() -> None:
             parser.error("no paused batch to resume or finish")
         pause_state = saved["resume"]
         args.sim = pause_state["sim"]
+        if args.resume and not pause_state.get("report"):
+            parser.error("this batch was paused before instance reports: end it with --finish-paused")
 
     if importlib.util.find_spec("jackpotts_kernel") is None:
         parser.error("the compiled scoring kernel is not built into this environment "
