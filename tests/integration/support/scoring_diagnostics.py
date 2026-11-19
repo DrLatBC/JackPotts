@@ -204,7 +204,6 @@ def build_snapshot(state: dict, params: dict, hand_name: str) -> dict:
         "hand_name": hand_name,
         "ancient_suit": state.get("round", {}).get("ancient_suit"),
         "deck_count": state.get("cards", {}).get("count", 0),
-        "deck_cards": state.get("cards", {}).get("cards", []),
         "blind_name": snap_blind_name,
         "ante": state.get("ante_num", 1),
     }
@@ -245,7 +244,6 @@ def score_snapshot(snapshot: dict) -> tuple[dict, list]:
         joker_limit=snapshot["joker_limit"],
         ancient_suit=snapshot.get("ancient_suit"),
         deck_count=snapshot.get("deck_count", 0),
-        deck_cards=snapshot.get("deck_cards"),
         blind_name=blind_name,
     )
     return detail, scoring

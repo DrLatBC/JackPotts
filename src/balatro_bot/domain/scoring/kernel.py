@@ -1,6 +1,7 @@
 """The compiled scoring kernel (``kernel/``, Rust), asked the way the bot asks.
 
-This is the only module that talks to ``jackpotts_kernel``. Python still decides
+This is the only module that talks to ``jackpotts_kernel``, and the bot's only
+scorer. Python still decides
 everything that depends on the lineup alone: which jokers are active and whom
 Blueprint and Brainstorm copy (``joker_effects.roster``), each joker's numbers
 (``joker_effects.parsers``) and each card's numbers (``balatro_bot.cards``). The
@@ -13,7 +14,13 @@ import math
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-import jackpotts_kernel as _kernel
+try:
+    import jackpotts_kernel as _kernel
+except ImportError as err:
+    raise ImportError(
+        "The compiled scoring kernel (jackpotts_kernel) is not built into this environment. "
+        "Build it as docs/installation.md describes (maturin develop --release in kernel/py)."
+    ) from err
 
 from balatro_bot.cards import (
     _SUIT_BIT,
@@ -27,12 +34,10 @@ from balatro_bot.cards import (
     joker_key,
     rank_value,
 )
-from balatro_bot.constants import HAND_INFO, HAND_TYPES
+from balatro_bot.constants import HAND_TYPES
 from balatro_bot.domain.models.card import Card
 from balatro_bot.domain.models.joker import Joker
-from balatro_bot.domain.scoring.estimate import _before_phase_jokers, ox_most_played_hand
 from balatro_bot.joker_effects.parsers import _ab_chips, _ab_mult, _ab_xmult, _ability, _current
-from balatro_bot.joker_effects.registry import _effect_plan
 from balatro_bot.joker_effects.roster import Roster, copy_target, roster
 
 if TYPE_CHECKING:
@@ -45,6 +50,76 @@ HAND_IDS: dict[str, int] = {name: i for i, name in enumerate(HAND_NAMES)}
 _STONE, _DEBUFFED, _FACE, _RED_SEAL, _STEEL, _WILD, _LUCKY, _GOLD_SEAL = 1, 2, 4, 8, 16, 32, 64, 128
 _ENHANCED, _GOLD = 1, 2
 _BLINDS = {"The Hook": 1, "The Tooth": 2}
+
+
+_JOKER_PHASES: dict[str, str] = _kernel.joker_phases()
+
+
+def joker_phases() -> dict[str, str]:
+    """Every joker that scores in the joker phase: "chips", "mult", "xmult", or
+    "other" for jokers with their own logic."""
+    return _JOKER_PHASES
+
+
+def ox_most_played_hand(hand_levels: dict) -> str | None:
+    """Return the hand type with the highest played count.
+
+    The Ox locks this at blind start — call once and cache the result.
+    Returns None if no hand has been played yet.
+    """
+    best_hand = None
+    best_count = 0
+    for ht, info in hand_levels.items():
+        if hasattr(info, "get"):
+            played = info.get("played", 0)
+            if played > best_count:
+                best_count = played
+                best_hand = ht
+    return best_hand
+
+
+def _before_phase_jokers(lineup: Roster) -> tuple:
+    """The lineup's Midas Mask / Vampire entries, in joker order."""
+    before = lineup.derived.get("before_phase")
+    if before is None:
+        before = lineup.derived["before_phase"] = tuple(
+            (k, j) for k, j in lineup.active if k in ("j_midas_mask", "j_vampire"))
+    return before
+
+
+def _is_uncommon(joker: Any) -> bool:
+    """Check if a joker is Uncommon rarity (API sends int or string)."""
+    if isinstance(joker, Joker):
+        return joker.value.rarity in (2, "Uncommon")
+    return joker.get("value", {}).get("rarity") in (2, "Uncommon")
+
+
+def _edition_plan(lineup: Roster) -> tuple:
+    """Per active joker: (joker, edition +chips, edition +mult, edition xmult, baseball).
+
+    Edition numbers are None when the edition adds nothing: Foil gives chips and
+    Holo gives mult before the joker's effect, Polychrome multiplies after it
+    (Negative only adds a slot). baseball marks Uncommon jokers when a Baseball
+    Card is in effect.
+    """
+    plan = lineup.derived.get("edition_plan")
+    if plan is None:
+        baseball_xm = lineup.baseball_xmults
+        steps = []
+        for key, joker in lineup.active:
+            mod = _modifier(joker)
+            edition = mod.get("edition", "")
+            pre_chips = mod.get("edition_chips", 50) if edition == "FOIL" else None
+            pre_mult = mod.get("edition_mult", 10) if edition in ("HOLO", "HOLOGRAPHIC") else None
+            post_xmult = None
+            if edition == "POLYCHROME":
+                post_xmult = mod.get("edition_x_mult", 1.5)
+            elif mod.get("edition_x_mult") and edition not in ("FOIL", "HOLO", "HOLOGRAPHIC", "NEGATIVE"):
+                post_xmult = mod["edition_x_mult"]
+            baseball = bool(baseball_xm) and key != "j_baseball" and _is_uncommon(joker)
+            steps.append((joker, pre_chips, pre_mult, post_xmult, baseball))
+        plan = lineup.derived["edition_plan"] = tuple(steps)
+    return plan
 
 
 def _pack(card: Any) -> bytes:
@@ -170,8 +245,7 @@ def prepare_play(
 class KernelScorer:
     """One joker lineup in one round situation, scored by the compiled kernel.
 
-    Takes what ``estimate.HandScorer`` takes. *lineup* is ``roster(jokers)`` when
-    the caller already has it.
+    *lineup* is ``roster(jokers)`` when the caller already has it.
     """
 
     def __init__(
@@ -240,7 +314,7 @@ class KernelScorer:
             [
                 (None if pre_chips is None else float(pre_chips), None if pre_mult is None else float(pre_mult),
                  None if post_xmult is None else float(post_xmult), baseball, runs(joker))
-                for joker, _effect, pre_chips, pre_mult, post_xmult, baseball in _effect_plan(lineup)
+                for joker, pre_chips, pre_mult, post_xmult, baseball in _edition_plan(lineup)
             ],
             [at[id(joker)] for _, joker in lineup.resolved],
             [at[id(joker)] for _, joker in _before_phase_jokers(lineup)],
@@ -275,8 +349,11 @@ class KernelScorer:
         self, hand_name: str, scoring_cards: list, played_cards: list | None = None,
         held_cards: list | None = None,
     ) -> dict:
-        """The numbers ``score_hand_detailed`` reports besides the per-card details."""
-        pre_chips, pre_mult, chips, mult, shares = self._kernel.breakdown(
+        """The numbers ``score_hand_detailed`` reports besides the per-card details.
+
+        ``card_triggers`` is how many times each of *scoring_cards* triggered.
+        """
+        pre_chips, pre_mult, chips, mult, shares, triggers = self._kernel.breakdown(
             *self._play(hand_name, scoring_cards, played_cards, held_cards))
         labels = [
             joker.label if isinstance(joker, Joker) else joker.get("label", key) for key, joker in self.active
@@ -287,6 +364,7 @@ class KernelScorer:
                 (label, _whole(dc), dm, ratio) for label, (dc, dm, ratio) in zip(labels, shares)],
             "post_joker_chips": _whole(chips), "post_joker_mult": mult,
             "total": math.floor(chips * mult),
+            "card_triggers": list(triggers),
         }
 
     # -- every play out of a hand -------------------------------------------------

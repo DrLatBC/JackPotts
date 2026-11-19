@@ -98,7 +98,8 @@ pub struct Play<'a> {
 }
 
 /// Chips and mult before the jokers, after them, and each active joker's share as
-/// (chips added, mult added, mult ratio).
+/// (chips added, mult added, mult ratio), and how many times each scoring card
+/// triggered, in `Play::scoring` order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Breakdown {
     pub pre_chips: f64,
@@ -106,6 +107,7 @@ pub struct Breakdown {
     pub chips: f64,
     pub mult: f64,
     pub jokers: Vec<(f64, f64, f64)>,
+    pub triggers: Vec<u32>,
 }
 
 impl Lineup {
@@ -189,6 +191,7 @@ impl Lineup {
             }
             if let Some(t) = trace.as_deref_mut() {
                 (t.pre_chips, t.pre_mult) = (chips, mult);
+                t.triggers = vec![1; play.scoring.len()];
             }
             return (chips, mult);
         }
@@ -343,6 +346,9 @@ impl Lineup {
         for (k, &p) in play.scoring.iter().enumerate() {
             scoring[k] = cards[p as usize];
             triggers[k] = triggers_at[p as usize];
+        }
+        if let Some(t) = trace.as_deref_mut() {
+            t.triggers = triggers[..play.scoring.len()].to_vec();
         }
         let mut counts = [0u8; 15];
         for card in played.iter().filter(|c| c.rank != 0) {

@@ -84,6 +84,15 @@ mod tests {
     }
 
     #[test]
+    fn every_joker_phase_key_is_listed_once() {
+        let phases = joker_phases();
+        let mut keys: Vec<&str> = phases.iter().map(|&(key, _)| key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), phases.len());
+    }
+
+    #[test]
     fn each_hack_retriggers_a_two() {
         let hand = [card(2, SPADES)];
         assert_eq!(best(&lineup(&["j_hack"]), &hand).chips, 9.0);

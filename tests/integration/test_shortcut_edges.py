@@ -79,7 +79,6 @@ def play_and_compare(client, state, play_indices, label="", blind_name=""):
         joker_limit=state.get("jokers", {}).get("limit", 5),
         blind_name=blind_name,
         deck_count=state.get("cards", {}).get("count", 0),
-        deck_cards=state.get("cards", {}).get("cards", []),
     )
 
     pre_chips = state.get("round", {}).get("chips", 0)

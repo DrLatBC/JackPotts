@@ -371,7 +371,7 @@ class Supervisor:
                  seed: str | None, verbose: bool = False,
                  stream: bool = False, explore_instances: int = 0,
                  explore_rate: float = 0.0, base_port: int = BASE_PORT,
-                 server: GameServer | None = None, kernel: bool = False):
+                 server: GameServer | None = None):
         taken: set[str] = set()
         slots = []
         for i in range(n):
@@ -392,9 +392,7 @@ class Supervisor:
         self.explore_rate = explore_rate
         self.server = server or LiveGame(visible=stream)
         self.stall_timeout = self.server.stall_timeout
-        # Bots score with the compiled kernel (kernel/) when set.
-        self.kernel = kernel
-        self.bot_python = self.server.bot_python(kernel)
+        self.bot_python = self.server.bot_python()
         self.running = True
         self.paused = False
         self.finished = False
@@ -410,7 +408,7 @@ class Supervisor:
         return {
             "games": self.games, "decks": self.decks, "stake": self.stake, "seed": self.seed,
             "verbose": self.verbose, "explore_rate": self.explore_rate, "base_port": self.base_port,
-            "sim": isinstance(self.server, Jackdaw), "kernel": self.kernel, "session_num": self.session_num,
+            "sim": isinstance(self.server, Jackdaw), "session_num": self.session_num,
             "dashboard_batch_id": self.dashboard_batch_id,
             "elapsed": time.time() - self.session_start if self.session_start else 0.0,
             "slots": [{
@@ -425,8 +423,7 @@ class Supervisor:
     def from_pause_state(cls, state: dict, server: GameServer | None) -> Supervisor:
         sup = cls(n=0, games=state["games"], decks=state["decks"], stake=state["stake"],
                   seed=state["seed"], verbose=state["verbose"], explore_rate=state["explore_rate"],
-                  base_port=state["base_port"], server=server,
-                  kernel=state.get("kernel", False))
+                  base_port=state["base_port"], server=server)
         for s in state["slots"]:
             slot = Slot(port=s["port"], name=s["name"], deck=s["deck"], stake=s["stake"],
                         explore_rate=s["explore_rate"], restarts=s["restarts"],
@@ -599,7 +596,6 @@ class Supervisor:
         slot.explore_active = slot.explore_rate
         slot.bot_proc = subprocess.Popen(
             cmd,
-            env={**os.environ, "BALATRO_KERNEL": "rust" if self.kernel else ""},
             creationflags=self._child_flags(),
         )
         slot.state = "running"
@@ -880,19 +876,9 @@ class Supervisor:
         print(f"  Mother Gothel is sending {len(to_start)} princesses to play Balatro")
         print(f"  ({names})\n")
         print(f"  Session {self.session_num}, {self.games} games each\n")
-        simulator = isinstance(self.server, Jackdaw)
-        if self.kernel and not simulator:
-            log.info("Bots score with the compiled kernel")
-            print("  Bots score with the compiled kernel\n")
-        if simulator:
-            if self.kernel:
-                runtime = "CPython with the compiled kernel"
-            elif self.bot_python == venv_python("pypy"):
-                runtime = "PyPy"
-            else:
-                runtime = "CPython (no PyPy environment found)"
-            log.info("Simulator batch: bots run on %s", runtime)
-            print(f"  Simulator batch, bots on {runtime}\n")
+        if isinstance(self.server, Jackdaw):
+            log.info("Simulator batch")
+            print("  Simulator batch\n")
 
         self._write_status(self._status("starting"))
         for i, slot in enumerate(to_start):
@@ -1094,8 +1080,6 @@ def main() -> None:
                         help=f"First instance's port (default: {BASE_PORT})")
     parser.add_argument("--sim", action="store_true",
                         help="Play on the Jackdaw simulator instead of Balatro")
-    parser.add_argument("--kernel", action="store_true",
-                        help="Score hands with the compiled kernel (kernel/); also on with BALATRO_KERNEL=rust")
     parser.add_argument("--resume", action="store_true",
                         help="Carry on the paused batch (other batch flags are ignored)")
     parser.add_argument("--finish-paused", action="store_true",
@@ -1110,9 +1094,8 @@ def main() -> None:
         pause_state = saved["resume"]
         args.sim = pause_state["sim"]
 
-    kernel = args.kernel or os.environ.get("BALATRO_KERNEL", "").lower() == "rust"
-    if kernel and importlib.util.find_spec("jackpotts_kernel") is None:
-        parser.error("--kernel: the compiled kernel is not built into this environment "
+    if importlib.util.find_spec("jackpotts_kernel") is None:
+        parser.error("the compiled scoring kernel is not built into this environment "
                      "(see docs/installation.md)")
 
     server: GameServer = LiveGame(visible=args.stream)
@@ -1159,7 +1142,6 @@ def main() -> None:
             explore_rate=args.explore_rate,
             base_port=args.base_port,
             server=server,
-            kernel=kernel,
         )
 
     jobs.batch().claim()

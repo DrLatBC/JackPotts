@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use jackpotts_kernel_core as core;
 use jackpotts_kernel_core::card::{unpack, Card, CARD_BYTES};
 use jackpotts_kernel_core::hands::{Rules, HAND_COUNT};
-use jackpotts_kernel_core::jokers::{Ability, Blind, JokerSpec, Level, Rolls, Surroundings};
+use jackpotts_kernel_core::jokers::{Ability, Blind, JokerSpec, Level, Phase, Rolls, Surroundings};
 use jackpotts_kernel_core::lineup::{LineupSpec, Play, Step, MAX_CARDS, MAX_HAND};
 use jackpotts_kernel_core::search::{Constraints, Found, Hand};
 use pyo3::exceptions::PyValueError;
@@ -262,7 +262,7 @@ impl Lineup {
     }
 
     /// (chips before jokers, mult before jokers, chips, mult, [(chips added, mult
-    /// added, mult ratio) per active joker]).
+    /// added, mult ratio) per active joker], [triggers per scoring card]).
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn breakdown(
         &self,
@@ -274,11 +274,11 @@ impl Lineup {
         held: &[u8],
         gold: &[u8],
         plain: &[u8],
-    ) -> PyResult<(f64, f64, f64, f64, Vec<(f64, f64, f64)>)> {
+    ) -> PyResult<(f64, f64, f64, f64, Vec<(f64, f64, f64)>, Vec<u32>)> {
         let b = self.with_play(hand_id, cards, played_count, scoring, in_scoring, held, gold, plain, |play| {
             self.inner.breakdown(play, None)
         })?;
-        Ok((b.pre_chips, b.pre_mult, b.chips, b.mult, b.jokers))
+        Ok((b.pre_chips, b.pre_mult, b.chips, b.mult, b.jokers, b.triggers))
     }
 
     /// Every allowed play out of the hand, best first.
@@ -373,9 +373,28 @@ impl Lineup {
     }
 }
 
+/// Every joker that scores in the joker phase: "chips", "mult", "xmult", or "other"
+/// for jokers with their own logic.
+#[pyfunction]
+fn joker_phases() -> HashMap<&'static str, &'static str> {
+    core::jokers::joker_phases()
+        .into_iter()
+        .map(|(key, phase)| {
+            let name = match phase {
+                Phase::Chips => "chips",
+                Phase::Mult => "mult",
+                Phase::XMult => "xmult",
+                Phase::Other => "other",
+            };
+            (key, name)
+        })
+        .collect()
+}
+
 #[pymodule]
 fn jackpotts_kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pack_card, m)?)?;
+    m.add_function(wrap_pyfunction!(joker_phases, m)?)?;
     m.add_class::<Lineup>()?;
     m.add("CARD_BYTES", CARD_BYTES)?;
     Ok(())

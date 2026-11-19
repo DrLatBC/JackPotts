@@ -134,7 +134,6 @@ def score_with_boss_disabled(state: dict, play_indices: list[int],
         joker_limit=state.get("jokers", {}).get("limit", 5),
         blind_name=scoring_blind,
         deck_count=state.get("cards", {}).get("count", 0),
-        deck_cards=state.get("cards", {}).get("cards", []),
     )
     return {
         "detail": detail,

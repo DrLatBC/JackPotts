@@ -22,32 +22,11 @@ PER_CARD_XMULT = frozenset({
     "j_photograph", "j_triboulet", "j_ancient", "j_bloodstone", "j_baron", "j_idol",
 })
 
-# ---------------------------------------------------------------------------
-# Auto-classify from simple effects table dispatcher names
-# ---------------------------------------------------------------------------
-_DISPATCHER_PHASE = {
-    "flat_mult": PHASE_MULT,
-    "parsed_mult": PHASE_MULT,
-    "hand_mult": PHASE_MULT,
-    "suit_mult": PHASE_MULT,
-    "parsed_chips": PHASE_CHIPS,
-    "hand_chips": PHASE_CHIPS,
-    "hand_parsed_chips": PHASE_CHIPS,
-    "parsed_xmult": PHASE_XMULT,
-    "hand_xmult": PHASE_XMULT,
-}
-
-def _build_from_simple_table() -> dict[str, int]:
-    """Derive phase from SIMPLE_EFFECTS_TABLE dispatcher names."""
-    from balatro_bot.joker_effects.simple import SIMPLE_EFFECTS_TABLE
-    result = {}
-    for key, dispatcher_name, _params in SIMPLE_EFFECTS_TABLE:
-        phase = _DISPATCHER_PHASE.get(dispatcher_name, PHASE_NOOP)
-        result[key] = phase
-    return result
+# One-line jokers take their phase from the kernel's table (kernel/core/src/jokers.rs).
+_KERNEL_PHASE = {"chips": PHASE_CHIPS, "mult": PHASE_MULT, "xmult": PHASE_XMULT}
 
 # ---------------------------------------------------------------------------
-# Complex effects — manually classified
+# Jokers with their own logic, or that score outside the joker phase — manually classified
 # ---------------------------------------------------------------------------
 _COMPLEX_PHASES: dict[str, int] = {
     # +chips (additive)
@@ -63,6 +42,10 @@ _COMPLEX_PHASES: dict[str, int] = {
     "j_wee": PHASE_CHIPS,
 
     # +mult (additive)
+    "j_greedy_joker": PHASE_MULT,
+    "j_lusty_joker": PHASE_MULT,
+    "j_wrathful_joker": PHASE_MULT,
+    "j_gluttenous_joker": PHASE_MULT,
     "j_half": PHASE_MULT,
     "j_stencil": PHASE_MULT,       # technically xmult-like but reads as mult
     "j_banner": PHASE_MULT,
@@ -141,7 +124,9 @@ def get_joker_phase(key: str) -> int:
     global _PHASE_MAP
     if _PHASE_MAP is None:
         _PHASE_MAP = {}
-        _PHASE_MAP.update(_build_from_simple_table())
+        from balatro_bot.domain.scoring.kernel import joker_phases
+        _PHASE_MAP.update(
+            (k, _KERNEL_PHASE[phase]) for k, phase in joker_phases().items() if phase in _KERNEL_PHASE)
         _PHASE_MAP.update(_COMPLEX_PHASES)
         for k in _RETRIGGER_KEYS:
             _PHASE_MAP[k] = PHASE_RETRIGGER

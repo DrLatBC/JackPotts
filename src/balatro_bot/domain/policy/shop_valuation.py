@@ -31,9 +31,8 @@ from balatro_bot.domain.policy.boss_adjustment import (
 )
 from balatro_bot.domain.policy.roster_order import copy_target_score, roster_order
 from balatro_bot.domain.policy.sim_context import SimContext
-from balatro_bot.domain.scoring import estimate
-from balatro_bot.domain.scoring.estimate import HandScorer, score_hand
-from balatro_bot.joker_effects import JOKER_EFFECTS, _noop
+from balatro_bot.domain.scoring.estimate import score_hand
+from balatro_bot.domain.scoring.kernel import KernelScorer, joker_phases
 from balatro_bot.joker_effects.scoring_phase import (
     PHASE_MULT, PHASE_XMULT,
 )
@@ -1042,24 +1041,23 @@ def _sim_coefficient(key: str) -> float:
     return SIM_COEFF_DEFAULT
 
 
+# Jokers that score while each card scores, outside the joker phase.
 _PER_CARD_SCORING_JOKERS = frozenset({
     "j_greedy_joker", "j_lusty_joker", "j_wrathful_joker", "j_gluttenous_joker",
     "j_fibonacci", "j_even_steven", "j_odd_todd", "j_scholar",
     "j_smiley", "j_scary_face", "j_walkie_talkie",
     "j_photograph", "j_triboulet", "j_ancient",
     "j_arrowhead", "j_onyx_agate", "j_bloodstone", "j_idol", "j_hiker",
-    # Retrigger jokers — fire via retrigger_count() during per-card scoring,
-    # not via JOKER_EFFECTS dispatch, but they DO produce real sim deltas.
+    # Retrigger jokers.
     "j_hanging_chad", "j_hack", "j_sock_and_buskin",
     "j_dusk", "j_selzer",
 })
 
-# Held-in-hand phase jokers. These are _noop in JOKER_EFFECTS but fire via
-# the held-card loop in estimate._apply_card_scoring. Sim sees them only when
-# ctx.held_cards is non-empty — see _synthetic_held_cards().
+# Held-in-hand phase jokers. Sim sees them only when the sample has held
+# cards — see _synthetic_held_cards().
 _HELD_SCORING_JOKERS = frozenset({
     "j_baron", "j_shoot_the_moon", "j_raised_fist", "j_mime",
-    # Blackboard already routes (has a complex effect), listed for clarity.
+    # Blackboard scores in the joker phase too; listed for clarity.
     "j_blackboard",
 })
 
@@ -1069,8 +1067,7 @@ def _has_scoring_effect(key: str) -> bool:
         return True
     if key in _HELD_SCORING_JOKERS:
         return True
-    effect = JOKER_EFFECTS.get(key)
-    return effect is not None and effect is not _noop
+    return key in joker_phases()
 
 
 def _synthetic_held_cards(ctx: SimContext) -> list[Card]:
@@ -1215,7 +1212,7 @@ def _scoring_delta_sampled(
     with_jokers = _in_roster_order([*baseline_jokers, candidate])
     # Both lineups and their surroundings are fixed for every sample below.
     baseline_scorer, with_scorer = (
-        HandScorer(
+        KernelScorer(
             hand_levels, jokers, joker_limit=joker_limit,
             ancient_suit=ancient_suit, idol_rank=idol_rank, idol_suit=idol_suit,
             money=ctx.money, discards_left=sim_discards_left,
@@ -1240,37 +1237,19 @@ def _scoring_delta_sampled(
             ctx.deck_profile, len(samples), held_count=3,
         )
 
+        # One call per lineup scores every sample; both lineups roll the same seeded streams.
+        half = "j_half" in candidate_keys
+        plays = [
+            _sample_play(hand_name, sample, held_samples[i] if i < len(held_samples) else _NO_HELD, half)
+            for i, sample in enumerate(samples)
+        ]
+        seeds = [f"{candidate_key}|{hand_name}|{i}|mc" for i in range(len(samples))]
         base_sum = 0.0
+        for chips, mult in baseline_scorer.score_many(plays, [_SampleRng(s) for s in seeds]):
+            base_sum += math.floor(chips * mult)
         cand_sum = 0.0
-        if estimate.USE_KERNEL:
-            # One call per lineup scores every sample; both lineups roll the same seeded streams.
-            half = "j_half" in candidate_keys
-            plays = [
-                _sample_play(hand_name, sample, held_samples[i] if i < len(held_samples) else _NO_HELD, half)
-                for i, sample in enumerate(samples)
-            ]
-            seeds = [f"{candidate_key}|{hand_name}|{i}|mc" for i in range(len(samples))]
-            for chips, mult in baseline_scorer.kernel.score_many(plays, [_SampleRng(s) for s in seeds]):
-                base_sum += math.floor(chips * mult)
-            for chips, mult in with_scorer.kernel.score_many(plays, [_SampleRng(s) for s in seeds]):
-                cand_sum += math.floor(chips * mult)
-            samples_to_score = ()
-        else:
-            samples_to_score = samples
-        for s_idx, (scoring_cards, played_cards) in enumerate(samples_to_score):
-            held = held_samples[s_idx] if s_idx < len(held_samples) else []
-
-            # Half Joker caps played at the scoring subset.
-            local_played = played_cards
-            if "j_half" in candidate_keys and len(scoring_cards) <= 3:
-                local_played = list(scoring_cards)
-
-            # Both lineups roll the same seeded stream for this sample.
-            seed_text = f"{candidate_key}|{hand_name}|{s_idx}|mc"
-            base_sum += baseline_scorer.score(
-                hand_name, scoring_cards, local_played, held, rng=_SampleRng(seed_text))[2]
-            cand_sum += with_scorer.score(
-                hand_name, scoring_cards, local_played, held, rng=_SampleRng(seed_text))[2]
+        for chips, mult in with_scorer.score_many(plays, [_SampleRng(s) for s in seeds]):
+            cand_sum += math.floor(chips * mult)
 
         baseline_total = base_sum / len(samples)
         candidate_total = cand_sum / len(samples)
@@ -1805,7 +1784,7 @@ def _deck_composition_adjustment(
 # Main entry point
 # ---------------------------------------------------------------------------
 
-# Jokers whose scoring reads the wallet (ScoreContext.money). A lineup without
+# Jokers whose scoring reads the money held. A lineup without
 # one values the same at any money, so money is left out of its memo key.
 _MONEY_SCORING_KEYS = frozenset({"j_bull", "j_bootstraps"})
 

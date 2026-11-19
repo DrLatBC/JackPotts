@@ -1,14 +1,16 @@
 """Generated hands and joker lineups for checking the scoring kernel against itself
-or against another implementation of it.
+and against its saved answers (tests/kernel_expected.json).
 
 A case is plain data (raw card and joker dicts as the game sends them, hand levels,
 search settings) built from one integer seed, so a failing case is reproduced from
-its seed alone. ``search_result`` and ``score_results`` run the kernel on a case and
-return plain tuples that compare exactly.
+its seed alone. ``search_result``, ``score_results`` and ``kernel_answer`` run the
+kernel on a case and return plain values that compare exactly.
 """
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import random
 import zlib
 from dataclasses import dataclass, field
@@ -17,16 +19,16 @@ from balatro_bot.constants import HAND_INFO
 from balatro_bot.domain.models.card import card_from_dict
 from balatro_bot.domain.models.joker import joker_from_dict
 from balatro_bot.domain.scoring.estimate import score_hand, score_hand_detailed
+from balatro_bot.domain.scoring.kernel import KernelScorer, joker_phases
 from balatro_bot.domain.scoring.play_order import sort_play_order
 from balatro_bot.domain.scoring.search import best_hand, enumerate_hands
 from balatro_bot.joker_effects.live_values import enrich_state
-from balatro_bot.joker_effects.registry import JOKER_EFFECTS, _noop
 
 RANKS = "23456789TJQKA"
 SUITS = "HDCS"
 HAND_NAMES = list(HAND_INFO)
 
-# Jokers that act outside the joker phase, so the effect table does not list them.
+# Jokers that act outside the joker phase, so joker_phases() does not list them.
 _OUTSIDE_JOKER_PHASE = [
     "j_greedy_joker", "j_lusty_joker", "j_wrathful_joker", "j_gluttenous_joker", "j_onyx_agate",
     "j_fibonacci", "j_even_steven", "j_odd_todd", "j_scholar", "j_walkie_talkie", "j_smiley",
@@ -38,9 +40,7 @@ _OUTSIDE_JOKER_PHASE = [
     "j_pareidolia", "j_smeared", "j_oops", "j_four_fingers", "j_shortcut", "j_splash", "j_dna",
 ]
 _NO_SCORING_EFFECT = ["j_egg", "j_credit_card", "j_golden"]
-SCORING_KEYS = sorted(
-    {k for k, effect in JOKER_EFFECTS.items() if effect is not _noop} | set(_OUTSIDE_JOKER_PHASE)
-)
+SCORING_KEYS = sorted(set(joker_phases()) | set(_OUTSIDE_JOKER_PHASE))
 JOKER_KEYS = SCORING_KEYS + _NO_SCORING_EFFECT
 
 # Every ability field the kernel reads, with values worth trying. A field is left
@@ -337,58 +337,81 @@ def score_results(case: Case, typed: bool, plays: int = 3) -> list[tuple]:
     return out
 
 
-# --- The compiled kernel on the same cases -------------------------------------
+# --- Saved answers ------------------------------------------------------------
 
-_SEARCH_SETTINGS = ("max_select", "min_select", "required_hand", "required_card_indices",
-                    "excluded_hands", "hand_affinity")
+LARGE_SIZES = [17, 17, 18, 19, 20, 22]
 
 
-def _kernel_scorer(case: Case, jokers: list):
-    from balatro_bot.domain.scoring.kernel import KernelScorer
+def large_case(seed: int) -> Case:
+    """A hand past sixteen cards (Turtle Bean, Juggler, the hand-size vouchers); odd
+    seeds force a card that sits past the sixteenth place."""
+    case = random_case(seed, LARGE_SIZES)
+    if seed % 2:
+        case.search["required_card_indices"] = {random.Random(seed).randrange(16, len(case.hand))}
+    return case
+
+
+def saved_cases():
+    """(name, case) for every case in tests/kernel_expected.json, in file order."""
+    for seed in range(300):
+        yield f"random {seed}", random_case(seed)
+    for seed in range(16):
+        yield f"large {seed}", large_case(seed)
+    keys = SCORING_KEYS[::9]
+    for first in keys:
+        for second in keys:
+            for variant in range(5):
+                yield f"pair {first} {second} {variant}", pair_case(first, second, variant)
+    for key in SCORING_KEYS:
+        for variant in range(13):
+            yield f"target {key} {variant}", targeted_case(key, variant)
+
+
+def kernel_scorer(case: Case, jokers: list) -> KernelScorer:
     settings = {k: v for k, v in case.search.items() if k in _SCORE_SETTINGS}
     return KernelScorer(case.levels, jokers, **settings)
-
-
-def kernel_search_result(case: Case, typed: bool) -> tuple[list[tuple], tuple | None]:
-    """search_result, answered by the compiled kernel."""
-    hand, jokers = materialise(case, typed)
-    limits = {k: v for k, v in case.search.items() if k in _SEARCH_SETTINGS}
-    scorer = _kernel_scorer(case, jokers)
-    return scorer.search(hand, **limits), scorer.best(hand, **limits)
 
 
 _BREAKDOWN_KEYS = ("pre_joker_chips", "pre_joker_mult", "joker_contributions",
                    "post_joker_chips", "post_joker_mult", "total")
 
 
-def score_pairs(case: Case, typed: bool, plays: int = 3) -> list[tuple[tuple, tuple]]:
-    """score_results from both kernels: (Python's answer, the compiled kernel's) per play."""
+def _floats(value):
+    """The value with every number a float, so 115 and 115.0 hash alike."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, (list, tuple)):
+        return [_floats(v) for v in value]
+    return value
+
+
+def kernel_answer(name: str, case: Case, typed: bool, plays: int = 3) -> dict:
+    """What the saved file holds for one case: how many plays the search finds and a
+    digest of them, the best play, and a few plays scored by expected value, with
+    seeded rolls, with the per-joker breakdown and with a short played list."""
     hand, jokers = materialise(case, typed)
-    settings = {k: v for k, v in case.search.items() if k in _SCORE_SETTINGS}
-    every = enumerate_hands(hand, case.levels, jokers=jokers or None, **case.search)
-    scorer = _kernel_scorer(case, jokers)
+    every, best = search_result(case, typed)
+    scorer = kernel_scorer(case, jokers)
     rng = random.Random(case.seed)
-    out = []
-    for candidate in rng.sample(every, min(plays, len(every))):
+    scores = []
+    full = enumerate_hands(hand, case.levels, jokers=jokers or None, **case.search)
+    for candidate in rng.sample(full, min(plays, len(full))):
         indices = list(candidate.card_indices)
         order = sort_play_order(indices, hand, jokers) if jokers else indices
         played = [hand[i] for i in order]
         held = [c for i, c in enumerate(hand) if i not in candidate.card_indices]
-        args = (candidate.hand_name, candidate.scoring_cards, case.levels)
-        common = dict(jokers=jokers or None, played_cards=played, held_cards=held, **settings)
-        detail = score_hand_detailed(*args, **common)
-        python = (
-            score_hand(*args, **common),
-            score_hand(*args, rng=random.Random(case.seed), **common),
-            {k: detail[k] for k in _BREAKDOWN_KEYS},
-            score_hand(*args, **{**common, "played_cards": played[:2]}),
-        )
-        name, scoring = candidate.hand_name, candidate.scoring_cards
-        kernel = (
-            scorer.score(name, scoring, played, held),
-            scorer.score(name, scoring, played, held, rng=random.Random(case.seed)),
-            scorer.breakdown(name, scoring, played, held),
-            scorer.score(name, scoring, played[:2], held),
-        )
-        out.append((python, kernel))
-    return out
+        name_, scoring = candidate.hand_name, candidate.scoring_cards
+        breakdown = scorer.breakdown(name_, scoring, played, held)
+        scores.append((
+            scorer.score(name_, scoring, played, held),
+            scorer.score(name_, scoring, played, held, rng=random.Random(case.seed)),
+            {k: breakdown[k] for k in _BREAKDOWN_KEYS},
+            scorer.score(name_, scoring, played[:2], held),
+        ))
+    return json.loads(json.dumps({
+        "name": name, "count": len(every),
+        "digest": hashlib.sha256(json.dumps(_floats(every)).encode()).hexdigest()[:16],
+        "best": best, "scores": scores,
+    }))

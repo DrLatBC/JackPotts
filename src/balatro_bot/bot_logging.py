@@ -261,7 +261,6 @@ def build_play_snapshot(state: dict, params: dict, action: object) -> dict:
         "idol_rank": (state.get("round", {}).get("idol_card") or {}).get("rank"),
         "idol_suit": (state.get("round", {}).get("idol_card") or {}).get("suit"),
         "deck_count": state.get("cards", {}).get("count", 0),
-        "deck_cards": state.get("cards", {}).get("cards", []),
         "blind_name": snap_blind_name,
         "ante": state.get("ante_num", 1),
         "_boss_disabled": state.get("_boss_disabled", False),
@@ -372,7 +371,6 @@ def compute_played_hand_detail(snapshot: dict | None) -> dict | None:
         idol_rank=snapshot.get("idol_rank"),
         idol_suit=snapshot.get("idol_suit"),
         deck_count=snapshot.get("deck_count", 0),
-        deck_cards=snapshot.get("deck_cards"),
         blind_name="" if boss_disabled else blind_name,
         ox_most_played=_ox_mp,
     )
@@ -527,7 +525,7 @@ def log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict) -> N
         # On mismatch, dump per-card scoring breakdown and raw card data
         if is_mismatch:
             from balatro_bot.cards import card_chip_value, card_mult_value, card_xmult_value, _modifier
-            from balatro_bot.joker_effects import parse_effect_value, retrigger_count, ScoreContext
+            from balatro_bot.joker_effects import parse_effect_value
 
             # Dump raw hand level data from API for this hand type
             hand_level_data = snapshot["hand_levels"].get(hand_name, {})
@@ -540,17 +538,6 @@ def log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict) -> N
                 detail["pre_joker_chips"], detail["pre_joker_mult"],
                 detail["post_joker_chips"], detail["post_joker_mult"],
                 detail["total"],
-            )
-
-            # Build minimal context for retrigger calculation
-            ctx_for_retrigger = ScoreContext(
-                chips=0, mult=0.0, hand_name=hand_name,
-                scoring_cards=scoring, played_cards=played,
-                held_cards=snapshot["held"], hand_levels=snapshot["hand_levels"],
-                jokers=snapshot["jokers"], money=0, discards_left=0, hands_left=1,
-                joker_limit=snapshot.get("joker_limit", 5),
-                pareidolia="j_pareidolia" in joker_keys,
-                smeared="j_smeared" in joker_keys,
             )
 
             for i, c in enumerate(scoring):
@@ -578,7 +565,7 @@ def log_played_hand(snapshot: dict | None, pre_chips: int, new_state: dict) -> N
                 chips = card_chip_value(c)
                 mult = card_mult_value(c)
                 xmult = card_xmult_value(c)
-                triggers = retrigger_count(c, ctx_for_retrigger)
+                triggers = detail["card_triggers"][i]
                 _scoring_log.info(
                     "  card[%d] %s %s (SCORING) | chips=%d mult=%.1f xmult=%.2f triggers=%d | "
                     "enh=%s ed=%s seal=%s debuff=%s perma=%d | raw_mod=%s",

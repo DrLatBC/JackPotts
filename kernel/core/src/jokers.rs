@@ -194,6 +194,47 @@ pub const TABLE: &[(&str, Row)] = &[
     ("j_caino", Row::StoredXMult(2.0)),
 ];
 
+/// What a joker adds in the joker phase, for ordering jokers left to right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Chips,
+    Mult,
+    XMult,
+    /// Its own logic: may add chips, add mult or multiply, depending on the play.
+    Other,
+}
+
+impl Row {
+    pub fn phase(self) -> Phase {
+        match self {
+            Row::FlatMult(_) | Row::StoredMult(_) | Row::HandMult(..) => Phase::Mult,
+            Row::StoredChips(_) | Row::HandChips(..) => Phase::Chips,
+            Row::StoredXMult(_) | Row::HandXMult(..) => Phase::XMult,
+        }
+    }
+}
+
+/// Jokers with their own joker-phase logic: every key `joker_effect` matches, plus
+/// Baseball Card and the copy jokers, which the lineup's steps carry out.
+pub const OWN_LOGIC: &[&str] = &[
+    "j_half", "j_stencil", "j_blue_joker", "j_banner", "j_mystic_summit", "j_loyalty_card",
+    "j_misprint", "j_abstract", "j_supernova", "j_runner", "j_square", "j_trousers",
+    "j_green_joker", "j_ride_the_bus", "j_blackboard", "j_acrobat", "j_card_sharp",
+    "j_seeing_double", "j_flower_pot", "j_drivers_license", "j_bootstraps", "j_swashbuckler",
+    "j_bull", "j_stuntman", "j_wee", "j_lucky_cat", "j_vampire", "j_obelisk", "j_steel_joker",
+    "j_ramen", "j_yorick",
+    "j_baseball", "j_blueprint", "j_brainstorm",
+];
+
+/// Every joker that scores in the joker phase, with what it adds.
+pub fn joker_phases() -> Vec<(&'static str, Phase)> {
+    TABLE
+        .iter()
+        .map(|&(key, row)| (key, row.phase()))
+        .chain(OWN_LOGIC.iter().map(|&key| (key, Phase::Other)))
+        .collect()
+}
+
 fn apply_row(row: Row, joker: &JokerSpec, s: &mut Scoring) {
     let ab = &joker.ability;
     let (hand_id, top, pairs) = (s.hand_id, s.top, s.pairs);

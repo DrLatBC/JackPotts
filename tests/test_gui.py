@@ -33,13 +33,6 @@ def test_simulator_toggle_adds_sim_flag():
     assert gui.supervisor_command({**gui.DEFAULTS, "sim": True})[-1] == "--sim"
 
 
-def test_kernel_toggle_adds_kernel_flag():
-    assert "--kernel" not in gui.supervisor_command(gui.DEFAULTS)
-    assert gui.supervisor_command({**gui.DEFAULTS, "sim": True, "kernel": True})[-2:] == ["--sim", "--kernel"]
-    settings_without_the_key = {k: v for k, v in gui.DEFAULTS.items() if k != "kernel"}
-    assert "--kernel" not in gui.supervisor_command(settings_without_the_key)
-
-
 def test_status_of_a_live_supervisor_is_read(status_file):
     status_file.write_text(json.dumps({"phase": "running", "pid": os.getpid()}))
     assert gui.read_status()["phase"] == "running"
@@ -370,13 +363,12 @@ def test_paused_batch_resumes_with_its_counts(sup_files, tmp_path):
     assert resumed._remaining_games(resumed.slots[0]) == 6
 
 
-def test_a_paused_simulator_batch_resumes_on_the_simulator_with_its_kernel():
-    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, server=Jackdaw(python="jackdaw-python"),
-                                kernel=True)
+def test_a_paused_simulator_batch_resumes_on_the_simulator():
+    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, server=Jackdaw(python="jackdaw-python"))
     saved = sim.pause_state()
-    assert saved["sim"] is True and saved["kernel"] is True
+    assert saved["sim"] is True
     resumed = supervisor.Supervisor.from_pause_state(saved, server=sim.server)
-    assert resumed.kernel and resumed.bot_python == sim.server.bot_python(kernel=True)
+    assert isinstance(resumed.server, Jackdaw) and resumed.bot_python == sim.server.bot_python()
     assert supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None).pause_state()["sim"] is False
 
 

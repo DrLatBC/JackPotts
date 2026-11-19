@@ -62,7 +62,7 @@ balatrobot serve --port 12346
 balatro-bot --port 12346 --start
 ```
 
-[Installation](docs/installation.md) covers the balatrobot fork, PyPy for simulator batches and building the Rust kernel; [Usage](docs/usage.md) the command line.
+[Installation](docs/installation.md) covers the balatrobot fork and building the Rust scoring kernel; [Usage](docs/usage.md) the command line.
 
 ## How the bot works
 
@@ -106,7 +106,7 @@ py -3.13 -m venv .venv-rl
 
 | Page | What's inside |
 |------|---------------|
-| [Installation](docs/installation.md) | Prerequisites, the balatrobot fork, `.env.local`, PyPy, the Rust kernel |
+| [Installation](docs/installation.md) | Prerequisites, the balatrobot fork, `.env.local`, the Rust kernel |
 | [Usage](docs/usage.md) | Single games, the supervisor, CLI flags, logs |
 | [Architecture](docs/architecture.md) | Rule engine, decision flow, module map |
 | [Scoring](docs/scoring.md) | Joker pipeline, card, enhancement and edition handling |

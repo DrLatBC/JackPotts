@@ -251,15 +251,7 @@ def rank_value(rank: str) -> int:
     return RANK_ORDER.get(rank, 0)
 
 
-# Scoring-op codes: one (code, value) pair per step a scored card applies.
-OP_CHIPS = 0          # chips += value
-OP_MULT = 1           # mult += value
-OP_XMULT = 2          # mult *= value
-OP_CHIPS_PER_RETRIGGER = 3  # chips += value * (0-based trigger number)
-OP_CHANCE_XMULT = 4   # value is (xmult, odds): rolled with an rng, else its expected value
-
 _SUIT_BIT = {"H": 1, "D": 2, "C": 4, "S": 8}
-_HACK_RANKS = frozenset({"2", "3", "4", "5"})
 
 
 class CardFacts:
@@ -270,9 +262,9 @@ class CardFacts:
     """
 
     __slots__ = (
-        "rank", "rank_val", "stone", "debuffed", "face", "hack_rank",
+        "rank", "rank_val", "stone", "debuffed", "face",
         "suits", "suits_smeared", "suit_mask", "suit_mask_smeared",
-        "steel", "red_seal", "gold_seal", "base_ops", "cached",
+        "steel", "red_seal", "gold_seal", "cached",
         # The card as the compiled kernel takes it (domain/scoring/kernel.py), filled on first use.
         "record", "record_gold", "record_plain",
     )
@@ -286,7 +278,6 @@ class CardFacts:
         self.stone = is_stone(card)
         self.debuffed = is_debuffed(card)
         self.face = rank in FACE_RANKS
-        self.hack_rank = rank in _HACK_RANKS
         self.suits = frozenset(card_suits(card))
         self.suits_smeared = frozenset(card_suits(card, smeared=True))
         self.suit_mask = sum(_SUIT_BIT[s] for s in self.suits)
@@ -296,27 +287,6 @@ class CardFacts:
         seal = mod.get("seal")
         self.red_seal = seal == "RED"
         self.gold_seal = seal == "GOLD"
-
-        # The card's own scoring steps for one trigger, in the game's order:
-        # chips, enhancement mult, enhancement xmult, edition mult, edition xmult.
-        # Steps that change nothing are left out.
-        ops = []
-        chips = card_chip_value(card)
-        if chips != 0 or type(chips) is not int:
-            ops.append((OP_CHIPS, chips))
-        mult = card_mult_value(card)
-        if mult:
-            ops.append((OP_MULT, mult))
-        xmult = card_xmult_value(card)
-        if xmult != 1.0:
-            ops.append((OP_XMULT, xmult))
-        ed_mult = card_edition_mult_value(card)
-        if ed_mult:
-            ops.append((OP_MULT, ed_mult))
-        ed_xmult = card_edition_xmult_value(card)
-        if ed_xmult != 1.0:
-            ops.append((OP_XMULT, ed_xmult))
-        self.base_ops = tuple(ops)
 
 
 _FACTS_BY_VALUE: dict[tuple, CardFacts] = {}

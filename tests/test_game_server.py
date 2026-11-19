@@ -18,27 +18,8 @@ def install(monkeypatch):
         monkeypatch.setitem(game_server.INSTALL.__dict__, path, path)
 
 
-def test_simulator_bots_run_on_pypy_when_its_environment_exists(tmp_path, monkeypatch):
-    pypy = tmp_path / "pypy.exe"
-    pypy.write_text("")
-    monkeypatch.setenv("BOT_PYPY", str(pypy))
-    assert Jackdaw().bot_python(kernel=False) == str(pypy)
-    monkeypatch.setenv("BOT_PYPY", str(tmp_path / "missing.exe"))
-    assert Jackdaw().bot_python(kernel=False) == venv_python("bot")
-
-
-def test_simulator_bots_stay_on_cpython_with_the_compiled_kernel(tmp_path, monkeypatch):
-    pypy = tmp_path / "pypy.exe"
-    pypy.write_text("")
-    monkeypatch.setenv("BOT_PYPY", str(pypy))
-    assert Jackdaw().bot_python(kernel=True) == venv_python("bot")
-
-
-def test_live_game_bots_run_on_cpython(tmp_path, monkeypatch):
-    pypy = tmp_path / "pypy.exe"
-    pypy.write_text("")
-    monkeypatch.setenv("BOT_PYPY", str(pypy))
-    assert LiveGame().bot_python(kernel=False) == LiveGame().bot_python(kernel=True) == venv_python("bot")
+def test_every_bot_runs_on_the_bot_environment():
+    assert Jackdaw().bot_python() == LiveGame().bot_python() == venv_python("bot")
 
 
 def test_a_stuck_bot_is_given_ten_minutes_live_and_one_on_the_simulator():

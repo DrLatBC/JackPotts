@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from balatro_bot.domain.policy.play_padding import pad_with_junk
-from balatro_bot.domain.scoring import estimate
+from balatro_bot.domain.scoring.kernel import KernelScorer
 from balatro_bot.domain.scoring.play_order import sort_play_order
 from balatro_bot.domain.scoring.search import HandCandidate, best_hand, enumerate_hands
 
@@ -91,7 +91,6 @@ class RoundSearch:
             required_card_indices=forced,
             ancient_suit=self.ancient_suit,
             excluded_hands=excluded,
-            deck_cards=self.deck_cards,
             blind_name=self.blind_name,
             ox_most_played=self.ox_most_played,
             idol_rank=self.idol_rank,
@@ -146,10 +145,8 @@ class RoundSearch:
             c is self.forced_card for cards in card_lists for c in cards)
         # The kernel's batch call applies no play limits; with any in force each list
         # is searched on its own.
-        if (estimate.USE_KERNEL and p["min_select"] <= 1 and not p["required_hand"]
+        if (p["min_select"] <= 1 and not p["required_hand"]
                 and not p["excluded_hands"] and not forced_present):
-            from balatro_bot.domain.scoring.kernel import KernelScorer
-
             scorer = KernelScorer(
                 p["hand_levels"], p["jokers"],
                 money=p["money"], discards_left=p["discards_left"], hands_left=p["hands_left"],

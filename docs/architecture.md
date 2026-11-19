@@ -79,7 +79,8 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | `search.py` | `enumerate_hands`, `best_hand` (single pass, same pick as the first enumerated hand), `discard_candidates`; decisions call them through the round search (`domain/policy/round_search.py`) |
 | `play_order.py` | `sort_play_order` — left-to-right order: hand order unless a ×mult card would score before a +mult one (Hanging Chad / DNA first slot, Photograph's face before other faces); `hand_order_for_play` — the hand rearrangement that swaps played cards among their own slots |
 | `classify.py` | Hand classification + scoring-card extraction |
-| `estimate.py` | Full scoring simulation: `HandScorer` is set up once per joker lineup and surroundings and scores many hands; `score_hand` uses one once |
+| `kernel.py` | `KernelScorer` — the bot's only scorer: one joker lineup and round situation handed to the compiled Rust kernel (`kernel/`), which classifies, orders and scores every play; `joker_phases()` lists the jokers that score in the joker phase. The bot stops at import if the kernel isn't built |
+| `estimate.py` | `score_hand` (chips, mult, total for one play) and `score_hand_detailed` (the per-joker breakdown and per-card triggers the scoring log prints), both through `KernelScorer` |
 | `draws.py` | Flush/straight draw probability |
 | `chase.py` | Chase strategy generation for discards |
 | `base.py` | Boss blind hand-level transforms (Flint, Arm, …) |
@@ -88,13 +89,11 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 
 | File | Role |
 |------|------|
-| `registry.py` | `apply_joker_effects(ctx)` — iterates jokers in order |
 | `roster.py` | `Roster` — one lineup's keys, active jokers and copy targets, plus per-lineup facts built on first use |
-| `context.py` | `ScoreContext` (chips/mult/xmult), retrigger logic, optional RNG |
 | `parsers.py` | Extracts chips/mult/xmult from joker effect text |
-| `per_card.py` | Per-scored-card effect model (Fibonacci, Photograph, Triboulet, Idol, Bloodstone) |
-| `scoring_phase.py` | Phase classification (chips/mult/xmult), per-card xmult set |
-| `simple.py` / `complex.py` | Individual joker effect functions |
+| `live_values.py` | Each joker's current displayed values (chips/mult/xmult/dollars/counter), added to the state as it arrives |
+| `per_card.py` | Per-scored-card effect model (Fibonacci, Photograph, Triboulet, Idol, Bloodstone), used by play ordering |
+| `scoring_phase.py` | Phase classification (chips/mult/xmult) for roster ordering, one-line jokers' phases from the kernel; per-card xmult set |
 
 ### Rules (`rules/`)
 

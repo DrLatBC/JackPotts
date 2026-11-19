@@ -6,8 +6,7 @@ stop its server, whether it is up, which interpreter its bots run on, how long a
 may go without acting before it counts as stuck, and the tag its batches' code version
 carries. Whether a server's responses arrive settled is the server's to say, in its
 ``health`` reply; ``read_health`` reads it. The supervisor and the stream start servers
-through this; the bot reads ``read_health``. Standard library and ``config`` only, so
-the bot imports it on PyPy.
+through this; the bot reads ``read_health``. Standard library and ``config`` only.
 """
 
 from __future__ import annotations
@@ -258,7 +257,7 @@ class LiveGame:
     def health(self, port: int) -> bool:
         return listening(port)
 
-    def bot_python(self, kernel: bool) -> str:
+    def bot_python(self) -> str:
         return venv_python("bot")
 
 
@@ -290,11 +289,8 @@ class Jackdaw:
     def health(self, port: int) -> bool:
         return listening(port)
 
-    def bot_python(self, kernel: bool) -> str:
-        """PyPy when its environment exists (ADR 0010), except with the compiled kernel,
-        which loads on CPython only."""
-        pypy = venv_python("pypy")
-        return pypy if not kernel and os.path.exists(pypy) else venv_python("bot")
+    def bot_python(self) -> str:
+        return venv_python("bot")
 
 
 GameServer = LiveGame | Jackdaw

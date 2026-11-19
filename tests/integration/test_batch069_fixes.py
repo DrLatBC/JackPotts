@@ -81,7 +81,6 @@ def play_and_compare(client, state, play_indices, label="", blind_name="",
         joker_limit=state.get("jokers", {}).get("limit", 5),
         blind_name=blind_name,
         deck_count=state.get("cards", {}).get("count", 0),
-        deck_cards=state.get("cards", {}).get("cards", []),
         ox_most_played=ox_most_played,
     )
 
@@ -373,7 +372,7 @@ def test_flower_pot_non_debuffed_wild(client, results):
 
 def test_ox_bull(client, results):
     """The Ox zeroes money when playing most-played hand → Bull gets $0."""
-    from balatro_bot.domain.scoring.estimate import ox_most_played_hand
+    from balatro_bot.domain.scoring.kernel import ox_most_played_hand
 
     print(f"\n{'='*60}")
     print("FIX 4: The Ox + Bull — money zeroed on most-played hand")

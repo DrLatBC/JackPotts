@@ -718,17 +718,19 @@ class TestValuationMemo:
 
     def test_every_joker_that_scores_off_money_is_listed(self):
         """A lineup without a money-reading joker is valued without money in its memo key."""
-        import inspect
-
         from balatro_bot.domain.policy.shop_valuation import _MONEY_SCORING_KEYS
-        from balatro_bot.joker_effects.complex import COMPLEX_EFFECTS
-        from balatro_bot.joker_effects.simple import _DISPATCHERS
+        from balatro_bot.domain.scoring.estimate import score_hand
+        from balatro_bot.domain.scoring.kernel import joker_phases
 
-        readers = {key for key, effect in COMPLEX_EFFECTS.items()
-                   if "ctx.money" in inspect.getsource(effect)}
+        pair = [card("K", "S"), card("K", "H")]
+        held = [card("2", "C"), card("5", "D")]
+
+        def total(key: str, money: int) -> int:
+            return score_hand("Pair", pair, self._LEVELS, jokers=[joker(key)], played_cards=pair,
+                              held_cards=held, money=money)[2]
+
+        readers = {key for key in joker_phases() if total(key, 0) != total(key, 50)}
         assert readers == set(_MONEY_SCORING_KEYS)
-        for dispatcher in _DISPATCHERS.values():
-            assert "ctx.money" not in inspect.getsource(dispatcher)
 
     def test_money_still_moves_a_money_joker(self):
         from balatro_bot.domain.policy.shop_valuation import _joker_value, clear_sample_cache

@@ -43,36 +43,9 @@ JACKPOTTS_API_KEY=...
 
 Leaving these blank disables the dashboard client entirely — the bot runs the same, just without remote reporting. See [dashboard.md](dashboard.md) for details.
 
-## Verify install
+## Build the scoring kernel
 
-```bash
-pytest -q
-```
-
-All 380 unit tests should pass without a running game.
-
-## Optional: PyPy for simulator batches
-
-Simulator batches (`--sim`) run their bots on [PyPy](https://pypy.org) when `.venv-pypy` exists, about 1.8x the games per hour with identical play ([ADR 0010](adr/0010-simulator-bots-run-on-pypy.md)). Without it they run on the normal environment. Unpack PyPy 3.12 (v8.0.1 or later) anywhere, then from the repo root:
-
-```powershell
-& "C:\path\to\pypy3.12-v8.0.1-win64\pypy.exe" -m venv .venv-pypy
-.venv-pypy\Scripts\python.exe -m pip install httpx "typer==0.15.4" pytest
-.venv-pypy\Scripts\python.exe -m pip install --no-deps --ignore-requires-python -e ..\balatrobot
-.venv-pypy\Scripts\python.exe -m pip install --no-deps -e .
-```
-
-`typer` is pinned because newer releases need a compiled dependency with no PyPy build, and the fork is installed past its Python 3.13 floor because the bot only uses its client. `$BOT_PYPY` points the supervisor at a different PyPy interpreter. Check the bot still runs there with:
-
-```powershell
-.venv-pypy\Scripts\python.exe -m pytest -q --ignore=tests/test_gui.py --ignore=tests/test_supervisor_job.py --ignore=tests/test_dashboard_client.py
-```
-
-## Optional: the compiled scoring kernel
-
-`kernel/` holds hand search and scoring in Rust. With the control panel's KERNEL box ticked (or `--kernel` on the supervisor, or `BALATRO_KERNEL=rust` in the environment) the bot asks it instead of the Python scorer; the two give the same answers (`tests/test_kernel_differential.py`), the compiled one about 85 times faster per search. Otherwise nothing changes.
-
-It needs Rust (`winget install --id Rustlang.Rustup -e`) and, on Windows, Visual Studio's "Desktop development with C++" workload with a Windows SDK. Build it into the bot's environment from the repo root:
+`kernel/` holds hand search and scoring in Rust, and it is the bot's only scorer: the bot stops at import if it isn't built. It needs Rust (`winget install --id Rustlang.Rustup -e`) and, on Windows, Visual Studio's "Desktop development with C++" workload with a Windows SDK. Build it into the bot's environment from the repo root:
 
 ```powershell
 $env:VIRTUAL_ENV = "$PWD\.venv"
@@ -82,12 +55,12 @@ Set-Location kernel\py
 Set-Location ..\..
 ```
 
-Rebuild after any change under `kernel/`. Checks:
+Rebuild after any change under `kernel/`, and only between batches: a running bot holds the built module open. `tests/test_kernel_cases.py` checks the kernel against its saved answers (`tests/kernel_expected.json`) on generated hands and lineups; the live game is the real check, through the scoring logs.
 
-```powershell
-.venv\Scripts\python.exe -m pytest -q tests/test_kernel_differential.py
-.venv\Scripts\python.exe scripts/kernel_soak.py targeted
-.venv\Scripts\python.exe scripts/kernel_mutations.py
+## Verify install
+
+```bash
+pytest -q
 ```
 
-The first compares both scorers on generated hands, the second does the same over every joker with every card enhancement, and the third plants bugs in the kernel to confirm those comparisons notice. The kernel runs on CPython only: with it on, the supervisor launches simulator bots from the normal environment instead of `.venv-pypy`, and the startup line says so. A paused batch resumes with the setting it started with.
+All unit tests should pass without a running game.

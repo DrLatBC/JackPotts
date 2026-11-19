@@ -1,5 +1,9 @@
 # Release notes
 
+## Unreleased
+
+- The compiled Rust kernel is the only scorer. The Python scorer, the panel's KERNEL box, the supervisor's `--kernel` flag, `BALATRO_KERNEL` and PyPy simulator bots are gone; every bot runs on CPython with the kernel, which must be built first ([installation](installation.md)). Play is unchanged: batches already scored with the kernel.
+
 ## v2.0.0 — 2026-11-17
 
 Jack Potts now has two players. The rule-based bot is joined by a model that started as a copy of it, then taught itself by playing the Jackdaw simulator. On 5,000 simulator seeds (Blue Deck, White Stake) it wins 33.8%, against about 14% for the bot over a 24,000-game batch. Around it: simulator batches at about 24,000 games an hour, a compiled Rust scoring kernel, and a desktop control panel for batches, learning runs and a live model stream.

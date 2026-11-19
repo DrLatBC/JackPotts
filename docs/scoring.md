@@ -15,7 +15,7 @@ base chips + mult from hand type
   --> final score
 ```
 
-Joker effects are applied in left-to-right order, which matches the game. The pipeline lives in `joker_effects/` — `registry.py` drives it, `context.py` holds the mutable `ScoreContext` (chips, mult, xmult, scoring cards, held cards), and `simple.py` / `complex.py` hold the individual effect functions.
+Joker effects are applied in left-to-right order, which matches the game. The pipeline is the compiled Rust kernel (`kernel/`): `kernel/core/src/lineup.rs` runs the per-card, held-in-hand and joker phases, and `jokers.rs` holds each joker's effect. Python (`domain/scoring/kernel.py`) hands it the lineup: active jokers and copy targets (`joker_effects/roster.py`), each joker's numbers and each card's.
 
 ## Card rules
 
@@ -51,7 +51,7 @@ Still on the backlog: The Goad, Serpent, Water, Tooth, Fish, Hook, Pillar, Plant
 
 Upstream balatrobot does not expose `G.GAME.current_round.idol_card` — The Idol's per-round target rank+suit. Without it, The Idol's ×2 mult couldn't be predicted and scoring diverged from actuals on ~99% of hands with The Idol active.
 
-Jack Potts ships with a patch on the [DrLatBC/balatrobot](https://github.com/DrLatBC/balatrobot) fork (`main` branch). The patch adds `round.idol_card = {rank, suit}` to the gamestate serializer in `src/lua/utils/gamestate.lua`. The bot threads this through `Snapshot -> RoundContext -> ScoreContext -> _idol` in `joker_effects/complex.py`, applying ×2 mult per matching scored card.
+Jack Potts ships with a patch on the [DrLatBC/balatrobot](https://github.com/DrLatBC/balatrobot) fork (`main` branch). The patch adds `round.idol_card = {rank, suit}` to the gamestate serializer in `src/lua/utils/gamestate.lua`. The bot threads this through `Snapshot -> RoundContext -> KernelScorer` to the Idol's per-card effect in `kernel/core/src/jokers.rs`, applying ×2 mult per matching scored card.
 
 When upstream merges changes to `gamestate.lua`, verify the idol_card block survives.
 

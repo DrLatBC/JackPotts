@@ -1,6 +1,6 @@
 """Configuration for the supervisor and bot processes: the repo's paths, the
-interpreter each job runs on, and the game install. Standard library only: the bot
-imports it on PyPy and the learning run from .venv-rl."""
+interpreter each job runs on, and the game install. Standard library only: the
+learning run imports it from .venv-rl."""
 
 from __future__ import annotations
 
@@ -41,13 +41,12 @@ _load_env_local()
 _VENVS = {
     "bot": (".venv", None),
     "jackdaw": (".venv-jackdaw", "JACKDAW_PYTHON"),
-    "pypy": (".venv-pypy", "BOT_PYPY"),
     "rl": (".venv-rl", None),
 }
 
 
 def venv_python(name: str, windowless: bool = False) -> str:
-    """The interpreter of one of the repo's environments ("bot", "jackdaw", "pypy", "rl").
+    """The interpreter of one of the repo's environments ("bot", "jackdaw", "rl").
 
     The path is returned whether or not it exists; callers that can do without an
     environment check. The bot environment is the exception: a worktree checkout has
