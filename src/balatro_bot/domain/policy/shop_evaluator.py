@@ -227,6 +227,7 @@ class ActionPlan:
     steps: list[Action]
     net_value: float    # EV improvement minus cost opportunity
     description: str
+    kind: str           # which producer made it, e.g. "joker", "swap", "reroll"
     item: dict | None = None  # the shop card the plan acquires, if any
 
 
@@ -422,93 +423,6 @@ def _campfire_sell_candidates(
 
 
 # ---------------------------------------------------------------------------
-# SellInvisible logic (multi-tick)
-# ---------------------------------------------------------------------------
-
-def _invisible_plan(
-    roster: list[JokerScore],
-    ante: int,
-    round_num: int,
-    first_seen_round: int | None,
-    selling_down: bool,
-) -> tuple[ActionPlan | None, int | None, bool]:
-    """Evaluate SellInvisible opportunity.
-
-    Ranks dupe targets by live `ev_delta` from the unified roster scorer —
-    no hardcoded whitelist — so any joker (including odd utility picks)
-    that currently carries the build becomes eligible.
-
-    Returns (plan_or_None, updated_first_seen_round, updated_selling_down).
-    """
-    invisible_idx = next(
-        (s.index for s in roster if s.key == "j_invisible"), None
-    )
-    if invisible_idx is None:
-        return None, None, False
-
-    if first_seen_round is None:
-        return None, round_num, False
-
-    if round_num - first_seen_round < 2:
-        return None, first_seen_round, False
-
-    if len(roster) < 2:
-        return None, first_seen_round, False
-
-    # Rank dupe targets by current EV contribution.
-    best = max(
-        (s for s in roster if s.index != invisible_idx),
-        key=lambda s: s.ev_delta,
-        default=None,
-    )
-    if best is None:
-        return None, first_seen_round, False
-
-    # Ante-scaled threshold on the same ~0-15 scale joker_value uses.
-    threshold = 3.0 if ante <= 3 else 3.0 + (ante - 3) * 1.5
-    if best.ev_delta < threshold:
-        return None, first_seen_round, False
-
-    # Don't start selling before boss blind
-    round_in_ante = ((round_num - 1) % 3) + 1
-    boss_next = round_in_ante == 2
-    if not selling_down and boss_next:
-        return None, first_seen_round, False
-
-    # Final step: sell Invisible
-    if len(roster) == 2:
-        plan = ActionPlan(
-            steps=[SellJoker(invisible_idx,
-                             reason=f"Invisible: guaranteed dupe of {best.label} "
-                                    f"(ev={best.ev_delta:.1f}, ante {ante})")],
-            net_value=best.ev_delta * 10,  # duping is extremely high value
-            description=f"Invisible dupe: {best.label}",
-        )
-        return plan, first_seen_round, False
-
-    # Sell the roster member we'd miss least (lowest ev_delta, tiebreak by
-    # highest sell_value so we also bank more cash on the way down).
-    fodder = min(
-        (s for s in roster if s.index not in (invisible_idx, best.index)),
-        key=lambda s: (s.ev_delta, -s.sell_value),
-        default=None,
-    )
-    if fodder is None:
-        return None, first_seen_round, selling_down
-
-    remaining = len(roster) - 2
-    plan = ActionPlan(
-        steps=[SellJoker(fodder.index,
-                         reason=f"Invisible setup: sell {fodder.label} to isolate "
-                                f"{best.label} ({remaining} more to go, "
-                                f"target ev={best.ev_delta:.1f})")],
-        net_value=best.ev_delta * 5,  # high priority — commit to sequence
-        description=f"Invisible sell-down: selling {fodder.label}",
-    )
-    return plan, first_seen_round, True
-
-
-# ---------------------------------------------------------------------------
 # Money cost opportunity
 # ---------------------------------------------------------------------------
 
@@ -542,6 +456,467 @@ def _money_opportunity_cost(cost: int, money: int, budget: Budget,
     # free (cost_factor = 1 - 1.0 = 0) and the bot never banks cash.
     cost_factor = max(0.2, 1.0 - category_aggression)
     return lost_per_round * effective_rounds * cost_factor
+
+
+# ---------------------------------------------------------------------------
+# Shop view
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ShopView:
+    """Everything one shop decision is made from (see GLOSSARY.md)."""
+    run: RunView
+    budget: Budget
+    roster: list[JokerScore]
+    owned: list[dict]
+    money: int
+    ante: int
+    round_num: int
+    joker_count: int        # the API's count, which can lag len(owned)
+    joker_limit: int
+    slots_full: bool        # the API refused a buy for full slots this shop
+    shop_cards: list[dict]
+    pack_cards: list[dict]
+    voucher_cards: list[dict]
+    owned_vouchers: set[str]
+    consumables: list[dict]
+    consumable_count: int
+    consumable_limit: int
+    rerolls_this_shop: int
+    invisible_first_seen: int | None
+    invisible_selling_down: bool
+    # Read only by the consumable producer: score_consumable takes the raw state.
+    state: dict
+
+    @property
+    def actual_count(self) -> int:
+        return max(self.joker_count, len(self.owned))
+
+    @property
+    def slots_open(self) -> bool:
+        return self.actual_count < self.joker_limit and not self.slots_full
+
+
+# ---------------------------------------------------------------------------
+# Plan producers: shop view → candidate plans, one per kind of plan
+# ---------------------------------------------------------------------------
+
+def _invisible_plans(view: ShopView) -> list[ActionPlan]:
+    """Sell down to Invisible Joker plus the best scorer, then sell Invisible to dupe it.
+
+    Ranks dupe targets by live `ev_delta`, so any joker that currently carries
+    the build is eligible.
+    """
+    roster, ante, round_num = view.roster, view.ante, view.round_num
+    invisible_idx = next((s.index for s in roster if s.key == "j_invisible"), None)
+    if invisible_idx is None or view.invisible_first_seen is None:
+        return []
+    if round_num - view.invisible_first_seen < 2 or len(roster) < 2:
+        return []
+
+    best = max(
+        (s for s in roster if s.index != invisible_idx),
+        key=lambda s: s.ev_delta,
+        default=None,
+    )
+    if best is None:
+        return []
+
+    # Ante-scaled threshold on the same ~0-15 scale joker_value uses.
+    threshold = 3.0 if ante <= 3 else 3.0 + (ante - 3) * 1.5
+    if best.ev_delta < threshold:
+        return []
+
+    round_in_ante = ((round_num - 1) % 3) + 1
+    boss_next = round_in_ante == 2
+    if not view.invisible_selling_down and boss_next:
+        return []
+
+    if len(roster) == 2:
+        return [ActionPlan(
+            steps=[SellJoker(invisible_idx,
+                             reason=f"Invisible: guaranteed dupe of {best.label} "
+                                    f"(ev={best.ev_delta:.1f}, ante {ante})")],
+            net_value=best.ev_delta * 10,  # duping is extremely high value
+            description=f"Invisible dupe: {best.label}",
+            kind="invisible_dupe",
+        )]
+
+    # Sell the roster member we'd miss least (lowest ev_delta, tiebreak by
+    # highest sell_value so we also bank more cash on the way down).
+    fodder = min(
+        (s for s in roster if s.index not in (invisible_idx, best.index)),
+        key=lambda s: (s.ev_delta, -s.sell_value),
+    )
+    remaining = len(roster) - 2
+    return [ActionPlan(
+        steps=[SellJoker(fodder.index,
+                         reason=f"Invisible setup: sell {fodder.label} to isolate "
+                                f"{best.label} ({remaining} more to go, "
+                                f"target ev={best.ev_delta:.1f})")],
+        net_value=best.ev_delta * 5,  # high priority — commit to sequence
+        description=f"Invisible sell-down: selling {fodder.label}",
+        kind="invisible_selldown",
+    )]
+
+
+def _leave_plans(view: ShopView) -> list[ActionPlan]:
+    # A low floor: interest is protected by each purchase's opportunity cost,
+    # so this only wins when nothing is worth buying. Speculation is cheap in
+    # BUILD, which makes leaving more attractive than gambling on the shop.
+    return [ActionPlan(
+        steps=[NextRound(reason="done shopping")],
+        net_value=0.5 * max(0.0, 1.0 - view.budget.speculative_aggression),
+        description="leave shop",
+        kind="leave",
+    )]
+
+
+def _joker_plans(view: ShopView) -> list[ActionPlan]:
+    """Buy a joker into an open slot, or sell the weakest joker and buy it."""
+    plans: list[ActionPlan] = []
+    run, budget, money, owned = view.run, view.budget, view.money, view.owned
+    owned_keys = {joker_key(j) for j in owned}
+    riff_raff_owned = "j_riff_raff" in owned_keys
+    free_slots = view.joker_limit - view.joker_count
+
+    for i, card in enumerate(view.shop_cards):
+        if card.get("set") != "JOKER":
+            continue
+        label = card.get("label", "?")
+        cost = card.get("cost", {}).get("buy", 999)
+        if cost > money:
+            continue
+        if check_anti_synergy(card.get("key", ""), owned_keys):
+            continue
+
+        shop_value = joker_value(card, run)
+        # Riff-Raff needs free slots to spawn into.
+        is_negative = _get_edition(card) == "NEGATIVE"
+        if riff_raff_owned and free_slots <= 2 and not is_negative:
+            shop_value *= 0.5
+        if is_negative:
+            shop_value = max(shop_value, 10.0)  # free slot is always high value
+
+        # A Negative takes no slot once bought, but the game still requires
+        # count < limit at buy time, so a full roster goes to the swap path.
+        if view.slots_open or (is_negative and view.actual_count < view.joker_limit):
+            opp_cost = _money_opportunity_cost(cost, money, budget,
+                                               budget.scoring_aggression,
+                                               view.joker_count)
+            net = shop_value * budget.scoring_aggression - opp_cost
+            if cost <= budget.spend_ceiling or is_negative or shop_value >= 8.0:
+                plans.append(ActionPlan(
+                    steps=[BuyCard(i, reason=f"buy {label} (${cost}, value={shop_value:.1f})")],
+                    net_value=net,
+                    description=f"buy {label}", kind="joker", item=card,
+                ))
+        elif view.roster:
+            swap = _swap_plan(view, i, card, cost, shop_value, is_negative)
+            if swap is not None:
+                plans.append(swap)
+    return plans
+
+
+def _swap_plan(
+    view: ShopView, i: int, card: dict, cost: int, shop_value: float, is_negative: bool,
+) -> ActionPlan | None:
+    """Sell the weakest sellable joker and buy shop card ``i`` (slots full).
+
+    Only the single weakest joker that can be sold and afforded is weighed.
+    """
+    budget, owned, label = view.budget, view.owned, card.get("label", "?")
+    for sc in sorted(view.roster, key=lambda r: r.ev_delta):
+        # Selling a Negative takes its slot with it, so it never frees room
+        # for the buy.
+        if _get_edition(owned[sc.index]) in ("POLYCHROME", "NEGATIVE"):
+            continue
+        # Scaling jokers with accrued value and Gros Michel aren't sold for
+        # a marginal upgrade.
+        if joker_key(owned[sc.index]) in SELL_PROTECTED:
+            continue
+        effective_cost = cost - sc.sell_value
+        if effective_cost > view.money:
+            continue
+        if is_negative:
+            # Selling then buying a Negative is a net +1 joker: the sold
+            # joker's slot comes back once the Negative lands.
+            upgrade_delta = shop_value
+            shop_value_post = shop_value
+        else:
+            # Price the buy against the post-sell roster so synergy with the
+            # joker being sold doesn't inflate it.
+            post_sell_owned = owned[:sc.index] + owned[sc.index + 1:]
+            shop_value_post = joker_value(card, view.run.with_roster(post_sell_owned))
+            upgrade_delta = shop_value_post - sc.ev_delta
+        opp_cost = _money_opportunity_cost(max(0, effective_cost), view.money, budget,
+                                           budget.scoring_aggression,
+                                           view.joker_count)
+        # 30% haircut keeps swaps conservative next to direct buys.
+        net = upgrade_delta * budget.scoring_aggression * 0.7 - opp_cost
+        if net <= 0:
+            return None
+        # Committed two-step plan: the buy runs as the next action instead of
+        # being re-decided against rerolls and leaving, so a swap never ends
+        # with the joker sold and nothing bought. Selling a joker leaves the
+        # shop row untouched, so i still points at this card.
+        buy_for = "Negative buy" if is_negative else f"{label} (post-sell value={shop_value_post:.1f})"
+        return ActionPlan(
+            steps=[
+                SellJoker(sc.index, reason=f"sell {sc.label} (ev={sc.ev_delta:.1f}) for {buy_for}"),
+                BuyCard(i, reason=f"buy {label} (${cost}, swap for {sc.label})"),
+            ],
+            net_value=net,
+            description=f"sell {sc.label} → buy {label}", kind="swap", item=card,
+        )
+    return None
+
+
+def _roster_order_plans(view: ShopView) -> list[ActionPlan]:
+    """Put the roster in roster order. Blind select comes before the next
+    reorder, so Ceremonial Dagger sits left of the joker it should eat, if any."""
+    owned, roster = view.owned, view.roster
+    fodder: JokerScore | None = None
+    dagger_idx = next((i for i, j in enumerate(owned) if joker_key(j) == "j_ceremonial"), None)
+    if dagger_idx is not None and roster:
+        fodder_candidates = [
+            r for r in roster
+            if r.key != "j_ceremonial" and r.ev_delta < 1.0 and r.fodder_mult > 0
+        ]
+        if fodder_candidates:
+            fodder = max(fodder_candidates, key=lambda r: (r.fodder_mult, -r.index))
+            # A tied joker already right of Dagger stays the fodder. Swapping in
+            # the other only moves this one to a lower index, where it wins the
+            # tie next tick and the two trade places forever.
+            fodder = next(
+                (r for r in fodder_candidates
+                 if r.index == dagger_idx + 1 and r.fodder_mult >= fodder.fodder_mult),
+                fodder,
+            )
+    if not owned:
+        return []
+    new_order = roster_order(owned, fodder=fodder.index if fodder else None, blind_next=True)
+    if new_order == list(range(len(owned))):
+        return []
+    if fodder is not None and fodder.index != dagger_idx + 1:
+        return [ActionPlan(
+            steps=[RearrangeJokers(
+                order=new_order,
+                reason=f"feed {fodder.label} to Dagger (+{fodder.fodder_mult:.0f} mult)")],
+            net_value=fodder.fodder_mult * view.budget.scoring_aggression,
+            description=f"feed {fodder.label} to Dagger",
+            kind="dagger_feed",
+        )]
+    return [ActionPlan(
+        steps=[RearrangeJokers(
+            order=new_order, reason=f"scoring order: {describe_order(owned, new_order)}")],
+        net_value=2.0,  # moderate priority — order matters but isn't urgent
+        description="reorder for scoring",
+        kind="reorder",
+    )]
+
+
+def _consumable_plans(view: ShopView) -> list[ActionPlan]:
+    if view.consumable_count >= view.consumable_limit:
+        return []
+    plans: list[ActionPlan] = []
+    budget = view.budget
+    for i, card in enumerate(view.shop_cards):
+        key = card.get("key", "")
+        cost = card.get("cost", {}).get("buy", 999)
+        label = card.get("label", "?")
+        if card.get("set", "") not in ("TAROT", "PLANET", "SPECTRAL") and key not in PLANET_KEYS:
+            continue
+        if cost > view.money:
+            continue
+        value = score_consumable(key, view.state, view.run.strategy)
+        if value <= 0:
+            continue
+        opp_cost = _money_opportunity_cost(cost, view.money, budget,
+                                           budget.scoring_aggression,
+                                           view.joker_count)
+        net = value * budget.scoring_aggression - opp_cost
+        if cost <= budget.spend_ceiling or value >= 4.0:
+            plans.append(ActionPlan(
+                steps=[BuyCard(i, reason=f"buy consumable: {label} (${cost}, value={value:.1f})")],
+                net_value=net,
+                description=f"buy {label}", kind="consumable", item=card,
+            ))
+    return plans
+
+
+def _pack_plans(view: ShopView) -> list[ActionPlan]:
+    plans: list[ActionPlan] = []
+    budget, owned = view.budget, view.owned
+    has_red_card = any(joker_key(j) == "j_red_card" for j in owned)
+    for i, card in enumerate(view.pack_cards):
+        label = card.get("label", "")
+        cost = card.get("cost", {}).get("buy", 999)
+        if cost > view.money:
+            continue
+        value = _score_pack(label, view.money, owned, view.ante, joker_limit=view.joker_limit)
+        if value <= 0:
+            continue
+        if "Buffoon" in label and not has_red_card and view.joker_count >= view.joker_limit:
+            continue
+        # Celestial/Buffoon buy scoring power; Arcana/Spectral/Standard are
+        # speculative (random cards with uncertain targeting value).
+        if "Celestial" in label or "Buffoon" in label:
+            pack_aggression = budget.scoring_aggression
+        else:
+            pack_aggression = budget.speculative_aggression
+        opp_cost = _money_opportunity_cost(cost, view.money, budget, pack_aggression,
+                                           view.joker_count)
+        net = value * pack_aggression - opp_cost
+        if cost <= budget.spend_ceiling or value >= 6.0:
+            plans.append(ActionPlan(
+                steps=[BuyPack(i, reason=f"buy pack: {label} (${cost}, value={value:.1f})")],
+                net_value=net,
+                description=f"buy {label}", kind="pack",
+            ))
+    return plans
+
+
+def _voucher_plans(view: ShopView) -> list[ActionPlan]:
+    plans: list[ActionPlan] = []
+    budget = view.budget
+    for i, card in enumerate(view.voucher_cards):
+        key = card.get("key", "")
+        cost = card.get("cost", {}).get("buy", 999)
+        label = card.get("label", "?")
+        value = _score_voucher(key, cost, view.money, budget, view.owned_vouchers)
+        if value <= 0 or cost > view.money:
+            continue
+        opp_cost = _money_opportunity_cost(cost, view.money, budget,
+                                           budget.speculative_aggression,
+                                           view.joker_count)
+        net = value * budget.speculative_aggression - opp_cost
+        if cost <= budget.spend_ceiling or value >= 8.0:
+            plans.append(ActionPlan(
+                steps=[BuyVoucher(i, reason=f"buy voucher: {label} (${cost}, value={value:.1f})")],
+                net_value=net,
+                description=f"buy {label}", kind="voucher",
+            ))
+    return plans
+
+
+def _campfire_plans(view: ShopView) -> list[ActionPlan]:
+    return [
+        ActionPlan(
+            steps=[SellConsumable(idx, reason=f"Campfire: sell {label} (+X0.25 mult)")],
+            net_value=feed_value * view.budget.scoring_aggression,
+            description=f"Campfire feed: {label}",
+            kind="campfire",
+        )
+        for idx, label, feed_value in _campfire_sell_candidates(view.consumables, view.run)
+    ]
+
+
+def _diet_cola_plans(view: ShopView) -> list[ActionPlan]:
+    """Sell Diet Cola for its free reroll, unless the shop already has a strong joker."""
+    diet_idx = next(
+        (i for i, j in enumerate(view.owned) if joker_key(j) == "j_diet_cola"), None
+    )
+    if diet_idx is None:
+        return []
+    if any(card.get("set") == "JOKER" and joker_value(card, view.run) >= 6.0
+           for card in view.shop_cards):
+        return []
+    return [ActionPlan(
+        steps=[SellJoker(diet_idx, reason="Diet Cola: sell for free shop reroll")],
+        net_value=1.5,  # moderate — free reroll has some value
+        description="sell Diet Cola",
+        kind="diet_cola",
+    )]
+
+
+_BUY_KINDS = frozenset({"joker", "swap", "consumable", "pack", "voucher"})
+
+
+def _reroll_plans(view: ShopView, earlier: list[ActionPlan]) -> list[ActionPlan]:
+    """Reroll, worth more when nothing produced so far is a good buy."""
+    budget, money = view.budget, view.money
+    if (view.rerolls_this_shop >= budget.reroll_cap
+            or money - budget.reroll_cost < budget.reserve):
+        return []
+    best_shop_value = max(
+        (p.net_value for p in earlier if p.kind in _BUY_KINDS), default=0.0,
+    )
+    # Cheaper rerolls retry more freely; more shop slots mean more per roll.
+    base = 2.0 if view.slots_open and best_shop_value < 3.0 else 0.5
+    reroll_value = base * (5 / budget.reroll_cost) * (1 + 0.4 * budget.shop_slot_bonus)
+    opp_cost = _money_opportunity_cost(budget.reroll_cost, money, budget,
+                                       budget.speculative_aggression,
+                                       view.joker_count)
+    net = reroll_value * budget.speculative_aggression - opp_cost
+    if net <= 0:
+        return []
+    return [ActionPlan(
+        steps=[Reroll(reason=f"reroll shop (${money}, reroll #{view.rerolls_this_shop + 1}, cost=${budget.reroll_cost})")],
+        net_value=net,
+        description="reroll shop",
+        kind="reroll",
+    )]
+
+
+def _decay_sell_plans(view: ShopView) -> list[ActionPlan]:
+    """Sell jokers that have decayed to nothing (Popcorn, Ramen, Ice Cream, stuck Riff-Raff)."""
+    plans: list[ActionPlan] = []
+    for r in view.roster:
+        if r.ev_delta > 0.1 or r.key in ("j_ceremonial", "j_invisible"):
+            continue
+        j = view.owned[r.index]
+        reason = ""
+        # Fallbacks are the game's starting values (game.lua configs), so a
+        # missing value never reads as decayed.
+        if r.key == "j_popcorn" and (popcorn := _ab_mult(j, fallback=20)) <= 4:
+            reason = f"Popcorn decayed to +{popcorn:g} mult"
+        elif r.key == "j_ramen" and _ab_xmult(j, fallback=2.0) < 1.0:
+            reason = "Ramen decayed below X1"
+        elif r.key == "j_ice_cream" and _ab_chips(j, fallback=100) <= 0:
+            reason = "Ice Cream at 0 chips"
+        elif r.key == "j_riff_raff" and view.joker_count >= view.joker_limit:
+            reason = "Riff-Raff with no spawn slots"
+        if reason:
+            plans.append(ActionPlan(
+                steps=[SellJoker(r.index, reason=f"proactive sell: {reason}")],
+                net_value=r.sell_value + 1.0,  # cash + freeing slot
+                description=f"sell dead {r.label}",
+                kind="decay_sell",
+            ))
+    return plans
+
+
+# Every kind of plan, in the order produced. The order is behaviour: of two
+# plans worth the same, the earlier one wins. A new shop behaviour is a new
+# producer here.
+_PRODUCERS = (
+    _invisible_plans,
+    _leave_plans,
+    _joker_plans,
+    _roster_order_plans,
+    _consumable_plans,
+    _pack_plans,
+    _voucher_plans,
+    _campfire_plans,
+    _diet_cola_plans,
+    _reroll_plans,
+    _decay_sell_plans,
+)
+# Producers that also read the plans produced before them.
+_REACTING = frozenset({_reroll_plans})
+
+
+def _collect(view: ShopView) -> list[ActionPlan]:
+    plans: list[ActionPlan] = []
+    for produce in _PRODUCERS:
+        plans.extend(produce(view, plans) if produce in _REACTING else produce(view))
+    return plans
+
+
+def _rank(plans: list[ActionPlan]) -> list[ActionPlan]:
+    """Best first; a stable sort, so ties keep production order."""
+    return sorted(plans, key=lambda p: -p.net_value)
 
 
 # ---------------------------------------------------------------------------
@@ -594,380 +969,79 @@ class ShopEvaluator:
             self.pending_plan = None
             self._pending_sell_keys = {}
 
+    def ranked_plans(self, state: dict[str, Any]) -> list[ActionPlan]:
+        """Every candidate plan for this tick, best first. Changes nothing."""
+        return _rank(_collect(self._view(state)))
+
     def evaluate(self, state: dict[str, Any]) -> Action | None:
         """Main entry point — called once per shop tick."""
-        # If mid-sequence (e.g., SellInvisible sell-down), validate and continue
         action = self.continue_plan(state)
         if action is not None:
             return action
-        round_num = state.get("round_num", 0)
+        view = self._view(state)
+        candidates = _collect(view)
+        self._remember_invisible(view, candidates)
+        return self._emit(view, candidates)
 
-        # ── Gather state ──
+    def _view(self, state: dict[str, Any]) -> ShopView:
         money = state.get("money", 0)
         ante = state.get("ante_num", 1)
+        round_num = state.get("round_num", 0)
         joker_info = state.get("jokers", {})
         owned = joker_info.get("cards", [])
         joker_limit = joker_info.get("limit", 5)
         joker_count = joker_info.get("count", 0)
-        shop = state.get("shop", {})
-        packs = state.get("packs", {})
-        vouchers = state.get("vouchers", {})
         used_vouchers_raw = state.get("used_vouchers", {})
         owned_vouchers: set[str] = (
             set(used_vouchers_raw.keys()) if isinstance(used_vouchers_raw, dict) else set()
         )
         consumables_info = state.get("consumables", {})
-        consumables = consumables_info.get("cards", [])
 
         run = run_view(state)
-        strat = run.strategy
         budget = compute_budget(money, ante, joker_count, owned_jokers=owned,
                                 owned_vouchers=owned_vouchers)
-
-        # ── Score roster ──
         roster = score_roster(run)
-
-        # ── Enumerate all candidate plans ──
-        candidates: list[ActionPlan] = []
-
-        # 0. SellInvisible (highest priority multi-tick sequence)
-        inv_plan, inv_first, inv_selling = _invisible_plan(
-            roster, ante, round_num,
-            self._invisible_first_seen, self._invisible_selling_down,
-        )
-        self._invisible_first_seen = inv_first
-        self._invisible_selling_down = inv_selling
-        if inv_plan is not None:
-            candidates.append(inv_plan)
-
-        # 1. Baseline: do nothing and leave
-        # This is a LOW floor — actual interest preservation is handled by
-        # _money_opportunity_cost on each purchase. The baseline just ensures
-        # the bot leaves when nothing is worth buying at all.
-        # Scale with inverse speculative aggression: when speculation is cheap
-        # (BUILD), leaving is more attractive than gambling on the shop.
-        leave_value = 0.5 * max(0.0, 1.0 - budget.speculative_aggression)
-        candidates.append(ActionPlan(
-            steps=[NextRound(reason="done shopping")],
-            net_value=leave_value,
-            description="leave shop",
-        ))
-
-        # 2. Buy jokers
-        # Use len(owned) as ground truth — joker_count from API can be stale.
-        # Also respect slots_full flag set by bot.py when API rejected a buy.
-        actual_count = max(joker_count, len(owned))
-        slots_open = actual_count < joker_limit and not self.slots_full
         if joker_count != len(owned):
             log.warning("[SHOP] joker_count mismatch: API count=%d, len(cards)=%d, limit=%d",
                         joker_count, len(owned), joker_limit)
-        weakest = min(roster, key=lambda r: r.ev_delta) if roster else None
-
-        for i, card in enumerate(shop.get("cards", [])):
-            if card.get("set") != "JOKER":
-                continue
-            key = card.get("key", "")
-            label = card.get("label", "?")
-            cost = card.get("cost", {}).get("buy", 999)
-
-            if cost > money:
-                continue
-
-            # Anti-synergy gate
-            conflict = check_anti_synergy(key, {joker_key(j) for j in owned})
-            if conflict:
-                continue
-
-            shop_value = joker_value(card, run)
-
-            # Riff-Raff slot reservation: penalize buys that fill spawn slots
-            riff_raff_owned = any(joker_key(j) == "j_riff_raff" for j in owned)
-            free_slots = joker_limit - joker_count
-            is_negative = _get_edition(card) == "NEGATIVE"
-            if riff_raff_owned and free_slots <= 2 and not is_negative:
-                shop_value *= 0.5
-            if is_negative:
-                shop_value = max(shop_value, 10.0)  # free slot is always high value
-
-            if slots_open or (is_negative and actual_count < joker_limit):
-                # Direct buy — Negative jokers don't consume a slot after
-                # purchase, but the game still requires count < limit at buy
-                # time.  When count is already at limit (from a prior Negative),
-                # fall through to the sell-then-buy path below.
-                opp_cost = _money_opportunity_cost(cost, money, budget,
-                                                   budget.scoring_aggression,
-                                                   joker_count)
-                net = shop_value * budget.scoring_aggression - opp_cost
-                if cost <= budget.spend_ceiling or is_negative or shop_value >= 8.0:
-                    steps = [BuyCard(i, reason=f"buy {label} (${cost}, value={shop_value:.1f})")]
-                    candidates.append(ActionPlan(
-                        steps=steps, net_value=net,
-                        description=f"buy {label}", item=card,
-                    ))
-
-            elif weakest is not None:
-                # Sell weakest + buy (slots full).
-                # For Negative jokers this is especially valuable: selling
-                # frees a slot for the buy check, but the Negative doesn't
-                # consume the slot — net result is no joker lost.
-                sell_candidates = sorted(roster, key=lambda r: r.ev_delta)
-                for sc in sell_candidates:
-                    # Selling a Negative takes its slot with it, so it never
-                    # frees room for the buy.
-                    if _get_edition(owned[sc.index]) in ("POLYCHROME", "NEGATIVE"):
-                        continue
-                    # Scaling jokers with accumulated investment (Hologram,
-                    # Castle, Caino, Green Joker, etc.) and extinction-
-                    # mechanic jokers (Gros Michel) aren't sell candidates —
-                    # selling loses permanent accrued value or denies a
-                    # free Cavendish spawn.
-                    if joker_key(owned[sc.index]) in SELL_PROTECTED:
-                        continue
-                    sell_cash = sc.sell_value
-                    effective_cost = cost - sell_cash
-                    if effective_cost > money:
-                        continue
-                    if is_negative:
-                        # Negative: sell weakest then buy = net +1 joker.
-                        # Value = the Negative's value (we keep everything
-                        # except the sold joker, which comes back as a free
-                        # slot once the Negative lands).
-                        upgrade_delta = shop_value
-                        shop_value_post = shop_value
-                    else:
-                        # Re-score the shop candidate against the post-sell
-                        # roster so synergies/amplification from the joker
-                        # we're about to sell don't inflate the buyer.
-                        post_sell_owned = owned[:sc.index] + owned[sc.index + 1:]
-                        shop_value_post = joker_value(card, run.with_roster(post_sell_owned))
-                        upgrade_delta = shop_value_post - sc.ev_delta
-                    opp_cost = _money_opportunity_cost(max(0, effective_cost), money, budget,
-                                                       budget.scoring_aggression,
-                                                       joker_count)
-                    # 30% haircut keeps swaps conservative next to direct buys.
-                    net = upgrade_delta * budget.scoring_aggression * 0.7 - opp_cost
-                    if net > 0:
-                        # Committed two-step plan: the buy runs as the next action
-                        # instead of being re-decided against rerolls and leaving,
-                        # so a swap never ends with the joker sold and nothing bought.
-                        # Selling a joker leaves the shop row untouched, so i still
-                        # points at this card.
-                        steps = [
-                            SellJoker(sc.index, reason=f"sell {sc.label} (ev={sc.ev_delta:.1f}) for {'Negative buy' if is_negative else f'{label} (post-sell value={shop_value_post:.1f})'}"),
-                            BuyCard(i, reason=f"buy {label} (${cost}, swap for {sc.label})"),
-                        ]
-                        candidates.append(ActionPlan(
-                            steps=steps, net_value=net,
-                            description=f"sell {sc.label} → buy {label}", item=card,
-                        ))
-                    break  # only consider the single weakest
-
-        # 3. Roster order. Blind select comes before the next reorder, so
-        # Ceremonial Dagger sits left of the joker it should eat, if any.
-        fodder: JokerScore | None = None
-        dagger_idx = next((i for i, j in enumerate(owned) if joker_key(j) == "j_ceremonial"), None)
-        if dagger_idx is not None and roster:
-            fodder_candidates = [
-                r for r in roster
-                if r.key != "j_ceremonial" and r.ev_delta < 1.0 and r.fodder_mult > 0
-            ]
-            if fodder_candidates:
-                fodder = max(fodder_candidates, key=lambda r: (r.fodder_mult, -r.index))
-                # A tied joker already right of Dagger stays the fodder. Swapping in
-                # the other only moves this one to a lower index, where it wins the
-                # tie next tick and the two trade places forever.
-                fodder = next(
-                    (r for r in fodder_candidates
-                     if r.index == dagger_idx + 1 and r.fodder_mult >= fodder.fodder_mult),
-                    fodder,
-                )
-        if owned:
-            new_order = roster_order(owned, fodder=fodder.index if fodder else None, blind_next=True)
-            if new_order != list(range(len(owned))):
-                feeds = fodder is not None and fodder.index != dagger_idx + 1
-                if feeds:
-                    reason = f"feed {fodder.label} to Dagger (+{fodder.fodder_mult:.0f} mult)"
-                    value = fodder.fodder_mult * budget.scoring_aggression
-                else:
-                    reason = f"scoring order: {describe_order(owned, new_order)}"
-                    value = 2.0  # moderate priority — order matters but isn't urgent
-                candidates.append(ActionPlan(
-                    steps=[RearrangeJokers(order=new_order, reason=reason)],
-                    net_value=value,
-                    description=f"feed {fodder.label} to Dagger" if feeds else "reorder for scoring",
-                ))
-
-        # 5. Buy consumables
-        if consumables_info.get("count", 0) < consumables_info.get("limit", 2):
-            for i, card in enumerate(shop.get("cards", [])):
-                key = card.get("key", "")
-                card_set = card.get("set", "")
-                cost = card.get("cost", {}).get("buy", 999)
-                label = card.get("label", "?")
-
-                if card_set not in ("TAROT", "PLANET", "SPECTRAL") and key not in PLANET_KEYS:
-                    continue
-                if cost > money:
-                    continue
-
-                value = score_consumable(key, state, strat)
-                if value <= 0:
-                    continue
-
-                opp_cost = _money_opportunity_cost(cost, money, budget,
-                                                   budget.scoring_aggression,
-                                                   joker_count)
-                net = value * budget.scoring_aggression - opp_cost
-                if cost <= budget.spend_ceiling or value >= 4.0:
-                    candidates.append(ActionPlan(
-                        steps=[BuyCard(i, reason=f"buy consumable: {label} (${cost}, value={value:.1f})")],
-                        net_value=net,
-                        description=f"buy {label}", item=card,
-                    ))
-
-        # 6. Buy packs
-        for i, card in enumerate(packs.get("cards", [])):
-            label = card.get("label", "")
-            cost = card.get("cost", {}).get("buy", 999)
-            if cost > money:
-                continue
-
-            value = _score_pack(label, money, owned, ante, joker_limit=joker_limit)
-            if value <= 0:
-                continue
-
-            # Buffoon: skip if joker slots full and no Red Card
-            has_red_card = any(joker_key(j) == "j_red_card" for j in owned)
-            if "Buffoon" in label and not has_red_card and joker_count >= joker_limit:
-                continue
-
-            # Celestial/Buffoon are scoring-power packs; Arcana/Spectral are
-            # speculative (random consumables with uncertain targeting value).
-            if "Celestial" in label or "Buffoon" in label:
-                pack_aggression = budget.scoring_aggression
-            else:
-                pack_aggression = budget.speculative_aggression
-            opp_cost = _money_opportunity_cost(cost, money, budget, pack_aggression,
-                                               joker_count)
-            net = value * pack_aggression - opp_cost
-            if cost <= budget.spend_ceiling or value >= 6.0:
-                candidates.append(ActionPlan(
-                    steps=[BuyPack(i, reason=f"buy pack: {label} (${cost}, value={value:.1f})")],
-                    net_value=net,
-                    description=f"buy {label}",
-                ))
-
-        # 7. Buy vouchers
-        for i, card in enumerate(vouchers.get("cards", [])):
-            key = card.get("key", "")
-            cost = card.get("cost", {}).get("buy", 999)
-            label = card.get("label", "?")
-
-            value = _score_voucher(key, cost, money, budget, owned_vouchers)
-            if value <= 0:
-                continue
-            if cost > money:
-                continue
-
-            opp_cost = _money_opportunity_cost(cost, money, budget,
-                                               budget.speculative_aggression,
-                                               joker_count)
-            net = value * budget.speculative_aggression - opp_cost
-            if cost <= budget.spend_ceiling or value >= 8.0:
-                candidates.append(ActionPlan(
-                    steps=[BuyVoucher(i, reason=f"buy voucher: {label} (${cost}, value={value:.1f})")],
-                    net_value=net,
-                    description=f"buy {label}",
-                ))
-
-        # 8. Campfire feeding (sell consumables)
-        campfire_candidates = _campfire_sell_candidates(consumables, run)
-        for idx, label, feed_value in campfire_candidates:
-            candidates.append(ActionPlan(
-                steps=[SellConsumable(idx, reason=f"Campfire: sell {label} (+X0.25 mult)")],
-                net_value=feed_value * budget.scoring_aggression,
-                description=f"Campfire feed: {label}",
-            ))
-
-        # 9. Diet Cola sell (free reroll)
-        diet_idx = next(
-            (i for i, j in enumerate(owned) if joker_key(j) == "j_diet_cola"), None
+        # The per-shop counters reset when a new shop opens; evaluate() has
+        # already reset them, ranked_plans() must not.
+        same_shop = round_num == self._last_round
+        return ShopView(
+            run=run, budget=budget, roster=roster, owned=owned,
+            money=money, ante=ante, round_num=round_num,
+            joker_count=joker_count, joker_limit=joker_limit,
+            slots_full=self.slots_full and same_shop,
+            shop_cards=state.get("shop", {}).get("cards", []),
+            pack_cards=state.get("packs", {}).get("cards", []),
+            voucher_cards=state.get("vouchers", {}).get("cards", []),
+            owned_vouchers=owned_vouchers,
+            consumables=consumables_info.get("cards", []),
+            consumable_count=consumables_info.get("count", 0),
+            consumable_limit=consumables_info.get("limit", 2),
+            rerolls_this_shop=self._rerolls_this_shop if same_shop else 0,
+            invisible_first_seen=self._invisible_first_seen,
+            invisible_selling_down=self._invisible_selling_down,
+            state=state,
         )
-        if diet_idx is not None:
-            # Only sell if nothing great in shop
-            shop_has_great = any(
-                card.get("set") == "JOKER" and joker_value(card, run) >= 6.0
-                for card in shop.get("cards", [])
+
+    def _remember_invisible(self, view: ShopView, candidates: list[ActionPlan]) -> None:
+        """Invisible Joker's hold timer and whether a sell-down is under way."""
+        if not any(s.key == "j_invisible" for s in view.roster):
+            self._invisible_first_seen, self._invisible_selling_down = None, False
+        elif view.invisible_first_seen is None:
+            self._invisible_first_seen, self._invisible_selling_down = view.round_num, False
+        else:
+            self._invisible_selling_down = any(
+                p.kind == "invisible_selldown" for p in candidates
             )
-            if not shop_has_great:
-                candidates.append(ActionPlan(
-                    steps=[SellJoker(diet_idx, reason="Diet Cola: sell for free shop reroll")],
-                    net_value=1.5,  # moderate — free reroll has some value
-                    description="sell Diet Cola",
-                ))
 
-        # 10. Reroll
-        if (self._rerolls_this_shop < budget.reroll_cap
-                and money - budget.reroll_cost >= budget.reserve):
-            # Simple heuristic: reroll value = chance of finding something better
-            best_shop_value = max(
-                (c.net_value for c in candidates if "buy" in c.description.lower()),
-                default=0.0,
-            )
-            # If nothing good in shop and we have slots, reroll is worth trying.
-            # Scale by cheapness (cheap reroll = retry more freely) and by shop
-            # slot bonus (more slots per roll = more EV per roll).
-            base = 2.0 if slots_open and best_shop_value < 3.0 else 0.5
-            reroll_value = base * (5 / budget.reroll_cost) * (1 + 0.4 * budget.shop_slot_bonus)
-            opp_cost = _money_opportunity_cost(budget.reroll_cost, money, budget,
-                                               budget.speculative_aggression,
-                                               joker_count)
-            net = reroll_value * budget.speculative_aggression - opp_cost
-            if net > 0:
-                candidates.append(ActionPlan(
-                    steps=[Reroll(reason=f"reroll shop (${money}, reroll #{self._rerolls_this_shop + 1}, cost=${budget.reroll_cost})")],
-                    net_value=net,
-                    description="reroll shop",
-                ))
-
-        # 11. Proactive sells: decayed jokers (Popcorn, Ramen, dead Riff-Raff)
-        for r in roster:
-            if r.ev_delta <= 0.1 and r.key not in ("j_ceremonial", "j_invisible"):
-                # This joker is essentially dead — sell proactively for cash
-                j = owned[r.index]
-
-                should_sell = False
-                reason = ""
-
-                # Fallbacks are the game's starting values (game.lua configs), so a
-                # missing value never reads as decayed.
-                if r.key == "j_popcorn" and (popcorn := _ab_mult(j, fallback=20)) <= 4:
-                    should_sell = True
-                    reason = f"Popcorn decayed to +{popcorn:g} mult"
-                elif r.key == "j_ramen" and _ab_xmult(j, fallback=2.0) < 1.0:
-                    should_sell = True
-                    reason = f"Ramen decayed below X1"
-                elif r.key == "j_ice_cream" and _ab_chips(j, fallback=100) <= 0:
-                    should_sell = True
-                    reason = "Ice Cream at 0 chips"
-                elif r.key == "j_riff_raff" and joker_count >= joker_limit:
-                    should_sell = True
-                    reason = "Riff-Raff with no spawn slots"
-
-                if should_sell:
-                    candidates.append(ActionPlan(
-                        steps=[SellJoker(r.index, reason=f"proactive sell: {reason}")],
-                        net_value=r.sell_value + 1.0,  # cash + freeing slot
-                        description=f"sell dead {r.label}",
-                    ))
-
-        # ── Rank and select ──
-        if not candidates:
-            return NextRound(reason="done shopping")
-
+    def _emit(self, view: ShopView, candidates: list[ActionPlan]) -> Action:
+        """Pick the plan (greedy or explored), record it, and return its first step."""
+        budget, owned = view.budget, view.owned
         greedy = max(candidates, key=lambda c: c.net_value)
         best, choice = _explore_plan(greedy, candidates)
-        self.last_decision = _shop_decision_record(best, candidates, budget, roster)
+        self.last_decision = _shop_decision_record(best, candidates, budget, view.roster)
         lean_set = best is not greedy and best.item is not None and explorer().set_lean(card_lean(best.item))
         explorer().tag(self.last_decision, choice)
         if choice.policy == "explore" and best is not greedy:
@@ -982,14 +1056,12 @@ class ShopEvaluator:
             best.description, best.net_value,
             budget.phase, budget.spend_ceiling,
             budget.scoring_aggression, budget.speculative_aggression,
-            ", ".join(f"{c.description}({c.net_value:.1f})" for c in
-                      sorted(candidates, key=lambda c: -c.net_value)[:5]),
+            ", ".join(f"{c.description}({c.net_value:.1f})" for c in _rank(candidates)[:5]),
         )
 
-        # Track state for multi-step plans
         if len(best.steps) > 1:
             self.pending_plan = best.steps[1:]
-            # Record expected joker keys for sell actions so we can verify identity
+            # Expected joker keys for pending sells, so a shifted index is caught.
             self._pending_sell_keys = {}
             self._pending_buy_key = best.item.get("key") if best.item else None
             for step in self.pending_plan:
@@ -997,13 +1069,11 @@ class ShopEvaluator:
                     self._pending_sell_keys[step.index] = joker_key(owned[step.index])
 
         action = best.steps[0]
-
         if isinstance(action, Reroll):
             self._rerolls_this_shop += 1
         elif isinstance(action, SellJoker):
             if action.index < len(owned) and joker_key(owned[action.index]) == "j_diet_cola":
                 self._rerolls_this_shop += 1  # Diet Cola sell triggers free shop refresh
-
         return action
 
     def _plan_still_valid(self, state: dict[str, Any]) -> bool:

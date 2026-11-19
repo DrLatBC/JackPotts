@@ -62,7 +62,7 @@ def test_reseed_replays_the_same_choices():
 
 
 def _plan(desc, value, step=None):
-    return ActionPlan(steps=[step or NextRound(reason=desc)], net_value=value, description=desc)
+    return ActionPlan(steps=[step or NextRound(reason=desc)], net_value=value, description=desc, kind="test")
 
 
 def test_shop_never_explores_into_a_reorder():
