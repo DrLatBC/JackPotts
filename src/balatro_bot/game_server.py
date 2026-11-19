@@ -186,14 +186,6 @@ def unlock_all(profile_dir: Path, love_path: str) -> None:
 
 
 def listening(port: int) -> bool:
-    try:
-        with socket.create_connection(("localhost", port), timeout=2):
-            return True
-    except OSError:
-        return False
-
-
-def listening(port: int) -> bool:
     """True when something accepts connections on the port: the server is up."""
     try:
         with socket.create_connection(("localhost", port), timeout=2):
