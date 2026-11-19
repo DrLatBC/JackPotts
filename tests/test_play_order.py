@@ -6,7 +6,9 @@ from dataclasses import replace as dc_replace
 
 from balatro_bot.domain.models.card import CardModifier
 from balatro_bot.domain.policy.play_padding import pad_with_junk
-from balatro_bot.domain.scoring.play_order import sort_play_order
+import pytest
+
+from balatro_bot.domain.scoring.play_order import play_plan, sort_play_order
 from tests.conftest import card, joker
 
 
@@ -192,6 +194,18 @@ def test_rearrange_needed_when_order_differs():
     result = sort_play_order([0, 1, 2], hand, jokers)
     assert result[0] == 2, "8♠ should be first"
     assert result != sorted(result), "Order should differ from ascending — triggers rearrange"
+
+
+@pytest.mark.parametrize(("order", "hand_size", "rearrange", "played"), [
+    ([0, 2, 4], 8, None, [0, 2, 4]),
+    ([3], 5, None, [3]),
+    ([4, 1], 6, [0, 4, 2, 3, 1, 5], [1, 4]),
+    ([2, 0, 1], 3, [2, 0, 1], [0, 1, 2]),
+    ([5, 1, 3], 8, [0, 5, 2, 1, 4, 3, 6, 7], [1, 3, 5]),
+])
+def test_play_plan(order, hand_size, rearrange, played):
+    """Played cards swap among their own slots; every other card stays put."""
+    assert play_plan(order, hand_size) == (rearrange, played)
 
 
 # ---------------------------------------------------------------------------

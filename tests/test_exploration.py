@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from balatro_bot.actions import NextRound, RearrangeJokers, Reroll
-from balatro_bot.bot_logging import record_decision
+from balatro_bot.game_recorder import record_decision
 from balatro_bot.domain.policy import exploration
 from balatro_bot.domain.policy.exploration import Explorer
 from balatro_bot.domain.policy.shop_evaluator import ActionPlan, _explore_plan

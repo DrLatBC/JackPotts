@@ -212,3 +212,12 @@ def hand_order_for_play(order: list[int], hand_size: int) -> list[int]:
     for slot, idx in zip(sorted(order), order):
         result[slot] = idx
     return result
+
+
+def play_plan(order: list[int], hand_size: int) -> tuple[list[int] | None, list[int]]:
+    """How to play ``order`` left to right: the hand rearrangement to make first (None
+    when the cards already sit in that order) and the hand positions to play after it."""
+    played = sorted(order)
+    if list(order) == played:
+        return None, played
+    return hand_order_for_play(order, hand_size), played

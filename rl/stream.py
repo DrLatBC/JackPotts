@@ -37,13 +37,11 @@ from jackdaw.env.action_space import FREE_ACTION_TYPES, ActionType, factored_to_
 from jackdaw.env.balatro_env import _rust_view
 
 from rl import dataset
-from rl.convert import left_moves
 from rl.evaluate import WIN_ANTE
 from rl.features import CONSUMABLE, ENTITY_LIST, HAND, JOKER, MAX_FREE_MOVES, PACK, SHOP, View, view_from
 from rl.model import Prepared, weigh
-from rl.ordering import bot_order, order_can_change
+from rl.ordering import put_in_order
 from rl.train import load_model
-from balatro_bot.domain.scoring.play_order import hand_order_for_play  # noqa: E402
 from balatro_bot import jobs  # noqa: E402
 from fork_view import strip  # noqa: E402
 
@@ -271,12 +269,8 @@ class Player:
         the live game shows."""
         game = self.adapter.game
         action = factored_to_engine_action(factored, game)
-        if isinstance(action, A.PlayHand) and order_can_change(game, action.card_indices):
-            order = bot_order(game, action.card_indices)
-            if order != sorted(order):
-                for at in left_moves(hand_order_for_play(order, len(game.hand))):
-                    self.adapter.step(A.SwapHandLeft(at))
-                action = A.PlayHand(tuple(sorted(order)))
+        if isinstance(action, A.PlayHand):
+            action = A.PlayHand(put_in_order(game, action.card_indices, step=self.adapter.step))
         self.adapter.step(action)
         self.write_now(last=describe(action), **self.game_numbers())
 

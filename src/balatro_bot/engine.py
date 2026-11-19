@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from balatro_bot.actions import Action, Rule, Wait
@@ -20,6 +21,10 @@ from balatro_bot.rules import (
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from balatrobot import APIError
+
+log = logging.getLogger("balatro_bot")
 
 
 _unified_shop = UnifiedShopRule()
@@ -68,6 +73,11 @@ class RuleEngine:
         self.rules = rules or dict(DEFAULT_RULES)
         self.last_rule: Rule | None = None
 
+    @property
+    def last_decision(self) -> dict | None:
+        """The shop or pack choice record of the rule that made the last decision."""
+        return getattr(self.last_rule, "last_decision", None)
+
     def add_rule(self, game_state: str, rule: Rule, priority: int | None = None) -> None:
         if game_state not in self.rules:
             self.rules[game_state] = []
@@ -95,3 +105,21 @@ class RuleEngine:
             state.pop("_round_ctx", None)
 
         return None
+
+    def refused(self, game_state: str, method: str, params: dict | None, error: APIError) -> None:
+        """Tell the rules the game refused an action, so they stop repeating it."""
+        if method == "use" and error.name == "NOT_ALLOWED":
+            blocked_idx = (params or {}).get("consumable")
+            for rule in self.rules.get(game_state, []):
+                if hasattr(rule, "_last_used_consumable"):
+                    rule._last_used_consumable = None
+                if hasattr(rule, "_blocked_consumables") and blocked_idx is not None:
+                    rule._blocked_consumables.add(blocked_idx)
+                    log.info("Blocked consumable index %d for this round", blocked_idx)
+                    break
+        if "joker slots are full" in error.message:
+            for rule in self.rules.get("SHOP", []):
+                evaluator = getattr(rule, "_evaluator", None)
+                if evaluator is not None:
+                    evaluator.slots_full = True
+                    break

@@ -1,10 +1,12 @@
 """Play seeded games on a running simulator and record what the bot did.
 
-    python scripts/trace/record.py PORT OUT.json [SEED[@DECK] ...]
+    python scripts/trace/record.py PORT OUT.json [--replays] [SEED[@DECK] ...]
 
 With no seeds given, plays the reference list in seeds.txt. The trace holds
 every action sent to the simulator (method, params, resulting state, money,
-chips) and every game log line without its timestamp. Two traces of the same
+chips), each game's dashboard payload, and every game log line without its
+timestamp. With --replays each game is also saved as a replay (into the trace),
+so its payload is the cut-down one a replayed game sends. Two traces of the same
 seeds from different code are compared with compare.py: a change that should
 not alter behaviour must leave both identical.
 
@@ -20,6 +22,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from balatro_bot import dashboard_client
 from balatro_bot.bot import run_bot, setup_logging, wait_for_server
 from balatro_bot.engine import RuleEngine
 from balatro_bot.infrastructure.client import BalatroClient
@@ -33,8 +36,11 @@ def reference_seeds() -> list[str]:
 
 
 def main() -> None:
-    port, out = int(sys.argv[1]), sys.argv[2]
-    seeds = sys.argv[3:] or reference_seeds()
+    args = sys.argv[1:]
+    with_replays = "--replays" in args
+    args = [a for a in args if a != "--replays"]
+    port, out = int(args[0]), args[1]
+    seeds = args[2:] or reference_seeds()
 
     logs = Path(tempfile.mkdtemp(prefix="trace_"))
     game_log = logs / "game.log"
@@ -71,11 +77,25 @@ def main() -> None:
     object.__setattr__(client, "call", timed_call)
     engine.decide = timed_decide
 
+    def take_payload(batch_id, data):
+        if data.get("log_text"):
+            data = {**data, "log_text": [ln.split(" ", 1)[-1] for ln in data["log_text"].splitlines()]}
+        trace.append(["PAYLOAD", json.loads(json.dumps(data, default=str))])
+
+    dashboard_client.post_game = take_payload
+
+    class TraceReplays:
+        def write(self, record):
+            trace.append(["REPLAY", json.loads(json.dumps(record, default=str))])
+
+    replays = TraceReplays() if with_replays else None
+
     began = time.perf_counter()
     for entry in seeds:
         seed, _, deck = entry.partition("@")
         trace.append(["GAME", seed, deck or "BLUE"])
-        run_bot(client, engine, start_game=True, deck=deck or "BLUE", stake="WHITE", seed=seed)
+        run_bot(client, engine, start_game=True, deck=deck or "BLUE", stake="WHITE", seed=seed,
+                dashboard_batch_id=1, replays=replays)
     wall = time.perf_counter() - began
 
     for handler in logging.getLogger().handlers:
