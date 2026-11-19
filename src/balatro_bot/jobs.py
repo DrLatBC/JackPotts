@@ -9,8 +9,10 @@ through files. Each job has one folder under ``ROOT``:
     commands/     a queue of JSON requests (``Job.send`` / ``Job.take``)
     console.log   the job's printed output when the panel launched it (``Job.spawn``)
 
-Beside them sit the job's own files (``Job.file``). Standard library only: the
-learning run and the stream's player import this from ``.venv-rl``.
+Beside them sit the job's own files (``Job.file``). A job's launcher ties its children
+to itself (``tie_children``) and clears its ports first (``kill_port_processes``).
+Standard library and ``config`` only: the learning run and the stream's player import
+this from ``.venv-rl``.
 """
 
 from __future__ import annotations
@@ -24,8 +26,8 @@ import sys
 import time
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-ROOT = REPO / "bot_log"
+from balatro_bot.config import LOG_DIR as ROOT
+from balatro_bot.config import REPO
 
 PHASES = ("starting", "running", "stopping", "pausing", "paused", "stopped", "finished", "failed")
 LIVE = ("starting", "running", "stopping", "pausing")
@@ -230,6 +232,83 @@ class Job:
         except OSError:
             return ""
         return next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
+
+
+# -- processes ----------------------------------------------------------------------
+
+def kill_port_processes(ports: list[int]) -> int:
+    """Force-kill whatever listens on or is connected to these ports; the count killed."""
+    killed = 0
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True
+        )
+        pids_to_kill: set[str] = set()
+        for line in result.stdout.splitlines():
+            for port in ports:
+                if f":{port}" in line and ("LISTENING" in line or "ESTABLISHED" in line):
+                    parts = line.split()
+                    pid = parts[-1]
+                    if pid.isdigit() and pid != "0":
+                        pids_to_kill.add(pid)
+        for pid in pids_to_kill:
+            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+            killed += 1
+    except Exception:
+        pass
+    return killed
+
+
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.c_uint32), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32)]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", ctypes.c_uint64 * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_job_handle = None  # held open for this process's lifetime; Windows closes it at exit
+
+
+def tie_children() -> bool:
+    """Put this process in a Windows job that ends every process in it when this one exits.
+
+    Children (game servers, Balatro, bots, players) join the job when they start, so a
+    batch or stream launcher that dies without its shutdown (killed, crashed, its
+    console closed) takes them with it instead of leaving them running.
+    """
+    global _job_handle
+    if os.name != "nt":
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        log.warning("could not create a job object (error %d); children may outlive this process",
+                    ctypes.get_last_error())
+        return False
+    info = _ExtendedLimits()
+    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not (kernel32.SetInformationJobObject(job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                                             ctypes.byref(info), ctypes.sizeof(info))
+            and kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess())):
+        log.warning("could not join a kill-on-exit job (error %d); children may outlive this process",
+                    ctypes.get_last_error())
+        kernel32.CloseHandle(ctypes.c_void_p(job))
+        return False
+    _job_handle = job
+    return True
 
 
 def batch() -> Job:

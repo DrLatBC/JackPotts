@@ -13,6 +13,7 @@ from balatro_bot.dispatcher import Dispatcher
 from balatro_bot.domain.policy.exploration import explorer
 from balatro_bot.domain.scoring.draws import seed_draws
 from balatro_bot.engine import RuleEngine
+from balatro_bot.game_server import read_health
 from balatro_bot.game_recorder import PASSING_STATES, GameRecorder
 from balatro_bot.infrastructure.client import BalatroClient
 from balatro_bot.replays import ReplayWriter, replay_record
@@ -110,10 +111,9 @@ def wait_for_server(client: BalatroClient, timeout: float = 30.0) -> None:
     start = time.time()
     while time.time() - start < timeout:
         try:
-            health = client.call("health")
-            simulator = health.get("simulator") if isinstance(health, dict) else None
-            client.responses_settled = bool(simulator)
-            client.simulator = f"{simulator} {health.get('simulator_version') or ''}".strip() if simulator else ""
+            health = read_health(client.call("health"))
+            client.responses_settled = health.settled
+            client.simulator = health.simulator
             log.info("Connected to balatrobot API")
             return
         except Exception:

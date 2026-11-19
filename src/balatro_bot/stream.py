@@ -2,9 +2,9 @@
 
     .venv\\Scripts\\pythonw.exe -m balatro_bot.stream --model rl\\data\\ppo\\r1\\latest.pt --follow
 
-Starts ``balatrobot serve`` with windows (not headless, not fast) on STREAM_PORT, in
-that port's own profile with everything unlocked (``unlock_all``), then runs ``rl.stream`` (the model player, under .venv-rl)
-against it. Both children sit in this process's kill-on-exit job, so if the launcher
+Starts the live game visible (``game_server.LiveGame``) on STREAM_PORT, in that port's
+own profile with everything unlocked, then runs ``rl.stream`` (the model player, under
+.venv-rl) against it. Both children sit in this process's kill-on-exit job, so if the launcher
 dies the game closes with it. The control panel's Stream tab starts this.
 
 Serves the overlay (``balatro_bot.overlay``) for OBS on OVERLAY_PORT while it runs.
@@ -18,96 +18,17 @@ the player stops between moves, then the game is closed.
 from __future__ import annotations
 
 import argparse
-import os
-import re
-import socket
 import subprocess
 import sys
 import time
-import zipfile
-import zlib
 from pathlib import Path
 
-from balatro_bot import jobs, overlay
-from balatro_bot.supervisor import (
-    BASE_DIR, cfg, ensure_isolated_profile, graceful_kill,
-    kill_port_processes, tie_children_to_supervisor,
-)
+from balatro_bot import game_server, jobs, overlay
+from balatro_bot.config import REPO, venv_python
 
 STREAM_PORT = 12340
-RL_PYTHON = BASE_DIR / ".venv-rl" / "Scripts" / "python.exe"
 GAME_START_TIMEOUT = 120.0
 STOP_TIMEOUT = 60.0
-
-
-# The game's item tables; a key under meta.jkr's unlocked / discovered / alerted marks the
-# item so when the game loads (game.lua, Game:init_item_prototypes).
-GAME_TABLES = ("P_CENTERS", "P_BLINDS", "P_TAGS", "P_SEALS")
-_KEY_BEFORE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*$")
-
-
-def game_items(love_path: str) -> list[str]:
-    """Every item key the installed game defines, read from its own game.lua; work in
-    progress and demo-only items left out, as the game leaves them out."""
-    with zipfile.ZipFile(love_path) as z:
-        src = z.read("game.lua").decode("utf-8", "replace")
-    keys = []
-    for table in GAME_TABLES:
-        head = f"self.{table} = {{"
-        at = src.index(head) + len(head)
-        depth, entry = 1, None
-        while depth:
-            ch = src[at]
-            if ch == "{":
-                depth += 1
-                if depth == 2:
-                    key = _KEY_BEFORE.search(src, max(0, at - 80), at)
-                    entry = (key.group(1) if key else None, at)
-            elif ch == "}":
-                depth -= 1
-                if depth == 1 and entry and entry[0]:
-                    body = src[entry[1]:at]
-                    if not re.search(r"\b(wip|demo)\s*=\s*true", body):
-                        keys.append(entry[0])
-                    entry = None
-            at += 1
-    return keys
-
-
-def _read_jkr(path: Path) -> str:
-    raw = path.read_bytes()
-    return raw.decode("utf-8") if raw[:6] == b"return" else zlib.decompress(raw, -15).decode("utf-8")
-
-
-def _write_jkr(path: Path, text: str) -> None:
-    """Saved the way the game saves (compress_and_save: raw deflate)."""
-    packer = zlib.compressobj(9, zlib.DEFLATED, -15)
-    path.write_bytes(packer.compress(text.encode("utf-8")) + packer.flush())
-
-
-def unlock_all(profile_dir: Path, love_path: str) -> None:
-    """What the profile screen's "Unlock all" leaves on disk: every item unlocked,
-    discovered and alerted in meta.jkr, and ``all_unlocked`` in profile.jkr. Jackdaw
-    assumes this, so the stream's shadow only matches an unlocked profile."""
-    keys = game_items(love_path)
-    meta = "".join(f'["{part}"]={{' + "".join(f'["{k}"]=true,' for k in keys) + "},"
-                   for part in ("alerted", "discovered", "unlocked"))
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    _write_jkr(profile_dir / "meta.jkr", "return {" + meta + "}")
-    profile = profile_dir / "profile.jkr"
-    text = _read_jkr(profile) if profile.exists() else "return {}"
-    if '["all_unlocked"]=true' not in text:
-        text = text.replace('["all_unlocked"]=false,', "")
-        text = text.replace("return {", 'return {["all_unlocked"]=true,', 1)
-        _write_jkr(profile, text)
-
-
-def listening(port: int) -> bool:
-    try:
-        with socket.create_connection(("localhost", port), timeout=2):
-            return True
-    except OSError:
-        return False
 
 
 def last_line(path: Path) -> str:
@@ -119,7 +40,7 @@ def last_line(path: Path) -> str:
 
 
 def player_command(args) -> list[str]:
-    cmd = [str(RL_PYTHON), "-m", "rl.stream", "--port", str(args.port), "--model", args.model,
+    cmd = [venv_python("rl"), "-m", "rl.stream", "--port", str(args.port), "--model", args.model,
            "--deck", args.deck, "--stake", args.stake, "--delay", str(args.delay)]
     return cmd + (["--follow"] if args.follow else [])
 
@@ -132,28 +53,21 @@ def run(args) -> int:
     player_log, game_log = job.file("stream.log"), job.file("game.log")
     job.file("now.json").unlink(missing_ok=True)
     try:
-        server = overlay.serve(job.folder, args.overlay_port)
-        status["overlay"] = f"http://localhost:{server.server_address[1]}/"
+        overlay_server = overlay.serve(job.folder, args.overlay_port)
+        status["overlay"] = f"http://localhost:{overlay_server.server_address[1]}/"
     except OSError as e:
-        server = None
+        overlay_server = None
         status["overlay error"] = f"overlay port {args.overlay_port} unavailable: {e}"
     write_status(status, doing="opening the game")
-    tie_children_to_supervisor()
-    kill_port_processes([args.port])
-    env = os.environ.copy()
-    env["APPDATA"] = ensure_isolated_profile(args.port)
-    unlock_all(Path(env["APPDATA"]) / "Balatro" / "1", cfg.love_path)
+    jobs.tie_children()
+    jobs.kill_port_processes([args.port])
     flags = subprocess.CREATE_NO_WINDOW
-    with open(game_log, "w", encoding="utf-8") as game_out:
-        game = subprocess.Popen(
-            [cfg.balatrobot_path, "serve", "--port", str(args.port), "--love-path", cfg.love_path,
-             "--lovely-path", cfg.lovely_path],
-            env=env, stdout=game_out, stderr=subprocess.STDOUT, creationflags=flags,
-        )
+    server = game_server.LiveGame(visible=True, profile="unlocked", log=game_log)
+    game = server.start(args.port, flags)
     player = None
     try:
         deadline = time.time() + GAME_START_TIMEOUT
-        while not listening(args.port):
+        while not server.health(args.port):
             if game.poll() is not None or time.time() > deadline or job.asked("stop"):
                 why = ("stopped before the game opened" if job.asked("stop")
                        else last_line(game_log) or "the game did not open")
@@ -161,7 +75,7 @@ def run(args) -> int:
                 return 1
             time.sleep(1.0)
         with open(player_log, "w", encoding="utf-8") as player_out:
-            player = subprocess.Popen(player_command(args), cwd=str(BASE_DIR), stdout=player_out,
+            player = subprocess.Popen(player_command(args), cwd=str(REPO), stdout=player_out,
                                       stderr=subprocess.STDOUT, creationflags=flags)
         write_status(status, phase="running", doing="", game_pid=game.pid, player_pid=player.pid)
         stop_seen = 0.0
@@ -186,11 +100,11 @@ def run(args) -> int:
     finally:
         if player is not None and player.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(player.pid)], capture_output=True)
-        graceful_kill(game)
+        server.stop(game)
         job.clear()
-        if server is not None:
-            server.shutdown()
-            server.server_close()
+        if overlay_server is not None:
+            overlay_server.shutdown()
+            overlay_server.server_close()
 
 
 def main() -> int:

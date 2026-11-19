@@ -1,19 +1,27 @@
-"""Configuration for the supervisor and bot processes."""
+"""Configuration for the supervisor and bot processes: the repo's paths, the
+interpreter each job runs on, and the game install. Standard library only: the bot
+imports it on PyPy and the learning run from .venv-rl."""
 
 from __future__ import annotations
 
 import os
 import shutil
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
 
+REPO = Path(__file__).resolve().parents[2]
+LOG_DIR = REPO / "bot_log"
+WINS_DIR = LOG_DIR / "wins"
+# Each live-game instance's own Balatro save folder (game_server.ensure_isolated_profile).
+PROFILES_DIR = REPO / "profiles"
+
+
 def _load_env_local() -> None:
     """Load .env.local from the repo root if it exists (no dependency needed)."""
-    root = Path(__file__).resolve().parent.parent.parent
-    env_file = root / ".env.local"
+    env_file = REPO / ".env.local"
     if not env_file.is_file():
         return
     for line in env_file.read_text().splitlines():
@@ -27,6 +35,33 @@ def _load_env_local() -> None:
 
 
 _load_env_local()
+
+
+# Each environment's folder under the repo, and the variable that overrides its interpreter.
+_VENVS = {
+    "bot": (".venv", None),
+    "jackdaw": (".venv-jackdaw", "JACKDAW_PYTHON"),
+    "pypy": (".venv-pypy", "BOT_PYPY"),
+    "rl": (".venv-rl", None),
+}
+
+
+def venv_python(name: str, windowless: bool = False) -> str:
+    """The interpreter of one of the repo's environments ("bot", "jackdaw", "pypy", "rl").
+
+    The path is returned whether or not it exists; callers that can do without an
+    environment check. The bot environment is the exception: a worktree checkout has
+    no .venv of its own, so its jobs run on the interpreter running this.
+    """
+    folder, env_var = _VENVS[name]
+    if env_var and os.environ.get(env_var):
+        return os.environ[env_var]
+    exe = "pythonw.exe" if windowless else "python.exe"
+    path = REPO / folder / "Scripts" / exe
+    if name == "bot" and not path.exists():
+        here = Path(sys.executable)
+        return str(here.with_name(exe) if windowless and here.with_name(exe).exists() else here)
+    return str(path)
 
 
 def _resolve_path(env_var: str, fallback: str, label: str) -> str:
@@ -95,10 +130,6 @@ def _default_balatrobot_path() -> str:
 @dataclass
 class SupervisorConfig:
     base_port: int = 12346
-    python_path: str = ""
-    base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent)
-    log_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent / "bot_log")
-    wins_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent / "bot_log" / "wins")
     health_timeout: float = 30.0
     restart_cooldown: float = 30.0
     rapid_restart_window: float = 60.0

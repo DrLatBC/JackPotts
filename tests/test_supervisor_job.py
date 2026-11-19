@@ -12,8 +12,8 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows job objects")
 # A stand-in supervisor: joins the job, starts a long-lived child, prints its pid, dies abruptly.
 _PARENT = """
 import os, subprocess, sys
-from balatro_bot.supervisor import tie_children_to_supervisor
-assert tie_children_to_supervisor()
+from balatro_bot.jobs import tie_children
+assert tie_children()
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
                          creationflags=subprocess.CREATE_NO_WINDOW)
 print(child.pid, flush=True)

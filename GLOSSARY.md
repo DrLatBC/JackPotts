@@ -107,8 +107,12 @@ A table of joker values computed across standard scenarios (archetype by ante), 
 
 ## Running and measuring
 
+**Game server**:
+What a bot plays against on a port: the live game (Balatro running the balatrobot mod) or the simulator (Jackdaw).
+_Avoid_: Server (alone), backend, environment
+
 **Instance**:
-One Balatro process plus the bot driving it, identified by its port.
+One game server plus the bot driving it, identified by its port.
 _Avoid_: Worker, slot
 
 **Batch**:

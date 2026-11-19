@@ -15,10 +15,10 @@ from pathlib import Path
 from balatro_bot import jobs
 from balatro_bot.eval_compare import compare
 from balatro_bot.jobs import read_json
-from balatro_bot.supervisor import BASE_DIR, PYTHON
+from balatro_bot.config import REPO, venv_python
 
-RL_PYTHONW = BASE_DIR / ".venv-rl" / "Scripts" / "pythonw.exe"
-RL_DATA = BASE_DIR / "rl" / "data"
+RL_PYTHONW = venv_python("rl", windowless=True)
+RL_DATA = REPO / "rl" / "data"
 # The train flags the panel doesn't show: every run's, then each method's own.
 TRAIN_FIXED = ["--fade", "0", "--eval-every", "0.5", "--eval-games", "1000", "--final-check", "5000",
                "--threads", "4"]
@@ -95,7 +95,7 @@ def start_arg(source: str, save: str) -> str:
         return source.split(" ", 1)[1]
     path, _ = model_choice(source, save)
     try:
-        return path.relative_to(BASE_DIR).as_posix()
+        return path.relative_to(REPO).as_posix()
     except ValueError:
         return str(path)
 
@@ -391,6 +391,6 @@ def choice_of(model: str) -> tuple[str, str]:
 
 def stream_command(settings: dict) -> list[str]:
     path, follow = model_choice(settings["stream_source"], settings["stream_checkpoint"])
-    cmd = [PYTHON, "-m", "balatro_bot.stream", "--model", str(path), "--deck", settings["stream_deck"],
+    cmd = [venv_python("bot"), "-m", "balatro_bot.stream", "--model", str(path), "--deck", settings["stream_deck"],
            "--stake", settings["stream_stake"], "--delay", str(settings["stream_delay"])]
     return cmd + (["--follow"] if follow else [])

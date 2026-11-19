@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import atexit
-import ctypes
 import importlib.util
 import json
 import logging
@@ -17,7 +16,6 @@ import random
 import re
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -27,7 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from balatro_bot import dashboard_client, jobs
-from balatro_bot.config import SupervisorConfig
+from balatro_bot.config import LOG_DIR, REPO, WINS_DIR, SupervisorConfig, venv_python
+from balatro_bot.game_server import GameServer, Jackdaw, LiveGame
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -36,22 +35,8 @@ from balatro_bot.config import SupervisorConfig
 cfg = SupervisorConfig()
 
 BASE_PORT = cfg.base_port
-BASE_DIR = Path(__file__).parent.parent.parent
 BOT_MODULE = "balatro_bot.cli"
-LOG_DIR = cfg.log_dir
-WINS_DIR = cfg.wins_dir
 
-_VENV_PYTHON = BASE_DIR / ".venv" / "Scripts" / "python.exe"
-# A worktree checkout has no .venv of its own; its bots run on the supervisor's interpreter.
-PYTHON = cfg.python_path or str(_VENV_PYTHON if _VENV_PYTHON.exists() else Path(sys.executable))
-# Sim mode serves each slot from the Jackdaw simulator through this adapter, run by a
-# Python 3.12+ environment with the jackdaw package: $JACKDAW_PYTHON, else .venv-jackdaw.
-JACKDAW_ADAPTER = BASE_DIR / "sim" / "jackdaw_adapter" / "serve.py"
-JACKDAW_PYTHON = os.environ.get("JACKDAW_PYTHON") or str(BASE_DIR / ".venv-jackdaw" / "Scripts" / "python.exe")
-# Sim-mode bots run on PyPy when its environment exists ($BOT_PYPY, else .venv-pypy):
-# the same decisions at well over 1.5x the games per hour once warmed up. The server
-# they talk to stays on JACKDAW_PYTHON, and bots on the live game stay on PYTHON.
-PYPY_PYTHON = os.environ.get("BOT_PYPY") or str(BASE_DIR / ".venv-pypy" / "Scripts" / "python.exe")
 
 HEALTH_TIMEOUT = cfg.health_timeout
 RESTART_COOLDOWN = cfg.restart_cooldown
@@ -77,119 +62,29 @@ DEEP_RECOVERY_THRESHOLD = 5
 log = logging.getLogger("supervisor")
 
 
-BALATROBOT_LOGS_DIR = BASE_DIR / "logs"
+BALATROBOT_LOGS_DIR = REPO / "logs"
 BALATROBOT_LOGS_KEEP = 10
 
 # Per-instance Balatro save directories. Each instance gets its own APPDATA
 # override so Love2D writes meta.jkr/profile.jkr/save.jkr/settings.jkr into
 # a dedicated folder — concurrent writes to the same .jkr files across
 # instances corrupt meta.jkr (tutorial flag, unlocks).
-PROFILES_DIR = BASE_DIR / "profiles"
-REAL_APPDATA = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
-REAL_BALATRO_DIR = REAL_APPDATA / "Balatro"
-GRACEFUL_EXIT_TIMEOUT = 8.0  # seconds to wait for Balatro to finish saving on shutdown
 
 
 def _code_version() -> str | None:
     """Short commit hash of the bot checkout, suffixed "-dirty" when tracked files differ."""
     try:
         sha = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"], cwd=BASE_DIR,
+            ["git", "rev-parse", "--short", "HEAD"], cwd=REPO,
             capture_output=True, text=True, timeout=10, check=True,
         ).stdout.strip()
         dirty = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=BASE_DIR,
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=REPO,
             capture_output=True, text=True, timeout=10, check=True,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
     return f"{sha}-dirty" if dirty else sha
-
-
-def ensure_isolated_profile(port: int) -> str:
-    """Create a per-port APPDATA override and return its path.
-
-    Layout created:
-        profiles/<port>/Balatro/Mods      -> junction to real %APPDATA%/Balatro/Mods
-        profiles/<port>/Balatro/config    -> junction to real %APPDATA%/Balatro/config (if exists)
-        profiles/<port>/Balatro/settings.jkr   (copied once from real)
-        profiles/<port>/Balatro/1/meta.jkr     (copied once from real)
-        profiles/<port>/Balatro/1/profile.jkr  (copied once from real)
-        profiles/<port>/Balatro/1/save.jkr     (copied once from real)
-
-    Mods is a junction so mod updates propagate; .jkr files are real copies
-    so each instance writes independently.
-    """
-    port_dir = PROFILES_DIR / str(port)
-    balatro_dir = port_dir / "Balatro"
-    balatro_dir.mkdir(parents=True, exist_ok=True)
-
-    # Junction Mods/ (and config/) to the real install — these are shared.
-    for shared in ("Mods", "config"):
-        link = balatro_dir / shared
-        target = REAL_BALATRO_DIR / shared
-        if not target.exists():
-            continue
-        if link.exists() or link.is_symlink():
-            continue
-        # mklink /J creates a directory junction (no admin required on Windows)
-        try:
-            subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                capture_output=True, check=True,
-            )
-        except (OSError, subprocess.CalledProcessError) as e:
-            log.warning("Could not junction %s -> %s: %s", link, target, e)
-
-    # Seed the save files once — copies tutorial-done state, unlocks, etc.
-    for name in ("settings.jkr",):
-        src = REAL_BALATRO_DIR / name
-        dst = balatro_dir / name
-        if src.exists() and not dst.exists():
-            shutil.copy2(src, dst)
-
-    profile_sub = balatro_dir / "1"
-    profile_sub.mkdir(exist_ok=True)
-    for name in ("meta.jkr", "profile.jkr", "save.jkr"):
-        src = REAL_BALATRO_DIR / "1" / name
-        dst = profile_sub / name
-        if src.exists() and not dst.exists():
-            shutil.copy2(src, dst)
-
-    return str(port_dir)
-
-
-def graceful_kill(proc: subprocess.Popen, timeout: float = GRACEFUL_EXIT_TIMEOUT) -> None:
-    """Ask the process tree to close, then force-kill after `timeout`.
-
-    Prevents corrupting Balatro's .jkr save files by force-killing mid-write.
-    `taskkill /T` (without /F) sends WM_CLOSE to GUI processes, letting
-    Love2D run its quit handler and finish any pending save.
-    """
-    if proc.poll() is not None:
-        return
-    try:
-        subprocess.run(
-            ["taskkill", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-        )
-    except OSError:
-        pass
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            return
-        time.sleep(0.25)
-
-    # Timed out — force-kill
-    try:
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-        )
-    except OSError:
-        pass
 
 
 def prune_balatrobot_logs(keep: int = BALATROBOT_LOGS_KEEP) -> None:
@@ -251,10 +146,6 @@ def _pick_princess_name(taken: set[str]) -> str:
 
 _MIN_REPS = 5  # require at least 5 full repetitions to flag a cycle
 _MAX_PERIOD = 4  # check cycles of period 1, 2, 3, 4
-_STALL_TIMEOUT = 600  # seconds without a new action seq before declaring stuck
-# On the simulator a game never goes this long without an action, so a stuck bot
-# is restarted after a minute, not ten.
-_SIM_STALL_TIMEOUT = 60
 
 _ACTION_SEQ_RE = re.compile(r"\[#(\d+)\]")
 _GAME_OVER_RE = re.compile(r"Game over: (VICTORY|DEFEAT).*?seed=(\S+) ante=(\d+)")
@@ -328,12 +219,11 @@ class Slot:
     def is_alive(self, proc: subprocess.Popen | None) -> bool:
         return proc is not None and proc.poll() is None
 
-    def kill_pair(self) -> None:
+    def kill_pair(self, server: GameServer) -> None:
         """Kill both server and bot process trees, including child consoles.
 
-        Bot is force-killed (it doesn't write save files). Server is closed
-        gracefully so Balatro can finish any in-flight save to disk before
-        exiting — force-killing it mid-save corrupts meta.jkr.
+        Bot is force-killed (it doesn't write save files). The server stops its own
+        way: the live game closes gracefully so Balatro finishes any save in flight.
         """
         # Bot first, force — it holds no on-disk state worth preserving.
         if self.bot_proc and self.bot_proc.poll() is None:
@@ -344,19 +234,15 @@ class Slot:
                 )
             except OSError:
                 pass
-        # Server (uvx -> Balatro.exe): graceful, then escalate.
         if self.server_proc and self.server_proc.poll() is None:
-            graceful_kill(self.server_proc)
+            server.stop(self.server_proc)
         self.server_proc = None
         self.bot_proc = None
 
-    def check_health(self) -> bool:
-        try:
-            with socket.create_connection(("localhost", self.port), timeout=2):
-                self.last_health = time.time()
-                return True
-        except (OSError, TimeoutError):
-            pass
+    def check_health(self, server: GameServer) -> bool:
+        if server.health(self.port):
+            self.last_health = time.time()
+            return True
         return False
 
     def read_progress(self) -> str:
@@ -417,7 +303,7 @@ class Slot:
     _LOG_PREFIX = re.compile(r"^\d{2}:\d{2}:\d{2} \S+ ")
     _ACTION_COUNTER = re.compile(r"\[#\d+\] ")
 
-    def poll_log_for_softlock(self, stall_timeout: float = _STALL_TIMEOUT) -> bool:
+    def poll_log_for_softlock(self, stall_timeout: float = LiveGame.stall_timeout) -> bool:
         if not self.log_file:
             return False
         try:
@@ -467,80 +353,6 @@ class Slot:
 # Process cleanup
 # ---------------------------------------------------------------------------
 
-def kill_port_processes(ports: list[int]) -> int:
-    killed = 0
-    try:
-        result = subprocess.run(
-            ["netstat", "-ano"], capture_output=True, text=True
-        )
-        pids_to_kill: set[str] = set()
-        for line in result.stdout.splitlines():
-            for port in ports:
-                if f":{port}" in line and ("LISTENING" in line or "ESTABLISHED" in line):
-                    parts = line.split()
-                    pid = parts[-1]
-                    if pid.isdigit() and pid != "0":
-                        pids_to_kill.add(pid)
-        for pid in pids_to_kill:
-            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
-            killed += 1
-    except Exception:
-        pass
-    return killed
-
-
-class _BasicLimits(ctypes.Structure):
-    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
-                ("LimitFlags", ctypes.c_uint32), ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.c_uint32),
-                ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.c_uint32),
-                ("SchedulingClass", ctypes.c_uint32)]
-
-
-class _ExtendedLimits(ctypes.Structure):
-    _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", ctypes.c_uint64 * 6),
-                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-
-_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
-_job_handle = None  # held open for the supervisor's lifetime; Windows closes it at exit
-
-
-def tie_children_to_supervisor() -> bool:
-    """Put the supervisor in a Windows job that ends every process in it when the supervisor exits.
-
-    Children (game servers, Balatro, bots, simulator adapters) join the job when
-    they start, so a supervisor that dies without its shutdown (killed, crashed,
-    its console closed) takes them with it instead of leaving them running.
-    """
-    global _job_handle
-    if os.name != "nt":
-        return False
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
-    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-    kernel32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
-    kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    job = kernel32.CreateJobObjectW(None, None)
-    if not job:
-        log.warning("could not create a job object (error %d); children may outlive the supervisor",
-                    ctypes.get_last_error())
-        return False
-    info = _ExtendedLimits()
-    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    if not (kernel32.SetInformationJobObject(job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-                                             ctypes.byref(info), ctypes.sizeof(info))
-            and kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess())):
-        log.warning("could not join a kill-on-exit job (error %d); children may outlive the supervisor",
-                    ctypes.get_last_error())
-        kernel32.CloseHandle(ctypes.c_void_p(job))
-        return False
-    _job_handle = job
-    return True
-
-
 def compute_session_number() -> int:
     nums = []
     for f in LOG_DIR.glob("*/game_*.log"):
@@ -559,7 +371,7 @@ class Supervisor:
                  seed: str | None, verbose: bool = False,
                  stream: bool = False, explore_instances: int = 0,
                  explore_rate: float = 0.0, base_port: int = BASE_PORT,
-                 sim_python: str | None = None, kernel: bool = False):
+                 server: GameServer | None = None, kernel: bool = False):
         taken: set[str] = set()
         slots = []
         for i in range(n):
@@ -578,12 +390,11 @@ class Supervisor:
         self.verbose = verbose
         self.stream = stream
         self.explore_rate = explore_rate
-        self.sim_python = sim_python
-        self.stall_timeout = _SIM_STALL_TIMEOUT if sim_python else _STALL_TIMEOUT
-        # Bots score with the compiled kernel (kernel/), which loads on CPython only.
+        self.server = server or LiveGame(visible=stream)
+        self.stall_timeout = self.server.stall_timeout
+        # Bots score with the compiled kernel (kernel/) when set.
         self.kernel = kernel
-        on_pypy = bool(sim_python) and not self.kernel and os.path.exists(PYPY_PYTHON)
-        self.bot_python = PYPY_PYTHON if on_pypy else PYTHON
+        self.bot_python = self.server.bot_python(kernel)
         self.running = True
         self.paused = False
         self.finished = False
@@ -599,7 +410,7 @@ class Supervisor:
         return {
             "games": self.games, "decks": self.decks, "stake": self.stake, "seed": self.seed,
             "verbose": self.verbose, "explore_rate": self.explore_rate, "base_port": self.base_port,
-            "sim": bool(self.sim_python), "kernel": self.kernel, "session_num": self.session_num,
+            "sim": isinstance(self.server, Jackdaw), "kernel": self.kernel, "session_num": self.session_num,
             "dashboard_batch_id": self.dashboard_batch_id,
             "elapsed": time.time() - self.session_start if self.session_start else 0.0,
             "slots": [{
@@ -611,10 +422,10 @@ class Supervisor:
         }
 
     @classmethod
-    def from_pause_state(cls, state: dict, sim_python: str | None) -> Supervisor:
+    def from_pause_state(cls, state: dict, server: GameServer | None) -> Supervisor:
         sup = cls(n=0, games=state["games"], decks=state["decks"], stake=state["stake"],
                   seed=state["seed"], verbose=state["verbose"], explore_rate=state["explore_rate"],
-                  base_port=state["base_port"], sim_python=sim_python,
+                  base_port=state["base_port"], server=server,
                   kernel=state.get("kernel", False))
         for s in state["slots"]:
             slot = Slot(port=s["port"], name=s["name"], deck=s["deck"], stake=s["stake"],
@@ -639,7 +450,7 @@ class Supervisor:
             (LOG_DIR / str(slot.port)).mkdir(parents=True, exist_ok=True)
 
         ports = [s.port for s in self.slots]
-        killed = kill_port_processes(ports)
+        killed = jobs.kill_port_processes(ports)
         if killed:
             print(f"Cleaned up {killed} orphan processes")
             time.sleep(2)
@@ -735,41 +546,12 @@ class Supervisor:
         return subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
 
     def _code_version(self) -> str | None:
-        """The checkout's version, marked +jackdaw for simulator batches."""
+        """The checkout's version, tagged with its game server's (+jackdaw on the simulator)."""
         version = _code_version()
-        if self.sim_python and version:
-            return f"{version}+jackdaw"
-        return version
+        return version + self.server.version_tag if version else version
 
     def launch_server(self, slot: Slot) -> None:
-        if self.sim_python:
-            slot.server_proc = subprocess.Popen(
-                [self.sim_python, "-I", str(JACKDAW_ADAPTER), "--port", str(slot.port)],
-                creationflags=self._child_flags(),
-            )
-            slot.state = "starting"
-            slot.last_health = time.time()
-            return
-        cmd = [
-            cfg.balatrobot_path, "serve",
-            "--port", str(slot.port),
-            "--love-path", cfg.love_path,
-            "--lovely-path", cfg.lovely_path,
-        ]
-        if not self.stream:
-            cmd.extend(["--headless", "--fast"])
-
-        # Point Love2D at a per-port APPDATA so each instance has its own
-        # Balatro/ save folder (meta.jkr, profile.jkr, save.jkr, settings.jkr).
-        # Shared concurrent writes to the global profile corrupt it.
-        env = os.environ.copy()
-        env["APPDATA"] = ensure_isolated_profile(slot.port)
-
-        slot.server_proc = subprocess.Popen(
-            cmd,
-            env=env,
-            creationflags=self._child_flags(),
-        )
+        slot.server_proc = self.server.start(slot.port, self._child_flags())
         slot.state = "starting"
         slot.last_health = time.time()
 
@@ -837,7 +619,7 @@ class Supervisor:
     def wait_for_health(self, slot: Slot, timeout: float = 30.0) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline and self.running:
-            if slot.check_health():
+            if slot.check_health(self.server):
                 return True
             if not slot.is_alive(slot.server_proc):
                 return False
@@ -881,15 +663,15 @@ class Supervisor:
         log.warning("%s (port %d): restart #%d as %s — %s",
                     old_name, slot.port, slot.restarts, slot.name, reason)
 
-        slot.kill_pair()
+        slot.kill_pair(self.server)
 
         # Deep recovery: if the bot has been failing to launch repeatedly, a
-        # bare kill_pair() isn't enough — there's likely a zombie Balatro.exe
+        # bare kill_pair isn't enough — there's likely a zombie Balatro.exe
         # still holding resources. Nuke anything on the port and wait longer.
         if slot.consecutive_launch_failures >= DEEP_RECOVERY_THRESHOLD:
             log.warning("%s (port %d): deep recovery — %d consecutive launch failures, killing port processes",
                         slot.name, slot.port, slot.consecutive_launch_failures)
-            kill_port_processes([slot.port])
+            jobs.kill_port_processes([slot.port])
             slot.consecutive_launch_failures = 0
             time.sleep(10)
         else:
@@ -906,7 +688,7 @@ class Supervisor:
         port_dir = LOG_DIR / str(port)
         port_dir.mkdir(parents=True, exist_ok=True)
         (port_dir / "progress.txt").unlink(missing_ok=True)
-        kill_port_processes([port])
+        jobs.kill_port_processes([port])
         slot.write_explore_rate()
         self.slots.append(slot)
         log.info("%s (port %d): added [%s deck, %s stake]", slot.name, port, deck, stake)
@@ -918,7 +700,7 @@ class Supervisor:
         slot = next((s for s in self.live_slots() if s.port == port), None)
         if slot is None:
             return
-        slot.kill_pair()
+        slot.kill_pair(self.server)
         slot.state = "removed"
         log.info("%s (port %d): removed", slot.name, slot.port)
 
@@ -952,7 +734,7 @@ class Supervisor:
                 slot.state = "done"
                 slot.read_progress()
                 log.info("%s (port %d): finished (%s)", slot.name, slot.port, slot.progress)
-                slot.kill_pair()
+                slot.kill_pair(self.server)
                 return
             else:
                 alive_for = time.time() - slot.bot_launch_time if slot.bot_launch_time else 0.0
@@ -1098,13 +880,14 @@ class Supervisor:
         print(f"  Mother Gothel is sending {len(to_start)} princesses to play Balatro")
         print(f"  ({names})\n")
         print(f"  Session {self.session_num}, {self.games} games each\n")
-        if self.kernel and not self.sim_python:
+        simulator = isinstance(self.server, Jackdaw)
+        if self.kernel and not simulator:
             log.info("Bots score with the compiled kernel")
             print("  Bots score with the compiled kernel\n")
-        if self.sim_python:
+        if simulator:
             if self.kernel:
                 runtime = "CPython with the compiled kernel"
-            elif self.bot_python == PYPY_PYTHON:
+            elif self.bot_python == venv_python("pypy"):
                 runtime = "PyPy"
             else:
                 runtime = "CPython (no PyPy environment found)"
@@ -1157,10 +940,10 @@ class Supervisor:
         print("\n  Pausing..." if self.paused else "\n  Shutting down...")
         self._write_status(self._status("pausing" if self.paused else "stopping"))
         for slot in self.slots:
-            slot.kill_pair()
+            slot.kill_pair(self.server)
         # Sweep ports for any orphans that escaped process tree kill
         ports = [s.port for s in self.slots]
-        kill_port_processes(ports)
+        jobs.kill_port_processes(ports)
         total_restarts = sum(s.restarts for s in self.slots)
         log.info("Shutdown complete. Total restarts: %d", total_restarts)
         if self.paused:
@@ -1201,8 +984,8 @@ class Supervisor:
         print(f"\n  Running stats for batch {batch}...")
         try:
             result = subprocess.run(
-                [PYTHON, "-m", "stats", batch],
-                cwd=str(BASE_DIR),
+                [venv_python("bot"), "-m", "stats", batch],
+                cwd=str(REPO),
                 capture_output=False,
             )
             if result.returncode != 0:
@@ -1332,12 +1115,12 @@ def main() -> None:
         parser.error("--kernel: the compiled kernel is not built into this environment "
                      "(see docs/installation.md)")
 
-    sim_python = None
+    server: GameServer = LiveGame(visible=args.stream)
     if args.sim:
-        if not os.path.exists(JACKDAW_PYTHON):
-            parser.error(f"--sim: no jackdaw interpreter at {JACKDAW_PYTHON} "
+        server = Jackdaw()
+        if not server.available():
+            parser.error(f"--sim: no jackdaw interpreter at {server.python} "
                          "(create .venv-jackdaw with jackdaw installed, or set $JACKDAW_PYTHON)")
-        sim_python = JACKDAW_PYTHON
 
     if args.stream:
         args.instances = 1
@@ -1345,12 +1128,12 @@ def main() -> None:
 
     if args.kill:
         ports = list(range(args.base_port, args.base_port + args.instances))
-        killed = kill_port_processes(ports)
+        killed = jobs.kill_port_processes(ports)
         print(f"Killed {killed} processes")
         return
 
     if args.finish_paused:
-        sup = Supervisor.from_pause_state(pause_state, sim_python)
+        sup = Supervisor.from_pause_state(pause_state, server)
         jobs.batch().claim()
         setup_supervisor_logging()
         sup.shutdown()
@@ -1362,7 +1145,7 @@ def main() -> None:
         # rotate decks between batches instead.
         parser.error("--explore-instances needs a single --deck")
     if pause_state is not None:
-        sup = Supervisor.from_pause_state(pause_state, sim_python)
+        sup = Supervisor.from_pause_state(pause_state, server)
     else:
         sup = Supervisor(
             n=args.instances,
@@ -1375,7 +1158,7 @@ def main() -> None:
             explore_instances=args.explore_instances,
             explore_rate=args.explore_rate,
             base_port=args.base_port,
-            sim_python=sim_python,
+            server=server,
             kernel=kernel,
         )
 
@@ -1387,7 +1170,7 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, on_sigint)
     signal.signal(signal.SIGTERM, on_sigint)
-    tie_children_to_supervisor()
+    jobs.tie_children()
 
     try:
         sup.run()

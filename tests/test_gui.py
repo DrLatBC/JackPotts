@@ -6,6 +6,7 @@ import os
 import pytest
 
 from balatro_bot import gui, jobs, supervisor
+from balatro_bot.game_server import Jackdaw
 
 
 @pytest.fixture
@@ -171,7 +172,7 @@ def test_only_a_running_instance_reports_a_speed(sup):
 def test_finished_games_survive_a_pause(sup, tmp_path):
     slot = sup.slots[0]
     _feed_log(slot, tmp_path / "game.log", GAME_OVER + GAME_WON)
-    resumed = supervisor.Supervisor.from_pause_state(sup.pause_state(), sim_python=None)
+    resumed = supervisor.Supervisor.from_pause_state(sup.pause_state(), server=None)
     status = resumed._status("running")
     assert status["recent"] == {"games": 2, "wins": 1, "lost_at": {6: 1}}
     assert [w["seed"] for w in status["recent_wins"]] == ["7KQ2M9XA"]
@@ -320,7 +321,7 @@ def test_start_saved_batch_leaves_a_paused_batch_alone(no_launch, monkeypatch):
 def sup_files(sup, tmp_path, monkeypatch):
     """A supervisor whose pause, stop and command files live in tmp_path and whose games never launch."""
     monkeypatch.setattr(supervisor, "WINS_DIR", tmp_path / "wins")
-    monkeypatch.setattr(supervisor, "kill_port_processes", lambda ports: 0)
+    monkeypatch.setattr(supervisor.jobs, "kill_port_processes", lambda ports: 0)
     monkeypatch.setattr(supervisor.Supervisor, "start_slot", lambda self, slot: setattr(slot, "state", "running"))
     return sup
 
@@ -356,7 +357,7 @@ def test_paused_batch_resumes_with_its_counts(sup_files, tmp_path):
     saved = jobs.batch().status()
     assert saved["phase"] == "paused" and gui.paused_status(saved)
 
-    resumed = supervisor.Supervisor.from_pause_state(saved["resume"], sim_python=None)
+    resumed = supervisor.Supervisor.from_pause_state(saved["resume"], server=None)
     assert (resumed.session_num, resumed.dashboard_batch_id) == (42, 7)
     assert [(s.port, s.deck, s.stake, s.state) for s in resumed.slots] == [
         (sup.slots[0].port, "BLUE", "WHITE", "stopped"), (sup.slots[1].port, "RED", "GOLD", "removed")]
@@ -369,34 +370,19 @@ def test_paused_batch_resumes_with_its_counts(sup_files, tmp_path):
     assert resumed._remaining_games(resumed.slots[0]) == 6
 
 
-def test_simulator_bots_run_on_pypy_when_its_environment_exists(tmp_path, monkeypatch):
-    pypy = tmp_path / "pypy.exe"
-    pypy.write_text("")
-    monkeypatch.setattr(supervisor, "PYPY_PYTHON", str(pypy))
-    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python")
-    live = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None)
-    assert sim.bot_python == str(pypy)
-    assert live.bot_python == supervisor.PYTHON
-
-    monkeypatch.setattr(supervisor, "PYPY_PYTHON", str(tmp_path / "missing.exe"))
-    without = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python")
-    assert without.bot_python == supervisor.PYTHON
-
-
-def test_simulator_bots_stay_on_cpython_with_the_compiled_kernel(tmp_path, monkeypatch):
-    pypy = tmp_path / "pypy.exe"
-    pypy.write_text("")
-    monkeypatch.setattr(supervisor, "PYPY_PYTHON", str(pypy))
-    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python", kernel=True)
-    assert sim.bot_python == supervisor.PYTHON
-    assert sim.pause_state()["kernel"] is True
-    resumed = supervisor.Supervisor.from_pause_state(sim.pause_state(), sim_python="jackdaw-python")
-    assert resumed.kernel and resumed.bot_python == supervisor.PYTHON
+def test_a_paused_simulator_batch_resumes_on_the_simulator_with_its_kernel():
+    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, server=Jackdaw(python="jackdaw-python"),
+                                kernel=True)
+    saved = sim.pause_state()
+    assert saved["sim"] is True and saved["kernel"] is True
+    resumed = supervisor.Supervisor.from_pause_state(saved, server=sim.server)
+    assert resumed.kernel and resumed.bot_python == sim.server.bot_python(kernel=True)
+    assert supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None).pause_state()["sim"] is False
 
 
 def test_simulator_batches_restart_a_stuck_bot_after_a_minute(tmp_path, monkeypatch):
     live = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None)
-    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, sim_python="jackdaw-python")
+    sim = supervisor.Supervisor(1, 1, ["BLUE"], "WHITE", None, server=Jackdaw(python="jackdaw-python"))
     assert (live.stall_timeout, sim.stall_timeout) == (600, 60)
     assert sim._status("running")["stall_secs"] == 60
 

@@ -31,7 +31,8 @@ from tkinter import messagebox, ttk
 from balatro_bot import jobs, learning
 from balatro_bot.eval_compare import describe
 from balatro_bot.learning_sync import Uploader as LearningUploader
-from balatro_bot.supervisor import BASE_PORT, LOG_DIR, MAX_INSTANCES, PORT_SPAN, PYTHON
+from balatro_bot.config import LOG_DIR, venv_python
+from balatro_bot.supervisor import BASE_PORT, MAX_INSTANCES, PORT_SPAN
 
 ICON_FILE = Path(__file__).parent / "assets" / "jackpotts.ico"
 # Without its own app ID, Windows groups the window under pythonw.exe and shows Python's icon.
@@ -168,7 +169,7 @@ def launch_batch(settings: dict) -> None:
 
 def resume_paused_batch(finish: bool = False) -> None:
     """Carry on the paused batch, or with finish, end it (post its finish and run stats)."""
-    jobs.batch().spawn([PYTHON, "-m", "balatro_bot.supervisor", "--finish-paused" if finish else "--resume"])
+    jobs.batch().spawn([venv_python("bot"), "-m", "balatro_bot.supervisor", "--finish-paused" if finish else "--resume"])
 
 
 def start_saved_batch() -> bool:
@@ -181,7 +182,7 @@ def start_saved_batch() -> bool:
 
 def supervisor_command(settings: dict) -> list[str]:
     cmd = [
-        PYTHON, "-m", "balatro_bot.supervisor",
+        venv_python("bot"), "-m", "balatro_bot.supervisor",
         "-n", str(settings["instances"]),
         "--games", str(settings["games"]),
         "--deck", settings["deck"],

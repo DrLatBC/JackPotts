@@ -18,11 +18,9 @@ _READ_ONLY = frozenset({"gamestate", "health", "menu"})
 class BalatroClient(_BaseClient):
     """``balatrobot.BalatroClient`` with ``live_values.enrich_state`` applied to results."""
 
-    # True when every response is the settled game state (the simulator says so in
-    # ``health``). The live game answers before money, joker counters and debuff
-    # flags settle, so the bot re-polls before each hand decision there.
+    # What the server's health reply said (``game_server.Health``): whether every
+    # response is the settled game state, and the simulator's name and version.
     responses_settled: bool = False
-    # Name and version of the simulator being played ("jackdaw 0.2.6"), "" on the live game.
     simulator: str = ""
     # While a list, every request that changed the game is added to it as
     # [method, params] once it has succeeded (balatro_bot.replays).

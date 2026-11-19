@@ -138,7 +138,7 @@ def test_a_run_starts_from_a_copy_or_a_runs_update_save(rl_files):
 
 
 def test_a_start_under_the_repository_is_passed_as_a_relative_path(monkeypatch):
-    monkeypatch.setattr(learning, "RL_DATA", learning.BASE_DIR / "rl" / "data")
+    monkeypatch.setattr(learning, "RL_DATA", learning.REPO / "rl" / "data")
     assert learning.start_arg("run s2-steps", "u00019") == "rl/data/ppo/s2-steps/u00019.pt"
     assert learning.start_choice("rl/data/ppo/s2-steps/u00019.pt") == ("run s2-steps", "u00019")
 

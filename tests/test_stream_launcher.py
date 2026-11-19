@@ -1,8 +1,6 @@
 """The stream launcher with stand-in processes: how each way a stream ends is reported."""
 
 import json
-import zipfile
-import zlib
 from argparse import Namespace
 
 import pytest
@@ -33,13 +31,14 @@ def launcher(tmp_path, monkeypatch):
     """The stream's job folder in tmp_path, with stand-ins for everything it starts."""
     monkeypatch.setattr(jobs, "ROOT", tmp_path)
     folder = jobs.stream().folder
-    monkeypatch.setattr(stream, "tie_children_to_supervisor", lambda: True)
-    monkeypatch.setattr(stream, "kill_port_processes", lambda ports: 0)
-    monkeypatch.setattr(stream, "ensure_isolated_profile", lambda port: str(tmp_path / "profile"))
-    monkeypatch.setattr(stream, "graceful_kill", lambda proc: None)
-    monkeypatch.setattr(stream, "unlock_all", lambda profile_dir, love_path: None)
+    monkeypatch.setattr(stream.jobs, "tie_children", lambda: True)
+    monkeypatch.setattr(stream.jobs, "kill_port_processes", lambda ports: 0)
+    server = stream.game_server
+    monkeypatch.setattr(server, "ensure_isolated_profile", lambda port: str(tmp_path / "profile"))
+    monkeypatch.setattr(server, "graceful_kill", lambda proc: None)
+    monkeypatch.setattr(server, "unlock_all", lambda profile_dir, love_path: None)
     for path in ("love_path", "lovely_path", "balatrobot_path"):
-        monkeypatch.setitem(stream.cfg.__dict__, path, path)
+        monkeypatch.setitem(server.INSTALL.__dict__, path, path)
     monkeypatch.setattr(stream.time, "sleep", lambda s: None)
     monkeypatch.setattr(stream.subprocess, "run", lambda *a, **k: None)
     procs = {}
@@ -72,7 +71,7 @@ def test_player_command_runs_rl_stream_under_the_rl_venv():
 def test_a_stop_before_the_game_opens(launcher, monkeypatch):
     tmp_path, procs, args = launcher
     procs["game"] = FakeProc()
-    monkeypatch.setattr(stream, "listening", lambda port: (tmp_path / "stop").touch())
+    monkeypatch.setattr(stream.game_server, "listening", lambda port: (tmp_path / "stop").touch())
     assert stream.run(args) == 1
     assert status(tmp_path)["phase"] == "stopped"
     assert "player_cmd" not in procs
@@ -81,7 +80,7 @@ def test_a_stop_before_the_game_opens(launcher, monkeypatch):
 def test_a_game_that_never_opens_fails_with_its_last_line(launcher, monkeypatch):
     tmp_path, procs, args = launcher
     procs["game"] = FakeProc(polls=1, code=1, output="starting\nLovely: could not inject\n")
-    monkeypatch.setattr(stream, "listening", lambda port: False)
+    monkeypatch.setattr(stream.game_server, "listening", lambda port: False)
     assert stream.run(args) == 1
     assert status(tmp_path)["phase"] == "failed"
     assert status(tmp_path)["error"] == "Lovely: could not inject"
@@ -91,7 +90,7 @@ def test_a_stopped_player_ends_the_stream_as_stopped(launcher, monkeypatch):
     tmp_path, procs, args = launcher
     procs["game"] = FakeProc()
     procs["player"] = FakeProc(polls=3, each_poll=(tmp_path / "stop").touch)
-    monkeypatch.setattr(stream, "listening", lambda port: True)
+    monkeypatch.setattr(stream.game_server, "listening", lambda port: True)
     assert stream.run(args) == 0
     assert status(tmp_path)["phase"] == "stopped"
     assert not (tmp_path / "stop").exists()
@@ -102,7 +101,7 @@ def test_a_player_that_dies_fails_the_stream(launcher, monkeypatch):
     tmp_path, procs, args = launcher
     procs["game"] = FakeProc()
     procs["player"] = FakeProc(polls=2, code=1, output="Traceback\nSystemExit: 3 games in a row ended in an error\n")
-    monkeypatch.setattr(stream, "listening", lambda port: True)
+    monkeypatch.setattr(stream.game_server, "listening", lambda port: True)
     assert stream.run(args) == 1
     s = status(tmp_path)
     assert s["phase"] == "failed" and s["error"].startswith("SystemExit: 3 games")
@@ -111,74 +110,10 @@ def test_a_player_that_dies_fails_the_stream(launcher, monkeypatch):
 def test_closing_the_game_window_stops_the_stream(launcher, monkeypatch):
     tmp_path, procs, args = launcher
     procs["game"], procs["player"] = FakeProc(polls=4), FakeProc()
-    monkeypatch.setattr(stream, "listening", lambda port: True)
+    monkeypatch.setattr(stream.game_server, "listening", lambda port: True)
     assert stream.run(args) == 0
     s = status(tmp_path)
     assert s["phase"] == "stopped" and s["note"] == "the game window was closed"
-
-
-GAME_LUA = '''
-    self.P_SEALS = {
-        Gold =      {order = 1,  discovered = false, set = "Seal"},
-        Red =       {order = 2,  discovered = false, set = "Seal"},
-    }
-    self.P_TAGS = {
-        tag_rare =          {name = 'Rare Tag', set = 'Tag', config = {type = 'store_joker_create'}, pos = {x = 1,y = 0}},
-    }
-    self.P_BLINDS = {
-        bl_small =           {name = 'Small Blind', vars = {}, debuff = {}, pos = {x=0, y=0}},
-    }
-    self.P_CENTERS = {
-        c_base={max = 500, name = "Default Base", pos = {x=1,y=0}, config = {}},
-
-        --Jokers
-        j_joker=            {order = 1,  unlocked = true, config = {mult = 4}, pos = {x=0,y=0}},
-        j_hit_the_road=     {order = 2,  unlocked = false, config = {extra = 0.5}, pos = {x=8,y=5}},
-        j_testing=          {order = 3,  wip = true, config = {}},
-        b_blue=             {name = "Blue Deck", unlocked = false, config = {hands = 1}},
-    }
-'''
-
-
-@pytest.fixture
-def love(tmp_path):
-    path = tmp_path / "Balatro.exe"
-    with zipfile.ZipFile(path, "w") as z:
-        z.writestr("game.lua", GAME_LUA)
-    return str(path)
-
-
-def read_jkr(path):
-    raw = path.read_bytes()
-    return raw.decode() if raw[:6] == b"return" else zlib.decompress(raw, -15).decode()
-
-
-def test_game_items_reads_every_table_and_skips_work_in_progress(love):
-    assert stream.game_items(love) == ["c_base", "j_joker", "j_hit_the_road", "b_blue", "bl_small",
-                                       "tag_rare", "Gold", "Red"]
-
-
-def test_unlock_all_writes_what_the_games_unlock_all_leaves(love, tmp_path):
-    profile = tmp_path / "1"
-    profile.mkdir()
-    stats = 'return {["career_stats"]={["c_wins"]=3,},["all_unlocked"]=false,}'
-    packer = zlib.compressobj(9, zlib.DEFLATED, -15)
-    (profile / "profile.jkr").write_bytes(packer.compress(stats.encode()) + packer.flush())
-    stream.unlock_all(profile, love)
-    meta = read_jkr(profile / "meta.jkr")
-    for part in ("unlocked", "discovered", "alerted"):
-        assert f'["{part}"]={{' in meta
-    assert meta.count('["j_hit_the_road"]=true') == 3 and "j_testing" not in meta
-    text = read_jkr(profile / "profile.jkr")
-    assert text.startswith('return {["all_unlocked"]=true,') and '["c_wins"]=3' in text
-    assert '["all_unlocked"]=false' not in text
-    stream.unlock_all(profile, love)
-    assert read_jkr(profile / "profile.jkr") == text
-
-
-def test_unlock_all_makes_a_profile_from_nothing(love, tmp_path):
-    stream.unlock_all(tmp_path / "new" / "1", love)
-    assert read_jkr(tmp_path / "new" / "1" / "profile.jkr") == 'return {["all_unlocked"]=true,}'
 
 
 def test_the_overlay_is_served_while_the_stream_runs(launcher, monkeypatch):
@@ -197,7 +132,7 @@ def test_the_overlay_is_served_while_the_stream_runs(launcher, monkeypatch):
 
     procs["game"] = FakeProc()
     procs["player"] = FakeProc(polls=5, each_poll=check)
-    monkeypatch.setattr(stream, "listening", lambda port: True)
+    monkeypatch.setattr(stream.game_server, "listening", lambda port: True)
     assert stream.run(args) == 0
     assert seen["page"] == 200
     with pytest.raises(OSError):
@@ -208,7 +143,7 @@ def test_a_taken_overlay_port_leaves_the_stream_running(launcher, monkeypatch):
     tmp_path, procs, args = launcher
     procs["game"] = FakeProc()
     procs["player"] = FakeProc(polls=3, each_poll=(tmp_path / "stop").touch)
-    monkeypatch.setattr(stream, "listening", lambda port: True)
+    monkeypatch.setattr(stream.game_server, "listening", lambda port: True)
 
     def taken(folder, port):
         raise OSError("in use")
