@@ -228,17 +228,21 @@ def test_describe_names_the_move():
     assert stream.describe(A.BuyCard(1)) == "BuyCard 1"
 
 
-def test_games_that_diverge_before_their_first_move_end_the_stream(tmp_path, monkeypatch):
+@pytest.mark.parametrize("steps", [0, 1])
+def test_games_that_fail_before_their_first_play_or_discard_end_the_stream(tmp_path, monkeypatch, steps):
+    """A blind pick (step 1) doesn't count as having played: a live game that refuses
+    every play still takes it."""
     p = player(tmp_path, seeds=SEEDS * 2)
-    early = {"outcome": "divergence", "steps": 0, "error": "lockstep divergence at step 0"}
+    early = {"outcome": "divergence", "steps": steps, "hands": 0, "discards": 0,
+             "error": f"lockstep divergence at step {steps + 1}"}
     monkeypatch.setattr(p, "play_game", lambda: dict(early, seed="s"))
-    with pytest.raises(SystemExit, match="3 games in a row ended before their first move"):
+    with pytest.raises(SystemExit, match="3 games in a row failed before their first play or discard"):
         p.run()
 
 
 def test_games_that_diverge_later_play_on(tmp_path, monkeypatch):
     p = player(tmp_path)
-    monkeypatch.setattr(p, "play_game", lambda: {"outcome": "divergence", "steps": 40, "seed": "s",
+    monkeypatch.setattr(p, "play_game", lambda: {"outcome": "divergence", "steps": 40, "hands": 3, "discards": 1, "seed": "s",
                                                  "error": "lockstep divergence at step 40"})
     assert p.run(5) == 5
 

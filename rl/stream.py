@@ -48,8 +48,9 @@ from fork_view import strip  # noqa: E402
 # Moves the live game can't make are left out of what the model may pick.
 LEGALITY = "balatrobot"
 MAX_REFUSALS = 20
-# Games in a row that end before their first move (an error, or a divergence at the
-# start) before the stream gives up: the next game would only do the same.
+# Games in a row that fail (an error or a divergence) before their first play or
+# discard before the stream gives up: the next game would only do the same. A blind
+# pick doesn't count, since a live game that refuses every play still takes it.
 MAX_ERRORS = 3
 RECENT = 10
 
@@ -286,7 +287,7 @@ class Player:
         self.load()
         seed = next(self.seeds) if self.seeds is not None else random_seed()
         self.now = {"seed": seed, "deck": self.deck, "stake": self.stake, "steps": 0, "last": "",
-                    "hands played": 0, "history": []}
+                    "hands played": 0, "discards": 0, "history": []}
         result = {"seed": seed, "deck": self.deck, "stake": self.stake, "checkpoint": self.checkpoint}
         started = time.time()
         free_run, streak, refused = 0, 0, set()
@@ -324,6 +325,8 @@ class Player:
                 if factored.action_type == ActionType.PlayHand:
                     self.now["hands played"] += 1
                     self.totals["hands"] += 1
+                elif factored.action_type == ActionType.Discard:
+                    self.now["discards"] += 1
                 self.now["history"].append(self.now["outlook"])
         except DivergenceError as e:
             result["outcome"] = "divergence"
@@ -339,6 +342,7 @@ class Player:
             result["round"] = int(g.round)
         result["steps"] = self.now["steps"]
         result["hands"] = self.now["hands played"]
+        result["discards"] = self.now["discards"]
         result["seconds"] = round(time.time() - started, 1)
         result["ended"] = time.time()
         return result
@@ -357,17 +361,18 @@ class Player:
         self.write_now()
 
     def run(self, games: int | None = None) -> int:
-        """Games until ``games``, a stop, or MAX_ERRORS games in a row that end before
-        their first move; returns how many."""
+        """Games until ``games``, a stop, or MAX_ERRORS games in a row that fail before
+        their first play or discard; returns how many."""
         played = errors = 0
         while (games is None or played < games) and not self.stop_asked():
             result = self.play_game()
             self.record(result)
             played += 1
-            dead = result["outcome"] == "error" or (result["outcome"] == "divergence" and not result["steps"])
+            dead = (result["outcome"] in ("error", "divergence")
+                    and not result.get("hands") and not result.get("discards"))
             errors = errors + 1 if dead else 0
             if errors >= MAX_ERRORS:
-                raise SystemExit(f"{errors} games in a row ended before their first move: {result['error']}")
+                raise SystemExit(f"{errors} games in a row failed before their first play or discard: {result['error']}")
         return played
 
 
