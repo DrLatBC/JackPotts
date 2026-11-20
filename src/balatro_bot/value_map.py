@@ -1,6 +1,6 @@
 """Generate a comprehensive value map of every joker under canonical scenarios.
 
-Feeds the JackPotts dashboard `/value-map` page. Called by supervisor at
+Stored in the JackPotts dashboard's `batch_value_maps` table. Called by supervisor at
 batch start, also runnable standalone: ``python -m balatro_bot.value_map``.
 
 The output is a list of rows; each row contains the joker metadata plus a

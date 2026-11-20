@@ -46,7 +46,7 @@ Each game state (`SELECTING_HAND`, `SHOP`, `BLIND_SELECT`, `*_PACK`, `ROUND_EVAL
 | `src/balatro_bot/constants.py` | `RANK_ORDER`, `HAND_INFO`, etc. |
 | `src/balatro_bot/scaling.py` | `ScalingProfile` registry, anti-synergy map, derived joker sets |
 | `src/balatro_bot/joker_registry.py` | Static joker metadata (key, name, rarity, cost) auto-extracted from `game.lua` |
-| `src/balatro_bot/value_map.py` | Canonical-scenario value map generator — runs every joker through `joker_value` against fixed synthetic run views; pushed to the dashboard's `/value-map` page |
+| `src/balatro_bot/value_map.py` | Canonical-scenario value map generator — runs every joker through `joker_value` against fixed synthetic run views; pushed to the dashboard's `batch_value_maps` table |
 | `src/balatro_bot/bot_logging.py` | Game loop logging helpers |
 | `src/balatro_bot/bot_format.py` | Card/deck formatting utilities |
 

@@ -38,7 +38,7 @@ ICON_FILE = Path(__file__).parent / "assets" / "jackpotts.ico"
 # Without its own app ID, Windows groups the window under pythonw.exe and shows Python's icon.
 APP_ID = "DrLatBC.JackPotts.ControlPanel"
 SETTINGS_FILE = LOG_DIR / "gui_settings.json"
-DASHBOARD_URL = "https://jackpotts.drlat.dev/dashboard"
+DASHBOARD_URL = "https://jackpotts.drlat.dev/training"
 REFRESH_MS = 2000
 
 # The balatrobot mod's start endpoint accepts exactly these.
