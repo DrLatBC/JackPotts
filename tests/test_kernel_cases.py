@@ -73,8 +73,8 @@ def test_answers_match_the_saved_ones():
 
 
 def test_joker_phases_match_the_saved_ones():
-    """Each joker's ordering phase and whether the shop's sim scores it, as they were
-    when the Python effect tables answered both."""
+    """Each joker's ordering phase and whether the shop's sim scores it, pinned so a
+    change to either is deliberate."""
     from balatro_bot.domain.policy.shop_valuation import _has_scoring_effect
     from balatro_bot.joker_effects.scoring_phase import get_joker_phase
 

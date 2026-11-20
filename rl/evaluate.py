@@ -62,7 +62,9 @@ def eval_seed(n: int) -> str:
 def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64,
          max_steps: int = MAX_STEPS, order_plays: bool = True) -> list[dict]:
     """Play each ``(seed, deck, stake)`` to its end. Per game: whether it was won, the
-    final ante (9 for a win), the steps taken, and why it was cut short, if it was.
+    final ante (9 for a win), the steps taken, why it was cut short, if it was, the
+    ``[times played, final level]`` of each hand type played or levelled, and the keys
+    of the jokers it ended with.
     ``order_plays`` plays the chosen cards in the bot's left-to-right order
     (``rl.ordering``); without it they score in hand order."""
     results: list[dict] = []
@@ -99,10 +101,14 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
                 cut = ("not ported: " + str(info["not_ported"]) if "not_ported" in info
                        else "step limit")
             won = bool(state.won) and cut is None
+            game = info["game"]
             results.append({
                 "seed": slot["seed"], "won": won,
                 "ante": WIN_ANTE if won else min(int(state.ante), WIN_ANTE),
                 "steps": slot["steps"], "cut": cut,
+                "hands": {name: [int(h.played), int(h.level)]
+                          for name, h in game.hand_levels.items() if h.played or h.level != 1},
+                "jokers": [j.key for j in game.jokers],
             })
         active = still
     return results
@@ -121,6 +127,23 @@ def summary(rows: list[dict]) -> dict:
         "mean final ante": sum(r["ante"] for r in rows) / n,
         **{f"past ante {k}": sum(r["ante"] > k for r in rows) / n for k in PAST},
     }
+
+
+def playstyle(rows: list[dict]) -> dict:
+    """What the games played: per hand type, the times played per game and the mean
+    final level; per joker key, the share of games that ended with it."""
+    n = len(rows)
+    names = {name for r in rows for name in r["hands"]}
+    hands = {
+        name: {"per game": sum(r["hands"].get(name, (0, 1))[0] for r in rows) / n,
+               "level": sum(r["hands"].get(name, (0, 1))[1] for r in rows) / n}
+        for name in names
+    }
+    kept: dict[str, int] = {}
+    for r in rows:
+        for key in set(r["jokers"]):
+            kept[key] = kept.get(key, 0) + 1
+    return {"hands": hands, "jokers": {k: c / n for k, c in sorted(kept.items(), key=lambda kv: -kv[1])}}
 
 
 def bot_results(ex: dataset.Examples, seeds: set[str]) -> dict[str, dict]:

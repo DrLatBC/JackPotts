@@ -17,6 +17,8 @@ from pathlib import Path
 
 from balatro_bot import dashboard_client, jobs, learning
 from balatro_bot.eval_compare import describe
+from balatro_bot.joker_effects.scoring_phase import joker_role
+from balatro_bot.joker_registry import JOKERS
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,20 @@ def overview(row: dict) -> dict:
     return out
 
 
+_JOKER_NAMES = {j["key"]: j["name"] for j in JOKERS}
+
+
+def with_joker_names(summary: dict) -> dict:
+    """The summary with its playstyle's joker keys as ``{key, name, role, kept}`` rows,
+    most kept first; the dashboard has no joker table of its own."""
+    style = summary.get("playstyle")
+    if not style or not isinstance(style.get("jokers"), dict):
+        return summary
+    jokers = [{"key": k, "name": _JOKER_NAMES.get(k, k), "role": joker_role(k), "kept": v}
+              for k, v in sorted(style["jokers"].items(), key=lambda kv: -kv[1])]
+    return {**summary, "playstyle": {**style, "jokers": jokers}}
+
+
 def summaries(name: str) -> list[dict]:
     """The run's evaluation and final-check summaries, oldest first."""
     folder = learning.run_dir(name)
@@ -62,7 +78,7 @@ def summaries(name: str) -> list[dict]:
         for path in sorted(folder.glob(pattern)):
             s = learning._eval_summary(path)
             if s is not None and isinstance(s.get("update"), int):
-                out.append({"kind": kind, "summary": s})
+                out.append({"kind": kind, "summary": with_joker_names(s)})
     return out
 
 

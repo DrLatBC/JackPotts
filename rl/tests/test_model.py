@@ -9,7 +9,7 @@ from jackdaw.engine.data import load
 from jackdaw.env.action_space import ActionType
 
 from rl import dataset
-from rl.evaluate import play, summary
+from rl.evaluate import play, playstyle, summary
 from rl.model import Policy, Prepared, Subsets, choose
 from rl.train import heads, loss_of, measure, report, train
 
@@ -119,6 +119,19 @@ def test_a_policy_plays_games_to_an_end_without_a_refused_action(model, shard):
         assert 1 <= r["ante"] <= 9
     s = summary(rows)
     assert s["games"] == 5 and 0 <= s["win rate"] <= 1
+    style = playstyle(rows)
+    assert sum(h["per game"] for h in style["hands"].values()) > 0
+    assert all(h["level"] >= 1 for h in style["hands"].values())
+    assert all(k.startswith("j_") and 0 < v <= 1 for k, v in style["jokers"].items())
+
+
+def test_playstyle_averages_over_every_game():
+    rows = [{"hands": {"Pair": [4, 2], "Flush": [1, 1]}, "jokers": ["j_mad", "j_mad", "j_egg"]},
+            {"hands": {"Pair": [2, 1]}, "jokers": ["j_mad"]}]
+    style = playstyle(rows)
+    assert style["hands"]["Pair"] == {"per game": 3.0, "level": 1.5}
+    assert style["hands"]["Flush"] == {"per game": 0.5, "level": 1.0}
+    assert style["jokers"] == {"j_mad": 1.0, "j_egg": 0.5}
 
 
 def test_views_become_examples_for_the_model(shard):

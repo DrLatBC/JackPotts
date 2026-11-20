@@ -40,6 +40,8 @@ _COMPLEX_PHASES: dict[str, int] = {
     "j_bull": PHASE_CHIPS,
     "j_stuntman": PHASE_CHIPS,
     "j_wee": PHASE_CHIPS,
+    "j_blue_joker": PHASE_CHIPS,
+    "j_hiker": PHASE_CHIPS,      # chips go onto each card as it scores
 
     # +mult (additive)
     "j_greedy_joker": PHASE_MULT,
@@ -83,6 +85,13 @@ _COMPLEX_PHASES: dict[str, int] = {
     "j_triboulet": PHASE_XMULT,
     "j_ancient": PHASE_XMULT,
 
+    "j_lucky_cat": PHASE_XMULT,
+    "j_vampire": PHASE_XMULT,
+    "j_obelisk": PHASE_XMULT,
+    "j_steel_joker": PHASE_XMULT,
+    "j_ramen": PHASE_XMULT,
+    "j_yorick": PHASE_XMULT,
+
     # Position-dependent (special handling, default to noop phase for sorting)
     "j_blueprint": PHASE_NOOP,
     "j_brainstorm": PHASE_NOOP,
@@ -119,8 +128,8 @@ _NOOP_KEYS = frozenset({
 # ---------------------------------------------------------------------------
 _PHASE_MAP: dict[str, int] | None = None
 
-def get_joker_phase(key: str) -> int:
-    """Return the scoring phase for a joker key."""
+
+def _phase_map() -> dict[str, int]:
     global _PHASE_MAP
     if _PHASE_MAP is None:
         _PHASE_MAP = {}
@@ -132,7 +141,21 @@ def get_joker_phase(key: str) -> int:
             _PHASE_MAP[k] = PHASE_RETRIGGER
         for k in _NOOP_KEYS:
             _PHASE_MAP[k] = PHASE_NOOP
-    return _PHASE_MAP.get(key, PHASE_MULT)  # unknown jokers default to +mult (safe middle)
+    return _PHASE_MAP
+
+
+def get_joker_phase(key: str) -> int:
+    """Return the scoring phase for a joker key."""
+    return _phase_map().get(key, PHASE_MULT)  # unknown jokers default to +mult (safe middle)
+
+
+_ROLE = {PHASE_CHIPS: "chips", PHASE_MULT: "mult", PHASE_XMULT: "xmult"}
+
+
+def joker_role(key: str) -> str:
+    """``"chips"``, ``"mult"`` or ``"xmult"`` for a joker that scores in that phase, else
+    ``"other"`` (retriggers, economy and utility, and jokers this table does not know)."""
+    return _ROLE.get(_phase_map().get(key), "other")
 
 
 def get_joker_edition_phase(joker) -> int:

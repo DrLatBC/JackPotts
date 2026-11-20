@@ -14,7 +14,7 @@ OUT = Path(__file__).parent.parent / "src" / "balatro_bot" / "joker_registry.py"
 LINE_RE = re.compile(r"^\s*(j_[a-z0-9_]+)\s*=\s*\{(.*)\}\s*,?\s*$")
 RARITY_RE = re.compile(r"\brarity\s*=\s*(\d+)")
 COST_RE = re.compile(r"\bcost\s*=\s*(\d+)")
-NAME_RE = re.compile(r'\bname\s*=\s*"([^"]+)"')
+NAME_RE = re.compile(r"""\bname\s*=\s*(["'])(.+?)\1""")
 EFFECT_RE = re.compile(r'\beffect\s*=\s*"([^"]*)"')
 
 RARITY_LABEL = {1: "Common", 2: "Uncommon", 3: "Rare", 4: "Legendary"}
@@ -36,7 +36,7 @@ def main() -> None:
             continue
         jokers.append({
             "key": key,
-            "name": name.group(1),
+            "name": name.group(2),
             "rarity": int(rarity.group(1)),
             "cost": int(cost.group(1)),
             "effect_hint": effect.group(1) if effect else "",

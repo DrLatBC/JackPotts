@@ -50,7 +50,7 @@ import torch.nn.functional as F
 
 from rl.branch import BranchPlay, tally
 from rl.evaluate import (DECK, DECK_NAMES, STAKE, STAKE_NAMES, eval_seed, game_setup, model_file,
-                         play, summary)
+                         play, playstyle, summary)
 from rl.model import VALUE_SCALE, Policy, Prepared, act
 from rl.selfplay import WIN_BONUS, SelfPlay, advantages, same_seed_scores
 from rl.train import heads, load_model, save_model
@@ -545,6 +545,7 @@ def evaluate(model: Policy, out: Path, state: dict, seeds: list[tuple[str, str, 
     started = time.perf_counter()
     rows = play(model, seeds)
     s = summary(rows)
+    s["playstyle"] = playstyle(rows)
     s["seconds"] = time.perf_counter() - started
     s["update"] = state["updates"]
     s["hours"] = state["seconds"] / 3600

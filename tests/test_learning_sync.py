@@ -206,3 +206,17 @@ def test_a_dead_stream_launcher_goes_as_failed(files):
 def test_nothing_starts_without_a_dashboard(monkeypatch):
     monkeypatch.delenv("JACKPOTTS_URL", raising=False)
     assert Uploader(FakeDashboard()).start() is None
+
+def test_eval_jokers_go_with_their_name_and_role(files):
+    folder = _run(files, "r1", range(2), evals=[0])
+    path = folder / "eval_u00000.json"
+    data = json.loads(path.read_text())
+    data["summary"]["playstyle"] = {"hands": {"Pair": {"per game": 3.0, "level": 2.0}},
+                                     "jokers": {"j_egg": 0.2, "j_mad": 0.5, "j_cavendish": 0.3}}
+    path.write_text(json.dumps(data))
+    dash = FakeDashboard()
+    Uploader(dash).sync()
+    style = dash.evals["r1"][("eval", 0)]["playstyle"]
+    assert style["hands"] == {"Pair": {"per game": 3.0, "level": 2.0}}
+    assert [(j["name"], j["role"], j["kept"]) for j in style["jokers"]] == [
+        ("Mad Joker", "mult", 0.5), ("Cavendish", "xmult", 0.3), ("Egg", "other", 0.2)]
