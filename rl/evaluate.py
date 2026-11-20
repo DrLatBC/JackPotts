@@ -60,13 +60,17 @@ def eval_seed(n: int) -> str:
 
 
 def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64,
-         max_steps: int = MAX_STEPS, order_plays: bool = True) -> list[dict]:
+         max_steps: int = MAX_STEPS, order_plays: bool = True, record: bool = False) -> list[dict]:
     """Play each ``(seed, deck, stake)`` to its end. Per game: whether it was won, the
     final ante (9 for a win), the steps taken, why it was cut short, if it was, the
     ``[times played, final level]`` of each hand type played or levelled, and the keys
     of the jokers it ended with.
     ``order_plays`` plays the chosen cards in the bot's left-to-right order
-    (``rl.ordering``); without it they score in hand order."""
+    (``rl.ordering``); without it they score in hand order.
+    ``record`` adds ``packs`` (each pack pick or skip: step, ante, the cards on offer,
+    the card taken or None for a skip, hand levels above 1; a card is its key, a playing
+    card its front plus any enhancement, as ``"H_7"`` or ``"H_7 m_bonus"``) and ``plays`` (each hand
+    played: ``[step, hand type]``)."""
     results: list[dict] = []
     waiting = list(reversed(games))
     active: list[dict] = []
@@ -75,12 +79,13 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
             seed, deck, stake = waiting.pop()
             env = make_env(deck, stake, max_steps=max_steps)
             _, _, info = env.reset(seed=seed)
-            active.append({"seed": seed, "env": env, "info": info, "steps": 0})
+            active.append({"seed": seed, "env": env, "info": info, "steps": 0, "packs": [], "plays": []})
         prep = Prepared(dataset.examples_of([env_view(slot["info"]) for slot in active]))
         actions = choose(model, prep)
         still = []
         for slot, action in zip(active, actions):
             cut = None
+            before = record and _note_pack(slot, action)
             if order_plays and action.action_type == ActionType.PlayHand:
                 action = replace(
                     action, card_target=put_in_order(slot["info"]["game"], action.card_target))
@@ -91,6 +96,9 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
                 cut = f"refused: {e}"
             if not (terminated or truncated) and no_legal_action(info):
                 truncated, cut = True, "no legal action"
+            if before:
+                after = _played(info["game"])
+                slot["plays"] += [[slot["steps"], n] for n, c in after.items() if c > before.get(n, 0)]
             slot["info"] = info
             slot["steps"] += 1
             if not (terminated or truncated):
@@ -109,9 +117,36 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
                 "hands": {name: [int(h.played), int(h.level)]
                           for name, h in game.hand_levels.items() if h.played or h.level != 1},
                 "jokers": [j.key for j in game.jokers],
+                **({"packs": slot["packs"], "plays": slot["plays"]} if record else {}),
             })
         active = still
     return results
+
+
+def _played(game) -> dict[str, int]:
+    return {name: int(h.played) for name, h in game.hand_levels.items()}
+
+
+def _card_name(card) -> str:
+    if not card.front:
+        return card.key
+    return card.front if card.key == "c_base" else f"{card.front} {card.key}"
+
+
+def _note_pack(slot: dict, action) -> dict[str, int] | None:
+    """Records a pack pick or skip about to be made; for a play, the times each hand type
+    was played before it, so the step after can tell which type it was."""
+    game = slot["info"]["game"]
+    if action.action_type == ActionType.PlayHand:
+        return _played(game)
+    if action.action_type in (ActionType.PickPackCard, ActionType.SkipPack):
+        offer = [_card_name(c) for c in game.pack_cards]
+        slot["packs"].append({
+            "step": slot["steps"], "ante": int(game.ante), "offer": offer,
+            "pick": offer[action.entity_target] if action.action_type == ActionType.PickPackCard else None,
+            "levels": {n: int(h.level) for n, h in game.hand_levels.items() if h.level != 1},
+        })
+    return None
 
 
 def summary(rows: list[dict]) -> dict:

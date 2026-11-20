@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import gzip
 import json
 import shutil
 import sys
@@ -541,9 +542,15 @@ def copy_state(d):
 
 
 def evaluate(model: Policy, out: Path, state: dict, seeds: list[tuple[str, str, int]]) -> dict:
-    """The most likely action on the evaluation ``(seed, deck, stake)``s; saved per update number."""
+    """The most likely action on the evaluation ``(seed, deck, stake)``s; saved per update number.
+    Each game's pack picks and hands played go to ``packs_u#####.jsonl.gz``, one line per
+    game, outside the eval file the panel reads whole."""
     started = time.perf_counter()
-    rows = play(model, seeds)
+    rows = play(model, seeds, record=True)
+    with gzip.open(out / f"packs_u{state['updates']:05d}.jsonl.gz", "wt", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps({"seed": r["seed"], "won": r["won"], "ante": r["ante"],
+                                "packs": r.pop("packs"), "plays": r.pop("plays")}) + "\n")
     s = summary(rows)
     s["playstyle"] = playstyle(rows)
     s["seconds"] = time.perf_counter() - started

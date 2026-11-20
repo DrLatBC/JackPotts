@@ -125,6 +125,21 @@ def test_a_policy_plays_games_to_an_end_without_a_refused_action(model, shard):
     assert all(k.startswith("j_") and 0 < v <= 1 for k, v in style["jokers"].items())
 
 
+def test_recorded_games_list_every_hand_played_and_each_pack_pick(model, shard):
+    games = [(str(shard["g_seed"][g]), str(shard["g_deck"][g]), int(shard["g_stake"][g]))
+             for g in range(shard.n_games)]
+    rows = play(model, games, parallel=3, max_steps=400, record=True)
+    for r in rows:
+        counted = {}
+        for _, hand in r["plays"]:
+            counted[hand] = counted.get(hand, 0) + 1
+        assert counted == {n: p for n, (p, _) in r["hands"].items() if p}
+        assert [s for s, _ in r["plays"]] == sorted(s for s, _ in r["plays"])
+        for pick in r["packs"]:
+            assert pick["offer"] and (pick["pick"] is None or pick["pick"] in pick["offer"])
+    assert "packs" not in play(model, games[:1], parallel=1, max_steps=50)[0]
+
+
 def test_playstyle_averages_over_every_game():
     rows = [{"hands": {"Pair": [4, 2], "Flush": [1, 1]}, "jokers": ["j_mad", "j_mad", "j_egg"]},
             {"hands": {"Pair": [2, 1]}, "jokers": ["j_mad"]}]
