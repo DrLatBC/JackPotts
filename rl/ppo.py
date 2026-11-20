@@ -292,6 +292,7 @@ def train(args) -> int:
     eval_seeds = [(eval_seed(i), deck, stake) for i in range(1, args.eval_games + 1)]
     report(status, phase="running", copy=meta["copy"], beta=state["beta"], doing="playing",
            method="BRANCHES" if args.branch_rate else "SAME SEED", deck=args.deck, stake=args.stake,
+           decisions=args.decisions_per_step if args.branch_rate else None,
            **{"win bonus": args.win_bonus}, **progress(state, args), **last_numbers(log_path),
            **last_eval(out))
     if not args.resume and args.eval_every:

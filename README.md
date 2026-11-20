@@ -32,7 +32,7 @@ Jackdaw assumes every card is unlocked, so its shops and packs differ from a liv
 
 `.venv\Scripts\pythonw.exe -m balatro_bot.gui` opens the desktop panel. It runs everything below windowless, and closing it never stops a run.
 
-- **Train**: start, stop, extend and compare learning runs. Pick where a run starts (a copy or any saved update), the method, the win bonus, deck and stake. Charts follow points per game, agreement with the start, and evaluation win rate and ante. Each finished run is checked against its start on 5,000 seeds, seed by seed.
+- **Train**: start, stop, extend and compare learning runs. Pick where a run starts (a copy or any saved update), the method, decisions per learning step (branch runs), the win bonus, deck and stake. Charts follow points per game, agreement with the start, and evaluation win rate and ante. Each finished run is checked against its start on 5,000 seeds, seed by seed.
 - **Stream**: a model plays the real, visible game, move by move, with an [OBS](https://obsproject.com/) overlay showing what it weighed before each move.
 - **Batches**: run the bot on many instances at once, in the real game or the simulator. Add or remove instances mid-batch, pause and resume, and let some instances explore runner-up shop and pack choices.
 

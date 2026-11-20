@@ -61,11 +61,22 @@ def test_a_branch_run_gets_the_branch_flags_and_its_deck_stake_and_bonus():
     assert "--plays" not in cmd and "--games-per-step" not in cmd
 
 
+def test_a_branch_run_takes_its_decisions_per_step_from_the_panel():
+    cmd = learning.train_command({**SETTINGS, "train_method": "BRANCHES", "train_decisions": 6000})
+    assert cmd[cmd.index("--decisions-per-step") + 1] == "6000"
+    assert cmd.count("--decisions-per-step") == 1
+    same_seed = learning.train_command({**SETTINGS, "train_decisions": 6000})
+    assert "--decisions-per-step" not in same_seed
+
+
 def test_a_runs_settings_come_from_its_saved_args_with_the_old_defaults():
-    got = learning.run_settings({"branch_rate": 0.05, "deck": "RED", "stake": "GOLD", "win_bonus": 16.0})
-    assert got == {"method": "BRANCHES", "deck": "RED", "stake": "GOLD", "win bonus": 16.0}
+    got = learning.run_settings({"branch_rate": 0.05, "deck": "RED", "stake": "GOLD", "win_bonus": 16.0,
+                                 "decisions_per_step": 6000})
+    assert got == {"method": "BRANCHES", "deck": "RED", "stake": "GOLD", "win bonus": 16.0, "decisions": 6000}
+    got = learning.run_settings({"branch_rate": 0.05})
+    assert got["decisions"] == 2000
     got = learning.run_settings({"plays": 4, "branch_rate": 0.0})
-    assert got == {"method": "SAME SEED", "deck": "BLUE", "stake": "WHITE", "win bonus": 8.0}
+    assert got == {"method": "SAME SEED", "deck": "BLUE", "stake": "WHITE", "win bonus": 8.0, "decisions": None}
 
 
 SAVED_ARGS = {
