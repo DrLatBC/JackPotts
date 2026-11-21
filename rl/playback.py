@@ -37,7 +37,7 @@ DATA = Path(__file__).resolve().parent / "data"
 
 def make_env(deck: str, stake: int, *, on_refusal: str = "raise", **kw) -> BalatroEnvironment:
     """The environment a model plays in: the engine in process, one deck and stake,
-    an episode that ends on a win."""
+    an episode that ends on a win unless ``end_on_win=False``."""
     return BalatroEnvironment(
         DirectAdapter, back_keys=[deck], stakes=[stake], on_refusal=on_refusal, **kw
     )

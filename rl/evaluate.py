@@ -60,11 +60,15 @@ def eval_seed(n: int) -> str:
 
 
 def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64,
-         max_steps: int = MAX_STEPS, order_plays: bool = True, record: bool = False) -> list[dict]:
+         max_steps: int = MAX_STEPS, order_plays: bool = True, record: bool = False,
+         endless: bool = False) -> list[dict]:
     """Play each ``(seed, deck, stake)`` to its end. Per game: whether it was won, the
     final ante (9 for a win), the steps taken, why it was cut short, if it was, the
     ``[times played, final level]`` of each hand type played or levelled, and the keys
     of the jokers it ended with.
+    ``endless`` plays a won game on into endless mode. Everything above is still as it
+    stood at the win; ``endless ante`` is the ante the game ended on and ``endless cut``
+    why the endless part was cut short, if it was.
     ``order_plays`` plays the chosen cards in the bot's left-to-right order
     (``rl.ordering``); without it they score in hand order.
     ``record`` adds ``packs`` (each pack pick or skip: step, ante, the cards on offer,
@@ -77,7 +81,7 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
     while waiting or active:
         while waiting and len(active) < parallel:
             seed, deck, stake = waiting.pop()
-            env = make_env(deck, stake, max_steps=max_steps)
+            env = make_env(deck, stake, max_steps=max_steps, end_on_win=not endless)
             _, _, info = env.reset(seed=seed)
             active.append({"seed": seed, "env": env, "info": info, "steps": 0, "packs": [], "plays": []})
         prep = Prepared(dataset.examples_of([env_view(slot["info"]) for slot in active]))
@@ -85,7 +89,7 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
         still = []
         for slot, action in zip(active, actions):
             cut = None
-            before = record and _note_pack(slot, action)
+            before = record and "won" not in slot and _note_pack(slot, action)
             if order_plays and action.action_type == ActionType.PlayHand:
                 action = replace(
                     action, card_target=put_in_order(slot["info"]["game"], action.card_target))
@@ -101,26 +105,38 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
                 slot["plays"] += [[slot["steps"], n] for n, c in after.items() if c > before.get(n, 0)]
             slot["info"] = info
             slot["steps"] += 1
-            if not (terminated or truncated):
-                still.append(slot)
-                continue
             state = info["state"]
             if truncated and cut is None:
                 cut = ("not ported: " + str(info["not_ported"]) if "not_ported" in info
                        else "step limit")
-            won = bool(state.won) and cut is None
-            game = info["game"]
-            results.append({
-                "seed": slot["seed"], "won": won,
-                "ante": WIN_ANTE if won else min(int(state.ante), WIN_ANTE),
-                "steps": slot["steps"], "cut": cut,
-                "hands": {name: [int(h.played), int(h.level)]
-                          for name, h in game.hand_levels.items() if h.played or h.level != 1},
-                "jokers": [j.key for j in game.jokers],
-                **({"packs": slot["packs"], "plays": slot["plays"]} if record else {}),
-            })
+            ended = terminated or truncated
+            if "won" not in slot and state.won and cut is None:
+                slot["won"] = _row(slot, info, True, None, record)
+            if not ended:
+                still.append(slot)
+                continue
+            if "won" in slot:
+                row = slot["won"]
+                if endless:
+                    row["endless ante"], row["endless cut"] = int(state.ante), cut
+            else:
+                row = _row(slot, info, False, cut, record)
+            results.append(row)
         active = still
     return results
+
+
+def _row(slot: dict, info: dict, won: bool, cut: str | None, record: bool) -> dict:
+    game = info["game"]
+    return {
+        "seed": slot["seed"], "won": won,
+        "ante": WIN_ANTE if won else min(int(info["state"].ante), WIN_ANTE),
+        "steps": slot["steps"], "cut": cut,
+        "hands": {name: [int(h.played), int(h.level)]
+                  for name, h in game.hand_levels.items() if h.played or h.level != 1},
+        "jokers": [j.key for j in game.jokers],
+        **({"packs": slot["packs"], "plays": slot["plays"]} if record else {}),
+    }
 
 
 def _played(game) -> dict[str, int]:
@@ -150,10 +166,12 @@ def _note_pack(slot: dict, action) -> dict[str, int] | None:
 
 
 def summary(rows: list[dict]) -> dict:
-    """Win rate, mean final ante and how far the games got."""
+    """Win rate, mean final ante and how far the games got; for games played on into
+    endless mode, the mean ante the won ones ended on."""
     n = len(rows)
     wins = sum(r["won"] for r in rows)
     rate = wins / n
+    endless = [r["endless ante"] for r in rows if r["won"] and "endless ante" in r]
     return {
         "games": n,
         "wins": wins,
@@ -161,6 +179,7 @@ def summary(rows: list[dict]) -> dict:
         "win rate +/-": math.sqrt(rate * (1 - rate) / n),
         "mean final ante": sum(r["ante"] for r in rows) / n,
         **{f"past ante {k}": sum(r["ante"] > k for r in rows) / n for k in PAST},
+        **({"endless ante": sum(endless) / len(endless)} if endless else {}),
     }
 
 

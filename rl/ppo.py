@@ -401,18 +401,18 @@ def train(args) -> int:
 def final_check(model: Policy, start: Policy, out: Path, state: dict, n: int, status: dict,
                 setup: tuple[str, int] = (DECK, STAKE)) -> dict:
     """The finished policy and the one the run started from, on the first ``n``
-    evaluation seeds, compared seed by seed. The start's games are kept in
-    ``check_start_<n>.json`` and played again only if that file is missing; the
-    finished policy's go to ``check_u<update>.json`` with the comparison."""
+    evaluation seeds, compared seed by seed, won games played on into endless mode. The
+    start's games are kept in ``check_start_<n>.json`` and played again only if that
+    file is missing or its wins were not played on; the finished policy's go to
+    ``check_u<update>.json`` with the comparison."""
     report(status, doing="checking")
     seeds = [(eval_seed(i), *setup) for i in range(1, n + 1)]
     base_path = out / f"check_start_{n}.json"
-    if base_path.exists():
-        base = json.loads(base_path.read_text())["games"]
-    else:
-        base = play(start, seeds)
+    base = json.loads(base_path.read_text())["games"] if base_path.exists() else None
+    if base is None or any(g["won"] and "endless ante" not in g for g in base):
+        base = play(start, seeds, endless=True)
         write_json(base_path, {"summary": summary(base), "games": base})
-    rows = play(model, seeds)
+    rows = play(model, seeds, endless=True)
     s = summary(rows)
     s["update"] = state["updates"]
     s["vs start"] = compare(rows, base)

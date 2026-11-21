@@ -1096,11 +1096,14 @@ class TrainTab(tk.Frame):
         self.card_notes: dict[str, tk.Label] = {}
         self.card_vals, self.card_labels = _stat_cards(cards, (
             ("update", "UPDATE"), ("hours", "HOURS"), ("games", "GAMES"), ("points", "POINTS"),
-            ("agreement", "AGREEMENT"), ("drift", "DRIFT"), ("eval", "EVAL WINS"), ("ante", "EVAL ANTE")),
-            notes=self.card_notes)
+            ("agreement", "AGREEMENT"), ("drift", "DRIFT"), ("eval", "EVAL WINS"), ("ante", "EVAL ANTE"),
+            ("endless", "ENDLESS")),
+            size=12, notes=self.card_notes)
         for key in ("eval", "ante"):
             tip(self.card_labels[key], self._vs_start_tip)
             tip(self.card_notes[key], self._vs_start_tip)
+        for widget in (self.card_labels["endless"], self.card_notes["endless"]):
+            tip(widget, self._endless_tip)
 
         charts = tk.Frame(right, bg=BG)
         charts.pack(fill="both", expand=True, pady=(px(10), 0))
@@ -1357,12 +1360,19 @@ class TrainTab(tk.Frame):
             return "Against the start once the run has a second evaluation"
         return f"Update {c['update']} against update 0 (the start): {describe(c)}"
 
+    def _endless_tip(self) -> str:
+        c = (self.row or {}).get("check") or {}
+        if "endless ante" not in c:
+            return "The final check plays won games on into endless mode: the mean ante they end on"
+        return (f"Check at update {c['update']}: won games ended on ante {c['endless ante']:.2f}, "
+                f"the start's on {c['base endless ante']:.2f}; {c['endless gain']:+.2f} "
+                f"± {c['endless gain +/-']:.2f} on the {c['both won']:,} seeds both won")
+
     def _fill_cards(self) -> None:
         row, shown = self.row or {}, {}
         if self.row is not None and self.phase != "starting":
             shown = {"update": f"{row.get('update', 0):,}", "games": f"{row.get('games', 0):,}"}
-            if row.get("hours total"):
-                shown["hours"] = f"{row.get('hours', 0):.2f} / {row['hours total']:g}"
+            shown["hours"] = f"{row.get('hours', 0):.2f}"
             for key, field, fmt in (("points", "points per game", _num(2)), ("agreement", "agreement", _pct),
                                     ("drift", "drift", _num(4))):
                 if row.get(field) is not None:
@@ -1370,7 +1380,18 @@ class TrainTab(tk.Frame):
             ev = row.get("eval")
             if ev:
                 shown["eval"], shown["ante"] = _pct(ev["win rate"]), f"{ev['mean final ante']:.2f}"
+        check = (row.get("check") or {}) if shown else {}
+        if "endless ante" in check:
+            shown["endless"] = f"{check['endless ante']:.2f}"
         _fill_cards(self.card_vals, self.card_labels, shown)
+        total = row.get("hours total") if shown else None
+        self.card_notes["hours"].configure(text=f"of {total:g}" if total else "", fg=MUTED)
+        note = self.card_notes["endless"]
+        if "endless" in shown:
+            note.configure(text=f"{check['endless gain']:+.2f} vs start",
+                           fg=_gain_colour(check["endless gain"], check["endless gain +/-"]))
+        else:
+            note.configure(text="")
         vs = row.get("vs start") if "eval" in shown else None
         if vs and vs["update"] != (row.get("eval") or {}).get("update"):
             vs = None

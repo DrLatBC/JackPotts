@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -9,9 +12,9 @@ from jackdaw.engine.data import load
 from jackdaw.env.action_space import ActionType
 
 from rl import dataset
-from rl.evaluate import play, playstyle, summary
+from rl.evaluate import DECK, STAKE, play, playstyle, summary
 from rl.model import Policy, Prepared, Subsets, choose
-from rl.train import heads, loss_of, measure, report, train
+from rl.train import heads, load_model, loss_of, measure, report, train
 
 KEYS = [""] + sorted(load("centers"))
 
@@ -138,6 +141,26 @@ def test_recorded_games_list_every_hand_played_and_each_pack_pick(model, shard):
         for pick in r["packs"]:
             assert pick["offer"] and (pick["pick"] is None or pick["pick"] in pick["offer"])
     assert "packs" not in play(model, games[:1], parallel=1, max_steps=50)[0]
+
+
+WINNER = Path(__file__).resolve().parents[1] / "data" / "ppo" / "decisions6k"
+
+
+@pytest.mark.skipif(not (WINNER / "u00018.pt").exists(), reason="needs a model that wins")
+def test_endless_play_keeps_the_won_game_and_adds_how_far_it_went():
+    model, _ = load_model(WINNER / "u00018.pt")
+    checked = json.loads((WINNER / "check_u00018.json").read_text())["games"]
+    games = [(g["seed"], DECK, STAKE) for g in checked if g["won"]][:2]
+    games.append(next((g["seed"], DECK, STAKE) for g in checked if not g["won"]))
+    plain = {r["seed"]: r for r in play(model, games, parallel=3)}
+    endless = {r["seed"]: r for r in play(model, games, parallel=3, endless=True)}
+    assert summary(list(endless.values()))["endless ante"] >= 9
+    for seed, r in endless.items():
+        base = plain[seed]
+        if base["won"]:
+            assert r.pop("endless ante") >= 9 and "endless cut" in r
+            r.pop("endless cut")
+        assert r == base
 
 
 def test_playstyle_averages_over_every_game():

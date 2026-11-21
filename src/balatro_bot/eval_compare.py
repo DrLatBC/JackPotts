@@ -33,6 +33,7 @@ def compare(games: list[dict], base: list[dict]) -> dict | None:
     wins, wins_se = _mean_se([float(bool(g["won"])) - float(bool(b["won"])) for g, b in pairs])
     n = len(pairs)
     return {
+        **_endless(pairs),
         "seeds": n,
         "win rate": sum(bool(g["won"]) for g, _ in pairs) / n,
         "base win rate": sum(bool(b["won"]) for _, b in pairs) / n,
@@ -45,9 +46,28 @@ def compare(games: list[dict], base: list[dict]) -> dict | None:
     }
 
 
+def _endless(pairs: list[tuple[dict, dict]]) -> dict:
+    """For games played on into endless mode: the mean ante each side's wins ended on,
+    and the gain on the seeds both won. Empty when either side has no endless results."""
+    mine = [g["endless ante"] for g, _ in pairs if g["won"] and "endless ante" in g]
+    theirs = [b["endless ante"] for _, b in pairs if b["won"] and "endless ante" in b]
+    both = [g["endless ante"] - b["endless ante"] for g, b in pairs
+            if "endless ante" in g and "endless ante" in b and g["won"] and b["won"]]
+    if not (mine and theirs and both):
+        return {}
+    gain, se = _mean_se(both)
+    return {"endless ante": sum(mine) / len(mine), "base endless ante": sum(theirs) / len(theirs),
+            "endless gain": gain, "endless gain +/-": se, "both won": len(both)}
+
+
 def describe(c: dict) -> str:
     """One line: wins and mean final ante against the base, with the gains."""
-    return (f"{c['win rate']:.2%} wins against {c['base win rate']:.2%} "
+    text = (f"{c['win rate']:.2%} wins against {c['base win rate']:.2%} "
             f"({c['win gain'] * 100:+.2f} +/- {c['win gain +/-'] * 100:.2f} points), "
             f"mean final ante {c['mean final ante']:.2f} against {c['base mean final ante']:.2f} "
             f"({c['ante gain']:+.3f} +/- {c['ante gain +/-']:.3f}), {c['seeds']:,} seeds")
+    if "endless ante" in c:
+        text += (f"; wins went on to ante {c['endless ante']:.2f} against {c['base endless ante']:.2f} "
+                 f"({c['endless gain']:+.2f} +/- {c['endless gain +/-']:.2f} on the "
+                 f"{c['both won']:,} seeds both won)")
+    return text
