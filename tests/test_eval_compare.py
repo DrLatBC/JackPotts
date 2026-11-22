@@ -43,7 +43,9 @@ def test_endless_gain_counts_only_seeds_both_won():
     c = compare(new, old)
     assert c["both won"] == 2 and c["endless gain"] == pytest.approx((2 - 1) / 2)
     assert c["endless ante"] == pytest.approx(11) and c["base endless ante"] == pytest.approx(34 / 3)
+    assert c["endless max"] == 12 and c["base endless max"] == 13
     assert "wins went on to ante 11.00 against 11.33 (+0.50" in describe(c)
+    assert describe(c).endswith("furthest ante 12 against 13")
 
 
 def test_no_endless_numbers_without_endless_games_on_both_sides():

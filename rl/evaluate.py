@@ -167,7 +167,7 @@ def _note_pack(slot: dict, action) -> dict[str, int] | None:
 
 def summary(rows: list[dict]) -> dict:
     """Win rate, mean final ante and how far the games got; for games played on into
-    endless mode, the mean ante the won ones ended on."""
+    endless mode, the mean and the highest ante the won ones ended on."""
     n = len(rows)
     wins = sum(r["won"] for r in rows)
     rate = wins / n
@@ -179,7 +179,8 @@ def summary(rows: list[dict]) -> dict:
         "win rate +/-": math.sqrt(rate * (1 - rate) / n),
         "mean final ante": sum(r["ante"] for r in rows) / n,
         **{f"past ante {k}": sum(r["ante"] > k for r in rows) / n for k in PAST},
-        **({"endless ante": sum(endless) / len(endless)} if endless else {}),
+        **({"endless ante": sum(endless) / len(endless), "endless max": max(endless)}
+           if endless else {}),
     }
 
 

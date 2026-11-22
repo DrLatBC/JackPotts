@@ -1363,10 +1363,13 @@ class TrainTab(tk.Frame):
     def _endless_tip(self) -> str:
         c = (self.row or {}).get("check") or {}
         if "endless ante" not in c:
-            return "The final check plays won games on into endless mode: the mean ante they end on"
+            return ("The final check plays won games on into endless mode: the mean ante they "
+                    "end on / the furthest any got")
+        furthest = (f"; furthest ante {c['endless max']}, the start's {c['base endless max']}"
+                    if "endless max" in c else "")
         return (f"Check at update {c['update']}: won games ended on ante {c['endless ante']:.2f}, "
                 f"the start's on {c['base endless ante']:.2f}; {c['endless gain']:+.2f} "
-                f"± {c['endless gain +/-']:.2f} on the {c['both won']:,} seeds both won")
+                f"± {c['endless gain +/-']:.2f} on the {c['both won']:,} seeds both won{furthest}")
 
     def _fill_cards(self) -> None:
         row, shown = self.row or {}, {}
@@ -1382,7 +1385,8 @@ class TrainTab(tk.Frame):
                 shown["eval"], shown["ante"] = _pct(ev["win rate"]), f"{ev['mean final ante']:.2f}"
         check = (row.get("check") or {}) if shown else {}
         if "endless ante" in check:
-            shown["endless"] = f"{check['endless ante']:.2f}"
+            furthest = check.get("endless max")
+            shown["endless"] = f"{check['endless ante']:.2f}" + (f"/{furthest}" if furthest else "")
         _fill_cards(self.card_vals, self.card_labels, shown)
         total = row.get("hours total") if shown else None
         self.card_notes["hours"].configure(text=f"of {total:g}" if total else "", fg=MUTED)

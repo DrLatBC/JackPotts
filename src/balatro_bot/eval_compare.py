@@ -47,8 +47,8 @@ def compare(games: list[dict], base: list[dict]) -> dict | None:
 
 
 def _endless(pairs: list[tuple[dict, dict]]) -> dict:
-    """For games played on into endless mode: the mean ante each side's wins ended on,
-    and the gain on the seeds both won. Empty when either side has no endless results."""
+    """For games played on into endless mode: the mean and highest ante each side's wins
+    ended on, and the gain on the seeds both won. Empty when either side has no endless results."""
     mine = [g["endless ante"] for g, _ in pairs if g["won"] and "endless ante" in g]
     theirs = [b["endless ante"] for _, b in pairs if b["won"] and "endless ante" in b]
     both = [g["endless ante"] - b["endless ante"] for g, b in pairs
@@ -57,6 +57,7 @@ def _endless(pairs: list[tuple[dict, dict]]) -> dict:
         return {}
     gain, se = _mean_se(both)
     return {"endless ante": sum(mine) / len(mine), "base endless ante": sum(theirs) / len(theirs),
+            "endless max": max(mine), "base endless max": max(theirs),
             "endless gain": gain, "endless gain +/-": se, "both won": len(both)}
 
 
@@ -70,4 +71,6 @@ def describe(c: dict) -> str:
         text += (f"; wins went on to ante {c['endless ante']:.2f} against {c['base endless ante']:.2f} "
                  f"({c['endless gain']:+.2f} +/- {c['endless gain +/-']:.2f} on the "
                  f"{c['both won']:,} seeds both won)")
+        if "endless max" in c:
+            text += f", furthest ante {c['endless max']} against {c['base endless max']}"
     return text

@@ -154,7 +154,8 @@ def test_endless_play_keeps_the_won_game_and_adds_how_far_it_went():
     games.append(next((g["seed"], DECK, STAKE) for g in checked if not g["won"]))
     plain = {r["seed"]: r for r in play(model, games, parallel=3)}
     endless = {r["seed"]: r for r in play(model, games, parallel=3, endless=True)}
-    assert summary(list(endless.values()))["endless ante"] >= 9
+    s = summary(list(endless.values()))
+    assert s["endless ante"] >= 9 and s["endless max"] >= s["endless ante"]
     for seed, r in endless.items():
         base = plain[seed]
         if base["won"]:

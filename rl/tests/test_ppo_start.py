@@ -48,7 +48,8 @@ def test_the_final_check_plays_the_start_once_and_compares_seed_by_seed(check_ru
     s = ppo.final_check(model, start, out, {"updates": 19}, 6, status)
     assert [(p is start, n) for p, n in calls] == [(True, 6), (False, 6)]
     assert s["vs start"]["seeds"] == 6 and s["vs start"]["ante gain"] == 2 * 5 / 6
-    assert s["vs start"]["endless gain"] == 2 and s["endless ante"] == 12
+    assert s["vs start"]["endless gain"] == 2 and s["endless ante"] == s["endless max"] == 12
+    assert s["vs start"]["base endless max"] == 10
     saved = json.loads((out / "check_u00019.json").read_text())
     assert saved["summary"]["vs start"]["endless gain"] == 2 and len(saved["games"]) == 6
     assert status["check"]["update"] == 19 and status["doing"] == ""
