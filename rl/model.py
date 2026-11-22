@@ -19,6 +19,7 @@ what the model weighed at one decision point.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from itertools import combinations
 
@@ -64,6 +65,8 @@ USE, PICK = int(ActionType.UseConsumable), int(ActionType.PickPackCard)
 _WIDTHS = (D_PLAYING_CARD, D_JOKER, D_CONSUMABLE + 3, D_SHOP + 3, D_PLAYING_CARD + 3)
 _AT = np.concatenate([[0], np.cumsum(_WIDTHS)])
 D_TOKEN = int(_AT[-1])
+_SEAL_COLUMN = 5
+"""The column of a playing card's observation row that holds its seal."""
 _LISTS = ("hand", "joker", "cons", "shop", "pack")
 
 # Per action type: the list its item is in (-1: it points at nothing) and which
@@ -149,7 +152,7 @@ class Prepared:
                 self.cats[at, 3] = np.where(seen, np.rint(rows[:, 1] * 3) + 1, 0)
                 self.cats[at, 4] = np.rint(rows[:, 3] * 8)
                 self.cats[at, 5] = np.rint(rows[:, 4] * 4)
-                self.cats[at, 6] = np.rint(rows[:, 5] * 4)
+                self.cats[at, 6] = np.rint(rows[:, _SEAL_COLUMN] * 4)
             else:
                 self.cats[at, 1] = np.rint(rows[:, 0] * NUM_CENTER_KEYS)
             if li == HAND:
@@ -183,6 +186,16 @@ class Prepared:
         self.forced = a["forced"].astype(np.int64)
 
     # -- per batch ---------------------------------------------------------------
+
+    def without_seals(self) -> "Prepared":
+        """The same examples with the hand and pack cards' seals hidden from the network."""
+        out = copy.copy(self)
+        out.feat, out.cats = self.feat.copy(), self.cats.copy()
+        for li in (HAND, PACK):
+            cards = out.cats[:, 0] == li + 1
+            out.cats[cards, 6] = 0
+            out.feat[cards, int(_AT[li]) + _SEAL_COLUMN] = 0.0
+        return out
 
     def tokens(self, idx: np.ndarray) -> dict[str, torch.Tensor]:
         """The network's input for the examples ``idx``."""
@@ -333,8 +346,11 @@ def _pick(logits: torch.Tensor, generator: torch.Generator | None) -> tuple[np.n
         chosen = logits.argmax(-1)
     else:
         chosen = torch.multinomial(torch.softmax(logits, -1), 1, generator=generator).squeeze(-1)
-    logp = torch.log_softmax(logits, -1).gather(-1, chosen[:, None]).squeeze(-1)
-    return chosen.numpy(), logp
+    return chosen.numpy(), _taken(logits, chosen)
+
+
+def _taken(logits: torch.Tensor, chosen: torch.Tensor) -> torch.Tensor:
+    return torch.log_softmax(logits, -1).gather(-1, chosen[:, None]).squeeze(-1)
 
 
 @torch.no_grad()
@@ -353,9 +369,11 @@ def act(model: Policy, prep: Prepared, idx: np.ndarray | None = None,
 
 
 def _complete(model: Policy, prep: Prepared, idx, run, tokens, types: np.ndarray,
-              logp: torch.Tensor, generator: torch.Generator | None):
+              logp: torch.Tensor, generator: torch.Generator | None,
+              fixed: list[FactoredAction] | None = None):
     """Each row's action of type ``types[row]``: its item, then its cards. ``logp`` comes
-    in as the types' log-probabilities and goes out as the whole actions'."""
+    in as the types' log-probabilities and goes out as the whole actions'. With ``fixed``,
+    each row's item, and its cards where the fixed move gives them, are that move's."""
     entities = np.full(len(idx), -1, np.int64)
     position = np.full(len(idx), -1, np.int64)
     rows = np.flatnonzero(_TYPE_LIST[types] >= 0)
@@ -366,9 +384,14 @@ def _complete(model: Policy, prep: Prepared, idx, run, tokens, types: np.ndarray
         logits = model.entity_logits(
             run[rows], tokens[rows], torch.from_numpy(types[rows]), torch.from_numpy(mask)
         )
-        position[rows], item_logp = _pick(logits, generator)
+        base = prep.entity_base(idx[rows], types[rows])
+        if fixed is None:
+            position[rows], item_logp = _pick(logits, generator)
+        else:
+            position[rows] = base + np.array([fixed[r].entity_target for r in rows], np.int64)
+            item_logp = _taken(logits, torch.from_numpy(position[rows]))
         logp[rows] += item_logp
-        entities[rows] = position[rows] - prep.entity_base(idx[rows], types[rows])
+        entities[rows] = position[rows] - base
     cards: dict[int, tuple[int, ...]] = {}
     every = np.arange(len(idx))
     for group, subsets, legal in set_groups(prep, idx, every, types, entities):
@@ -380,6 +403,13 @@ def _complete(model: Policy, prep: Prepared, idx, run, tokens, types: np.ndarray
             item_tokens(tokens, group, position[group]), subsets, torch.from_numpy(legal),
         )
         chosen, set_logp = _pick(logits, generator)
+        given = [k for k, row in enumerate(group)
+                 if fixed is not None and fixed[row].card_target is not None]
+        if given:
+            bits = subsets.bits.tolist()
+            for k in given:
+                chosen[k] = bits.index(sum(1 << c for c in fixed[group[k]].card_target))
+            set_logp = _taken(logits, torch.from_numpy(chosen))
         logp[group] += set_logp
         for row, best in zip(group, chosen):
             cards[int(row)] = bits_to_cards(int(subsets.bits[best]))
@@ -425,6 +455,20 @@ def weigh(model: Policy, prep: Prepared, i: int = 0, top: int = 3) -> Weighed:
         types={int(ty): float(probs[ty]) for ty in torch.nonzero(probs > 0).flatten()},
         options=[(a, float(p)) for a, p in zip(actions, logp.exp())],
     )
+
+
+@torch.no_grad()
+def complete(model: Policy, prep: Prepared, idx: np.ndarray,
+             moves: list[FactoredAction]) -> tuple[list[FactoredAction], np.ndarray]:
+    """Per example ``idx[row]``, the move ``moves[row]`` with its cards filled in where it
+    gives none and needs some (the policy's likeliest), and the whole move's
+    log-probability."""
+    t = prep.tokens(idx)
+    run, tokens = model.encode(t)
+    types = np.array([m.action_type for m in moves], np.int64)
+    logp = _taken(model.type_logits(run, t["type_mask"]), torch.from_numpy(types))
+    actions, logp = _complete(model, prep, idx, run, tokens, types, logp, None, fixed=moves)
+    return actions, logp.numpy()
 
 
 def choose(model: Policy, prep: Prepared, idx: np.ndarray | None = None) -> list[FactoredAction]:

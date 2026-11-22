@@ -247,3 +247,89 @@ def test_the_pull_alone_moves_the_policy_toward_its_start(model, batch):
                          pull=(start_logp, 1.0))
     assert stats["away from start"] == pytest.approx(before, rel=1e-4)
     assert away() < before
+
+
+def at_first_hand(bp: BranchPlay, seal: str | None) -> dict:
+    """The first main line of run "test" at its first hand, every hand card given ``seal``."""
+    from jackdaw.env.game_spec import FactoredAction
+
+    main = bp._new_main()
+    bp._step(main, FactoredAction(int(ActionType.SelectBlind)))
+    game = main["info"]["game"]
+    snapshot = game.to_dict()
+    for card in snapshot["areas"]["hand"]:
+        card["seal"] = seal
+    game.replace_state(snapshot)
+    main["env"], main["info"] = copy_env(main["env"])
+    return main
+
+
+@pytest.fixture(scope="module")
+def seal_minded():
+    """A policy that plays its hands, its seal embedding loud enough that hiding the seals
+    changes which cards it plays."""
+    torch.manual_seed(5)
+    model = Policy(width=32, layers=1).eval()
+    with torch.no_grad():
+        model.embed[6].weight.mul_(40.0)
+        model.type_head.bias[int(ActionType.PlayHand)] += 30.0
+    return model
+
+
+def test_hiding_seals_changes_only_the_hand_and_pack_cards_seals():
+    bp = BranchPlay("test", rate=0.0, mains=1)
+    main = at_first_hand(bp, "Gold")
+    prep = Prepared(dataset.examples_of([env_view(main["info"])]))
+    hidden = prep.without_seals()
+    assert (prep.cats[:-1, 6] > 0).sum() == len(main["info"]["game"].hand)
+    assert (hidden.cats[:, 6] == 0).all()
+    changed = np.flatnonzero((hidden.feat != prep.feat).any(0))
+    assert len(changed) == 1 and (hidden.cats[:, :6] == prep.cats[:, :6]).all()
+
+
+def test_a_play_with_sealed_cards_branches_on_the_seal_blind_play_once_per_blind(seal_minded):
+    bp = BranchPlay("test", rate=0.0, mains=1)
+    bp._pairs, bp._states, bp._finished, bp._resolved = [], [], [], []
+    main = at_first_hand(bp, "Gold")
+    bp.lines = [main]
+    view = env_view(main["info"])
+    prep = Prepared(dataset.examples_of([view]))
+    greedy = act(seal_minded, prep)[0]
+    blind = act(seal_minded, prep.without_seals())[0][0]
+    assert greedy[0].action_type in (ActionType.PlayHand, ActionType.Discard)
+    assert not branch.same_move(blind, greedy[0])
+
+    (move, logp), = bp._sealed(seal_minded, prep, greedy, set()).values()
+    assert branch.same_move(move, blind)
+    assert bp._sealed(seal_minded, prep, greedy, set()) == {}  # this blind's seal branch is used
+    ex, stored, _ = branch._pair_examples([(view, greedy[0], 0.0, move, logp, 1.0)], DECK, STAKE)
+    with torch.no_grad():
+        assert np.isclose(scored(seal_minded, Prepared(ex), np.arange(2))[0].numpy()[1], stored[1],
+                          atol=1e-5)
+
+    main["forced"].clear()
+    bp._tick(seal_minded)
+    (line,) = [line for line in bp.lines if line["role"] == "branch"]
+    assert line["decision"]["seal"] and branch.same_move(line["force"], blind)
+
+
+def test_no_seal_branch_without_sealed_cards_or_where_the_seal_changes_nothing(seal_minded):
+    bp = BranchPlay("test", rate=0.0, mains=1)
+    main = at_first_hand(bp, None)
+    bp.lines = [main]
+    prep = Prepared(dataset.examples_of([env_view(main["info"])]))
+    assert bp._sealed(seal_minded, prep, act(seal_minded, prep)[0], set()) == {}
+    sealed = at_first_hand(bp, "Red")
+    bp.lines = [sealed]
+    prep = Prepared(dataset.examples_of([env_view(sealed["info"])]))
+    blind = act(seal_minded, prep.without_seals())[0]
+    assert bp._sealed(seal_minded, prep, blind, set()) == {}
+    assert sealed["forced"] == set()  # the occasion waits for a point where the seal matters
+    assert bp._sealed(seal_minded, prep, blind, {0}) == {}
+
+
+def test_seal_branches_are_tallied_apart():
+    d = {"phase": "selecting_hand", "main move": "PlayHand", "drawn move": "PlayHand",
+         "tied": False, "joined": False, "cut": False, "diff": 2.0, "ante diff": 1, "win diff": 0}
+    counts = tally([{**d, "seal": True}, d])
+    assert counts["seal"]["n"] == 1 and counts["seal"]["main better"] == 1 and counts["all"]["n"] == 2

@@ -24,6 +24,12 @@ outside the rate (``FORCED``): once per occasion (an ante, a blind, a shop visit
 first decision point where the move is legal and not the line's own pick, with that
 move's chance. A forced move takes the policy's likeliest item. Those branches are not
 among the kept states: their moves are not samples of the policy.
+
+Seals come up a few times a game, so draws seldom land on them. A main line holding
+sealed cards branches on the move the policy makes with the seals hidden (``SEALED``):
+once per blind at a play or discard, once per pack opened. In a pack with a seal
+Spectral the policy passes over, the branch takes that Spectral instead. Whichever line
+does better teaches the policy what the seal is worth there.
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ from jackdaw.env.game_spec import FactoredAction
 
 from rl import dataset
 from rl.evaluate import DECK, MAX_STEPS, STAKE, WIN_ANTE
-from rl.model import Policy, Prepared, _complete, act
+from rl.model import DISCARD, PICK, PLAY, Policy, Prepared, _complete, act, complete
 from rl.ordering import put_in_order
 from rl.playback import copy_env, env_view, make_env, no_legal_action
 from rl.selfplay import WIN_BONUS, game_points, train_seed
@@ -52,6 +58,10 @@ FORCED: dict[int, tuple[str, float]] = {
     BUY_AND_USE: ("shop", 0.1),
 }
 """Per forced move type: the occasion it is tried once in, and the chance it is tried."""
+
+SEAL_SPECTRALS = frozenset({"c_deja_vu", "c_talisman", "c_trance", "c_medium"})
+SEALED: dict[str, float] = {"hand": 1.0, "pack": 1.0}
+"""The chance a seal branch is tried, once per blind's hand and once per pack opened."""
 
 
 @dataclass
@@ -137,6 +147,8 @@ class BranchPlay:
         for k in tried:
             self._states.append((views[k], *first[k]))
         drawn.update(self._forced(model, prep, greedy))
+        sealed = self._sealed(model, prep, greedy, set(drawn))
+        drawn.update(sealed)
         spawned, still = [], []
         for k, line in enumerate(self.lines):
             move = greedy[k]
@@ -144,7 +156,8 @@ class BranchPlay:
                 move, line["force"] = line["force"], None
             if k in drawn:
                 alt, alt_logp = drawn[k]
-                spawned.append(self._branch(line, views[k], greedy[k], float(glogp[k]), alt, alt_logp))
+                spawned.append(self._branch(line, views[k], greedy[k], float(glogp[k]), alt,
+                                            alt_logp, seal=k in sealed))
             if self._step(line, move):
                 still.append(line)
         self.lines = [line for line in still if not self._joined(line)] + spawned
@@ -202,13 +215,57 @@ class BranchPlay:
             moves, logp = _complete(model, prep, idx, run, tokens, types, logp, None)
         return {k: (move, float(lp)) for k, move, lp in zip(rows, moves, logp)}
 
-    def _branch(self, main: dict, view, move, move_logp: float, alt, alt_logp: float) -> dict:
+    def _sealed(self, model: Policy, prep: Prepared, greedy, taken: set[int]) -> dict:
+        """Per main line not in ``taken`` holding sealed cards (in hand at a play or
+        discard, or in an opened pack): the move the policy makes with the seals hidden,
+        or in a pack the seal Spectral it passes over, at the first decision point of the
+        occasion where that is not the line's own pick and at its ``SEALED`` chance. With
+        the move's log-probability under the policy, seals shown."""
+        blind_rows, spectral = [], {}
+        for k, line in enumerate(self.lines):
+            if line["role"] != "main" or k in taken:
+                continue
+            g = line["info"]["game"]
+            phase = g.phase.value
+            if phase == "selecting_hand" and greedy[k].action_type in (PLAY, DISCARD):
+                if any(c.seal for c in g.hand):
+                    blind_rows.append(k)
+            elif phase == "pack_opening":
+                legal = line["info"]["action_mask"].entity_masks.get(ActionType.PickPackCard)
+                passed = [i for i, c in enumerate(g.pack_cards) if c.key in SEAL_SPECTRALS
+                          and legal is not None and legal[i]
+                          and not (greedy[k].action_type == PICK and greedy[k].entity_target == i)]
+                if passed:
+                    spectral[k] = FactoredAction(PICK, entity_target=passed[0])
+                elif any(c.seal and not c.face_down for c in g.pack_cards):
+                    blind_rows.append(k)
+        alts = dict(spectral)
+        if blind_rows:
+            blind = act(model, prep.without_seals(), np.asarray(blind_rows))[0]
+            alts.update({k: m for k, m in zip(blind_rows, blind) if not same_move(m, greedy[k])})
+        rows = []
+        for k in alts:
+            line = self.lines[k]
+            kind = "pack" if line["info"]["game"].phase.value == "pack_opening" else "hand"
+            occasion = ("seal " + kind, line["blinds"], line["shops"])
+            if occasion in line["forced"]:
+                continue
+            line["forced"].add(occasion)
+            if self.rng.random() < SEALED[kind]:
+                rows.append(k)
+        if not rows:
+            return {}
+        moves, logp = complete(model, prep, np.asarray(rows), [alts[k] for k in rows])
+        return {k: (move, float(lp)) for k, move, lp in zip(rows, moves, logp)}
+
+    def _branch(self, main: dict, view, move, move_logp: float, alt, alt_logp: float,
+                seal: bool = False) -> dict:
         g = main["info"]["game"]
         env, info = copy_env(main["env"])
         self.seeds[main["seed"]]["open"] += 1
         decision = {"phase": g.phase.value, "ante": int(g.ante), "round": int(g.round),
                     "main move": ActionType(move.action_type).name,
-                    "drawn move": ActionType(alt.action_type).name,
+                    "drawn move": ActionType(alt.action_type).name, "seal": seal,
                     "pair": (view, move, move_logp, alt, alt_logp)}
         return {"role": "branch", "seed": main["seed"], "env": env, "info": info, "steps": 0,
                 "force": alt, "decision": decision, "hashes": {}}
@@ -325,10 +382,12 @@ def _pair_examples(pairs, deck: str, stake: int):
 def tally(decisions: list[dict]) -> dict:
     """The resolved decisions summed: how many, how many tied, rejoined or cut, and the
     main line's moves against the drawn ones in points, antes and wins; over all of them,
-    by phase, and by the pair of move types ("PlayHand > Discard")."""
+    by phase, by the pair of move types ("PlayHand > Discard"), and over the seal
+    branches ("seal")."""
     out: dict = {}
     for d in decisions:
-        for key in ("all", d["phase"], f'{d["main move"]} > {d["drawn move"]}'):
+        for key in ("all", d["phase"], f'{d["main move"]} > {d["drawn move"]}',
+                    *(("seal",) if d.get("seal") else ())):
             t = out.setdefault(key, {"n": 0, "tied": 0, "joined": 0, "cut": 0, "main better": 0,
                                      "drawn better": 0, "points": 0.0, "antes": 0, "wins": 0})
             t["n"] += 1
