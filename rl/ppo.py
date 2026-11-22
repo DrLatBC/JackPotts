@@ -52,7 +52,7 @@ import torch.nn.functional as F
 from rl.branch import BranchPlay, tally
 from rl.evaluate import (DECK, DECK_NAMES, STAKE, STAKE_NAMES, eval_seed, game_setup, model_file,
                          play, playstyle, summary)
-from rl.model import VALUE_SCALE, Policy, Prepared, act
+from rl.model import VALUE_SCALE, Policy, Prepared, act, widen_optimizer
 from rl.selfplay import WIN_BONUS, SelfPlay, advantages, same_seed_scores
 from rl.train import heads, load_model, save_model
 
@@ -279,6 +279,7 @@ def train(args) -> int:
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     if args.resume and (out / "optim.pt").exists():
         opt.load_state_dict(torch.load(out / "optim.pt"))
+        widen_optimizer(opt)
     setup = game_setup(args.deck, args.stake)
     deck, stake = setup
     if args.branch_rate:

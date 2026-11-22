@@ -27,7 +27,7 @@ import torch.nn.functional as F
 from jackdaw.env.action_space import ACTION_VERSION, NUM_ACTION_TYPES, ActionType
 
 from rl import dataset
-from rl.model import PLAY, Policy, Prepared, _TYPE_LIST, item_tokens, set_groups
+from rl.model import PLAY, Policy, Prepared, _TYPE_LIST, item_tokens, set_groups, widen_inputs
 
 DATA = Path(__file__).resolve().parent / "data"
 HELDOUT = DATA / "heldout_seeds.txt"
@@ -213,7 +213,7 @@ def load_model(path: str | Path) -> tuple[Policy, dict]:
                          f"{saved['action_version']}; this is {here}")
     model = Policy(**saved["config"])
     # A policy trained only to copy the bot has no value head; it starts untrained.
-    missing, unexpected = model.load_state_dict(saved["state"], strict=False)
+    missing, unexpected = model.load_state_dict(widen_inputs(saved["state"]), strict=False)
     if unexpected or any(not k.startswith("value_head.") for k in missing):
         raise ValueError(f"{path} does not fit this network: missing {missing}, "
                          f"unexpected {unexpected}")

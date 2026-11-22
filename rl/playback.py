@@ -91,6 +91,7 @@ def difference(view: View, ex: Examples, i: int) -> str | None:
         ("pack", obs.pack_cards, ex.rows("pack", i)),
         ("consumable targets", view.cons_extra, ex.rows("cons_extra", i)),
         ("pack extras", view.pack_extra, ex.rows("pack_extra", i)),
+        ("round", view.round_extra, ex["round"][i]),
         ("shop splits", np.asarray(view.splits), ex["splits"][i]),
         ("type mask", mask.type_mask, ex["type_mask"][i]),
         ("card mask", mask.card_mask, ex.rows("card_mask", i)),

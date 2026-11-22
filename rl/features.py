@@ -14,6 +14,7 @@ from itertools import combinations
 
 import numpy as np
 
+from jackdaw.engine.data import load
 from jackdaw.env.action_space import (
     DEFAULT_MAX_FREE_MOVES,
     ActionMask,
@@ -32,6 +33,15 @@ D_PACK_EXTRA = 4
 D_CONS_EXTRA = 3
 """Per consumable: needs targets, min targets, max targets, as the engine judges a use
 (the observation's own minimum is not the engine's)."""
+
+BOSS_KEYS: tuple[str, ...] = tuple(sorted(k for k in load("blinds") if k not in ("bl_small", "bl_big")))
+HAND_TYPES: tuple[str, ...] = tuple(sorted(load("hands")))
+_BOSS_AT = {k: i for i, k in enumerate(BOSS_KEYS)}
+_HAND_AT = {h: len(BOSS_KEYS) + i for i, h in enumerate(HAND_TYPES)}
+D_ROUND = len(BOSS_KEYS) + len(HAND_TYPES)
+"""Per decision, what the observation leaves out of a round: the boss whose effect is in
+force (one column per ``BOSS_KEYS``), then each of ``HAND_TYPES`` played this round (1 or
+0). All zero outside a blind."""
 
 # Action types that point at one item, with the list they index.
 ENTITY_TYPES: tuple[int, ...] = (
@@ -80,6 +90,8 @@ class View:
     """(n_pack, D_PACK_EXTRA): what the observation's blank pack rows leave out."""
     cons_extra: np.ndarray
     """(n_consumables, D_CONS_EXTRA): each consumable's targeting needs."""
+    round_extra: np.ndarray
+    """(D_ROUND,): the boss in force and the hand types played this round."""
 
     def card_bounds(self, action_type: int, entity: int | None) -> tuple[int, int] | None:
         """How many hand cards the action selects: ``(min, max)``, or ``None`` when it
@@ -154,7 +166,22 @@ def view_from(game, obs: Observation, mask: ActionMask, state: GameState, splits
     cons = np.zeros((n_cons, D_CONS_EXTRA), np.float32)
     for i, item in enumerate(item_ids(obs.consumables[:, 0])):
         cons[i] = _targets(game, "consumables", i, item)
-    return View(obs, mask, state, tuple(splits), extra, cons)
+    return View(obs, mask, state, tuple(splits), extra, cons, round_facts(game))
+
+
+def round_facts(game) -> np.ndarray:
+    """The ``D_ROUND`` columns for the blind being played. Hands' this-round counts
+    stay set through the shop, so they are read only while a blind is in play."""
+    out = np.zeros(D_ROUND, np.float32)
+    blind = game._view("blind")
+    if not blind or not blind.get("key"):
+        return out
+    if blind.get("boss") and not blind.get("disabled") and blind["key"] in _BOSS_AT:
+        out[_BOSS_AT[blind["key"]]] = 1.0
+    for hand, level in game._view("hands").items():
+        if level.get("played_this_round", 0) > 0 and hand in _HAND_AT:
+            out[_HAND_AT[hand]] = 1.0
+    return out
 
 
 def _targets(game, area: str, index: int, item: int) -> tuple[float, int, int]:

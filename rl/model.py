@@ -42,6 +42,7 @@ from rl.dataset import Examples, bits_to_cards
 from rl.features import (
     AURA_ID,
     CONSUMABLE,
+    D_ROUND,
     ENTITY_LIST,
     ENTITY_SLOT,
     ENTITY_TYPES,
@@ -56,6 +57,8 @@ VALUE_SCALE = 8.0
 """The value head predicts points / VALUE_SCALE, so its targets stay near 0 to 2."""
 BEST_HAND = 13
 """The column of a hand card's row that marks it as part of the best hand."""
+D_RUN = D_GLOBAL + D_ROUND
+"""The run token's input: the observation's global row, then the round columns."""
 PLAY, DISCARD = int(ActionType.PlayHand), int(ActionType.Discard)
 USE, PICK = int(ActionType.UseConsumable), int(ActionType.PickPackCard)
 
@@ -205,7 +208,7 @@ class Prepared:
         real = pos < lens[:, None]
         at = np.where(real, self.tok_start[idx][:, None] + pos, len(self.feat) - 1)
         return {
-            "glob": torch.from_numpy(self.ex["glob"][idx]),
+            "glob": torch.from_numpy(np.concatenate([self.ex["glob"][idx], self.ex["round"][idx]], 1)),
             "feat": torch.from_numpy(self.feat[at]),
             "cats": torch.from_numpy(self.cats[at].astype(np.int64)),
             "pad": torch.from_numpy(~real),
@@ -265,7 +268,7 @@ class Policy(nn.Module):
     def __init__(self, width: int = 128, layers: int = 2, heads: int = 4, dropout: float = 0.0):
         super().__init__()
         self.width = width
-        self.run_in = nn.Sequential(nn.Linear(D_GLOBAL, width), nn.ReLU(), nn.Linear(width, width))
+        self.run_in = nn.Sequential(nn.Linear(D_RUN, width), nn.ReLU(), nn.Linear(width, width))
         self.token_in = nn.Linear(D_TOKEN, width)
         sizes = (6, NUM_CENTER_KEYS + 1, 15, 5, 9, 5, 5)
         self.embed = nn.ModuleList(nn.Embedding(s, width, padding_idx=0) for s in sizes)
@@ -317,6 +320,30 @@ class Policy(nn.Module):
         context = self.set_context(torch.cat([run, self.type_embed(types), item], -1))
         x = pooled + context[:, None, :] + self.size_embed(subsets.size_t)[None, :, :]
         return self.set_score(x).squeeze(-1).masked_fill(~legal, -torch.inf)
+
+
+def _pad_columns(t: torch.Tensor, width: int) -> torch.Tensor:
+    return torch.cat([t, t.new_zeros(*t.shape[:-1], width - t.shape[-1])], -1)
+
+
+def widen_inputs(state: dict) -> dict:
+    """A saved network state whose run input is narrower than ``D_RUN``, with zero
+    weights on the missing columns: the network acts exactly as saved until training
+    moves them."""
+    w = state.get("run_in.0.weight")
+    if w is None or w.shape[1] >= D_RUN:
+        return state
+    return {**state, "run_in.0.weight": _pad_columns(w, D_RUN)}
+
+
+def widen_optimizer(opt: torch.optim.Optimizer) -> None:
+    """Optimizer moments loaded for a narrower run input, padded with zeros to the
+    parameters' shapes."""
+    for group in opt.param_groups:
+        for p in group["params"]:
+            for key, v in opt.state.get(p, {}).items():
+                if torch.is_tensor(v) and v.dim() == p.dim() and v.shape != p.shape:
+                    opt.state[p][key] = _pad_columns(v, p.shape[-1])
 
 
 def set_groups(prep: Prepared, idx, rows, types, entities):

@@ -19,7 +19,7 @@ from jackdaw.env.action_space import ACTION_VERSION, NUM_ACTION_TYPES
 from jackdaw.env.game_spec import FactoredAction
 from jackdaw.env.observation import D_CONSUMABLE, D_GLOBAL, D_JOKER, D_PLAYING_CARD, D_SHOP
 
-from rl.features import D_CONS_EXTRA, D_PACK_EXTRA, ENTITY_SLOT, ENTITY_TYPES, View
+from rl.features import D_CONS_EXTRA, D_PACK_EXTRA, D_ROUND, ENTITY_SLOT, ENTITY_TYPES, View
 
 FORMAT = 1
 
@@ -69,7 +69,7 @@ class ShardWriter:
 
     def __init__(self) -> None:
         self._fixed: dict[str, list] = {k: [] for k in (
-            "glob", "splits", "type_mask", "min_sel", "max_sel", "forced", "act_type",
+            "glob", "round", "splits", "type_mask", "min_sel", "max_sel", "forced", "act_type",
             "act_entity", "act_cards", "exec_cards", "flags", "game", "emask_len",
         )}
         self._rag: dict[str, list] = {k: [] for k in RAGGED}
@@ -107,6 +107,7 @@ class ShardWriter:
         obs, mask = view.obs, view.mask
         f = self._fixed
         f["glob"].append(obs.global_context.copy())
+        f["round"].append(view.round_extra.copy())
         f["splits"].append(view.splits)
         f["type_mask"].append(mask.type_mask.copy())
         f["min_sel"].append(mask.min_card_select)
@@ -157,6 +158,7 @@ class ShardWriter:
         f = self._fixed
         n = len(f["act_type"])
         out["glob"] = np.asarray(f["glob"], np.float32).reshape(n, D_GLOBAL)
+        out["round"] = np.asarray(f["round"], np.float32).reshape(n, D_ROUND)
         out["splits"] = np.asarray(f["splits"], np.int16).reshape(n, 3)
         out["type_mask"] = np.asarray(f["type_mask"], np.bool_).reshape(n, NUM_ACTION_TYPES)
         for name, dtype in (("min_sel", np.int8), ("max_sel", np.int8), ("forced", np.int8),
@@ -199,6 +201,8 @@ class Examples:
     arrays: dict[str, np.ndarray]
 
     def __post_init__(self) -> None:
+        if "round" not in self.arrays:  # shards without the round columns read as zeros
+            self.arrays["round"] = np.zeros((len(self.arrays["act_type"]), D_ROUND), np.float32)
         self.start: dict[str, np.ndarray] = {}
         for name in RAGGED:
             n = self.arrays[name + "_n"].astype(np.int64)
