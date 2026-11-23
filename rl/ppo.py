@@ -20,7 +20,8 @@ points, each step's loss carries ``beta`` times an estimate of how far the polic
 from its start on those states (``one_step``'s ``pull``).
 
 ``--deck`` and ``--stake`` (the panel's names) set what the run plays and is evaluated on;
-``--win-bonus`` the points a win adds on top of one per boss beaten.
+``--win-bonus`` the points a win adds on top of one per boss beaten; ``--endless-bonus``
+(above 0) plays won games on into endless mode at that many points per endless ante.
 
 Each step's points (``rl.selfplay.points``) are reduced by the drift penalty: ``beta``
 times how much more likely the playing policy found its move than the copy does
@@ -53,7 +54,7 @@ from rl.branch import BranchPlay, tally
 from rl.evaluate import (DECK, DECK_NAMES, STAKE, STAKE_NAMES, eval_seed, game_setup, model_file,
                          play, playstyle, summary)
 from rl.model import VALUE_SCALE, Policy, Prepared, act, widen_optimizer
-from rl.selfplay import WIN_BONUS, SelfPlay, advantages, same_seed_scores
+from rl.selfplay import ENDLESS_BONUS, WIN_BONUS, SelfPlay, advantages, same_seed_scores
 from rl.train import heads, load_model, save_model
 
 from balatro_bot.eval_compare import compare, describe  # noqa: E402  (src is on the path once rl is imported)
@@ -285,16 +286,17 @@ def train(args) -> int:
     if args.branch_rate:
         games = BranchPlay(args.run, seed=args.seed + state["updates"], first=state["next_seed"],
                            deck=deck, stake=stake, win_bonus=args.win_bonus,
-                           rate=args.branch_rate, draws=args.draws)
+                           endless_bonus=args.endless_bonus, rate=args.branch_rate, draws=args.draws)
     else:
         games = SelfPlay(args.run, seed=args.seed + state["updates"], first=state["next_seed"],
-                         deck=deck, stake=stake, win_bonus=args.win_bonus)
+                         deck=deck, stake=stake, win_bonus=args.win_bonus,
+                         endless_bonus=args.endless_bonus)
     rng = np.random.default_rng(args.seed + state["updates"])
     eval_seeds = [(eval_seed(i), deck, stake) for i in range(1, args.eval_games + 1)]
     report(status, phase="running", copy=meta["copy"], beta=state["beta"], doing="playing",
            method="BRANCHES" if args.branch_rate else "SAME SEED", deck=args.deck, stake=args.stake,
            decisions=args.decisions_per_step if args.branch_rate else None,
-           **{"win bonus": args.win_bonus}, **progress(state, args), **last_numbers(log_path),
+           **{"win bonus": args.win_bonus, "endless bonus": args.endless_bonus}, **progress(state, args), **last_numbers(log_path),
            **last_eval(out))
     if not args.resume and args.eval_every:
         save_model(out / "latest.pt", model, model.config, {**meta, "updates": 0})
@@ -605,6 +607,8 @@ def main() -> int:
     tr.add_argument("--stake", default="WHITE", choices=STAKE_NAMES, type=str.upper)
     tr.add_argument("--win-bonus", type=float, default=WIN_BONUS,
                     help="points a win adds on top of one per boss beaten")
+    tr.add_argument("--endless-bonus", type=float, default=ENDLESS_BONUS,
+                    help="points per endless ante, a third per blind (0: games end at the win)")
     tr.add_argument("--resume", action="store_true")
     tr.add_argument("--beta", type=float, default=0.1, help="starting drift penalty")
     tr.add_argument("--fade", type=float, default=0.5,

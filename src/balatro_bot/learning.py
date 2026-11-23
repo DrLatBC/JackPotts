@@ -28,6 +28,8 @@ METHOD_FIXED = {
 }
 METHODS = list(METHOD_FIXED)
 DECISIONS = 2000
+CHANGE = 0.005
+ENDLESS = 0.0
 TRAIN_ACTIVE = jobs.LIVE
 RUN_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 # A run with no status file whose log changed this recently may still be playing from
@@ -110,13 +112,15 @@ def start_choice(start: str) -> tuple[str, str]:
 
 def train_command(settings: dict) -> list[str]:
     """A new run: the panel's fields, then the fixed flags of every run and of its method.
-    Decisions per step is a branch run's own field."""
+    Decisions per step is a branch run's own field; the change limit is every run's."""
     method = settings["train_method"]
     branch = (["--decisions-per-step", str(settings.get("train_decisions", DECISIONS))]
               if method == "BRANCHES" else [])
     return [str(RL_PYTHONW), "-m", "rl.ppo", "train", "--run", settings["train_run"],
             "--start", settings["train_copy"], "--hours", str(settings["train_hours"]),
-            "--beta", str(settings["train_beta"]), "--win-bonus", str(settings["train_bonus"]),
+            "--beta", str(settings["train_beta"]),
+            "--target-change", str(settings.get("train_change", CHANGE)), "--win-bonus", str(settings["train_bonus"]),
+            "--endless-bonus", str(settings.get("train_endless", ENDLESS)),
             "--deck", settings["train_deck"], "--stake", settings["train_stake"],
             *TRAIN_FIXED, *METHOD_FIXED[method], *branch]
 
@@ -130,13 +134,13 @@ def _fixed_args() -> dict:
 
 
 def run_settings(args: dict) -> dict:
-    """A run's method, deck, stake, win bonus and (a branch run's) decisions per step from
-    the args its state.json saved; a run from before those options played same-seed on
-    Blue/White with bonus 8."""
+    """A run's method, deck, stake, win and endless bonuses, change limit and (a branch
+    run's) decisions per step from the args its state.json saved; a run from before those
+    options played same-seed on Blue/White with bonus 8 and stopped at its win."""
     branch = bool(args.get("branch_rate"))
     return {"method": "BRANCHES" if branch else "SAME SEED",
             "deck": args.get("deck", "BLUE"), "stake": args.get("stake", "WHITE"),
-            "win bonus": args.get("win_bonus", 8.0),
+            "win bonus": args.get("win_bonus", 8.0), "endless bonus": args.get("endless_bonus", ENDLESS), "change": args.get("target_change", CHANGE),
             "decisions": args.get("decisions_per_step", DECISIONS) if branch else None}
 
 

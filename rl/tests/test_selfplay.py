@@ -15,8 +15,8 @@ from jackdaw.env.action_space import ActionType
 from rl.evaluate import eval_seed
 from rl.model import VALUE_SCALE, Policy, Prepared, act, choose
 from rl.ppo import one_step, scored, seed_share, update
-from rl.selfplay import (WIN_BONUS, Games, Rollout, SelfPlay, advantages, same_seed_scores,
-                         train_seed)
+from rl.selfplay import (WIN_BONUS, Games, Rollout, SelfPlay, advantages, points,
+                         same_seed_scores, train_seed)
 
 
 @pytest.fixture(scope="module")
@@ -73,6 +73,28 @@ def test_a_game_is_worth_its_antes_cleared_plus_the_win_bonus(model):
         expected = result["ante"] - 1 + (WIN_BONUS if result["won"] else 0.0)
         assert result["points"] == expected == games.reward[steps].sum() == to_go[steps[0]]
     assert len(games.examples) == len(games.reward)
+
+
+def _step(won_before, *, beaten=False, boss=False, won_now=None, move=ActionType.PlayHand):
+    from types import SimpleNamespace
+    return SimpleNamespace(prev=SimpleNamespace(won=won_before), blind_beaten=beaten,
+                           boss_beaten=boss, run_won=bool(won_now) and not won_before,
+                           action=SimpleNamespace(action_type=move))
+
+
+def test_endless_blinds_earn_a_third_of_the_endless_bonus_each():
+    assert points(_step(False, beaten=True, boss=True), 8.0, 4.0) == 1.0
+    assert points(_step(False, beaten=True, boss=True, won_now=True), 8.0, 4.0) == 9.0
+    assert points(_step(False, beaten=True), 8.0, 4.0) == 0.0
+    assert points(_step(True, beaten=True), 8.0, 4.0) == points(_step(True, beaten=True, boss=True), 8.0, 4.0)         == pytest.approx(4.0 / 3)
+    assert points(_step(True, move=ActionType.SkipBlind), 8.0, 4.0) == pytest.approx(4.0 / 3)
+    assert points(_step(True), 8.0, 4.0) == 0.0
+    assert points(_step(True, beaten=True), 8.0, 0.0) == 0.0
+
+
+def test_an_endless_bonus_plays_won_games_on():
+    assert SelfPlay("test")._new_game()["env"]._end_on_win
+    assert not SelfPlay("test", endless_bonus=4.0)._new_game()["env"]._end_on_win
 
 
 def test_repeated_seeds_are_played_in_groups(model):

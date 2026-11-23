@@ -3,8 +3,10 @@
 Main lines play new training seeds, always taking the policy's most likely move. At a
 share (``rate``) of their steps the policy draws up to ``draws`` moves looking for one
 that is not that move; when one comes up, a copy of the game (``rl.playback.copy_env``)
-plays it, then plays on the same way. Both lines play to their game's end, and the
-decision is worth the main line's points less the copy's (``rl.selfplay.game_points``).
+plays it, then plays on the same way. Both lines play to their game's end (with an endless
+bonus, a won game's end in endless mode), and the decision is worth the main line's points
+less the copy's: each line adds up its steps' ``rl.selfplay.points``, a copy starting from
+its main line's points at the decision.
 
 A copy whose state at a blind select is the main line's state at the same ante and round
 has rejoined it: the state holds the game's random streams, so the rest plays out alike.
@@ -41,13 +43,14 @@ import torch
 
 from jackdaw.env.action_space import ActionType
 from jackdaw.env.game_spec import FactoredAction
+from jackdaw.env.rewards import Transition
 
 from rl import dataset
 from rl.evaluate import DECK, MAX_STEPS, STAKE, WIN_ANTE
 from rl.model import DISCARD, PICK, PLAY, Policy, Prepared, _complete, act, complete
 from rl.ordering import put_in_order
 from rl.playback import copy_env, env_view, make_env, no_legal_action
-from rl.selfplay import WIN_BONUS, game_points, train_seed
+from rl.selfplay import ENDLESS_BONUS, WIN_BONUS, points, train_seed
 
 REROLL = int(ActionType.RerollBoss)
 SKIP = int(ActionType.SkipBlind)
@@ -97,8 +100,10 @@ class BranchPlay:
 
     def __init__(self, run: str, *, seed: int = 0, first: int = 0, deck: str = DECK,
                  stake: int = STAKE, win_bonus: float = WIN_BONUS, rate: float = 0.05,
-                 draws: int = 4, mains: int = 64, max_steps: int = MAX_STEPS) -> None:
+                 draws: int = 4, mains: int = 64, max_steps: int = MAX_STEPS,
+                 endless_bonus: float = ENDLESS_BONUS) -> None:
         self.run, self.deck, self.stake, self.win_bonus = run, deck, stake, win_bonus
+        self.endless_bonus = endless_bonus
         self.rate, self.draws, self.mains, self.max_steps = rate, draws, mains, max_steps
         self.next_seed = first
         self.generator = torch.Generator().manual_seed(seed)
@@ -129,10 +134,12 @@ class BranchPlay:
     def _new_main(self) -> dict:
         seed = train_seed(self.run, self.next_seed)
         self.next_seed += 1
-        env = make_env(self.deck, self.stake, on_refusal="truncate", max_steps=self.max_steps)
+        env = make_env(self.deck, self.stake, on_refusal="truncate", max_steps=self.max_steps,
+                       end_on_win=not self.endless_bonus)
         _, _, info = env.reset(seed=seed)
         self.seeds[seed] = {"result": None, "hash": {}, "open": 0, "waiting": []}
-        return {"role": "main", "seed": seed, "env": env, "info": info, "steps": 0, "force": None,
+        return {"role": "main", "seed": seed, "env": env, "info": info, "steps": 0, "points": 0.0,
+                "force": None,
                 "blinds": 0, "shops": 0, "forced": set()}
 
     def _tick(self, model: Policy) -> None:
@@ -268,7 +275,7 @@ class BranchPlay:
                     "drawn move": ActionType(alt.action_type).name, "seal": seal,
                     "pair": (view, move, move_logp, alt, alt_logp)}
         return {"role": "branch", "seed": main["seed"], "env": env, "info": info, "steps": 0,
-                "force": alt, "decision": decision, "hashes": {}}
+                "points": main["points"], "force": alt, "decision": decision, "hashes": {}}
 
     def _step(self, line: dict, move: FactoredAction) -> bool:
         """Play one move; True while the line goes on."""
@@ -279,6 +286,8 @@ class BranchPlay:
         if move.action_type == ActionType.PlayHand:
             move = replace(move, card_target=put_in_order(game, move.card_target))
         _, terminated, truncated, _, info = line["env"].step(move)
+        line["points"] += points(Transition.from_step(move, terminated, truncated, info),
+                                 self.win_bonus, self.endless_bonus)
         line["info"] = info
         line["steps"] += 1
         stuck = not (terminated or truncated) and no_legal_action(info)
@@ -306,9 +315,9 @@ class BranchPlay:
 
     def _ended(self, line: dict, result: dict) -> None:
         seed = self.seeds[line["seed"]]
+        result = {**result, "points": line["points"]}
         if line["role"] == "main":
-            result = {**result, "seed": line["seed"], "steps": line["steps"],
-                      "points": game_points(result, self.win_bonus)}
+            result = {**result, "seed": line["seed"], "steps": line["steps"]}
             seed["result"] = result
             self._finished.append(result)
             for decision, branch in seed["waiting"]:
@@ -339,7 +348,7 @@ class BranchPlay:
             self._resolved.append(decision)
             return
         cut = main["cut"] or branch["cut"]
-        diff = 0.0 if cut else game_points(main, self.win_bonus) - game_points(branch, self.win_bonus)
+        diff = 0.0 if cut else main["points"] - branch["points"]
         decision.update({"joined": False, "tied": not cut and diff == 0.0, "cut": bool(cut),
                          "diff": diff, "ante diff": main["ante"] - branch["ante"],
                          "win diff": int(main["won"]) - int(branch["won"])})
@@ -349,14 +358,16 @@ class BranchPlay:
 
 
 def _result(info: dict, truncated: bool, stuck: bool) -> dict:
+    """A line's end. A won game cut short in endless mode keeps its win and the points it
+    earned there."""
     state = info["state"]
+    won = bool(state.won)
     cut = None
-    if stuck:
+    if stuck and not won:
         cut = "no legal action"
-    elif truncated:
+    elif truncated and not won:
         cut = next((f"{k}: {info[k]}" for k in ("refused", "not_ported", "vetoed") if k in info),
                    "step limit")
-    won = bool(state.won) and cut is None
     return {"won": won, "ante": WIN_ANTE if won else min(int(state.ante), WIN_ANTE), "cut": cut}
 
 

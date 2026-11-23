@@ -18,7 +18,6 @@ from rl.evaluate import DECK, STAKE, game_setup
 from rl.model import Policy, Prepared, act, choose
 from rl.playback import copy_env, env_view, make_env
 from rl.ppo import scored
-from rl.selfplay import game_points
 from rl.train import save_model
 from balatro_bot import jobs
 
@@ -50,13 +49,8 @@ def test_a_copied_game_plays_out_exactly_like_the_original(model):
 
 def scored_by_money(monkeypatch):
     """An untrained policy loses every game at ante 1, so every decision would tie: score
-    each line by its money at the end instead (as the ante the points count)."""
-    real = branch._result
-
-    def result(info, truncated, stuck):
-        return {**real(info, truncated, stuck), "won": False, "ante": 1 + int(info["game"].dollars)}
-
-    monkeypatch.setattr(branch, "_result", result)
+    each step by the money it made instead."""
+    monkeypatch.setattr(branch, "points", lambda t, *_: float(t.curr.dollars - t.prev.dollars))
 
 
 @pytest.fixture(scope="module")
@@ -93,10 +87,19 @@ def test_stored_log_probabilities_are_the_ones_learning_recomputes(model, batch)
         assert np.allclose(logp, stored, atol=1e-5)
 
 
-def test_main_lines_score_with_the_win_bonus(batch):
-    assert batch.finished
-    for g in batch.finished:
-        assert g["points"] == game_points(g, 8.0)
+def test_main_lines_score_their_antes_and_the_win_bonus(model):
+    bp = BranchPlay("test-points", seed=1, rate=0.0, mains=2)
+    bp._pairs, bp._states, bp._finished, bp._resolved = [], [], [], []
+    while len(bp._finished) < 2:
+        bp._tick(model)
+    for g in bp._finished:
+        assert g["points"] == g["ante"] - 1 + (8.0 if g["won"] else 0.0)
+
+
+def test_an_endless_bonus_plays_won_games_on():
+    assert BranchPlay("test")._new_main()["env"]._end_on_win
+    main = BranchPlay("test", endless_bonus=4.0)._new_main()
+    assert not main["env"]._end_on_win and not copy_env(main["env"])[0]._end_on_win
 
 
 def test_a_branch_back_on_its_main_lines_path_stops_tied():

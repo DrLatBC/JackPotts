@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Learning runs can score past the win: with an endless bonus, won training games play on into endless mode and each endless blind beaten or skipped earns a third of the bonus. Both lines of a branch that win no longer tie by default. The Train tab sets it (ENDLESS) along with the step-size limit (CHANGE).
 - The compiled Rust kernel is the only scorer. The Python scorer, the panel's KERNEL box, the supervisor's `--kernel` flag, `BALATRO_KERNEL` and PyPy simulator bots are gone; every bot runs on CPython with the kernel, which must be built first ([installation](installation.md)). Play is unchanged: batches already scored with the kernel.
 
 ## v2.0.0 — 2026-11-17

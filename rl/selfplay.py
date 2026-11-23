@@ -5,8 +5,10 @@ samples an action for each (``rl.model.act`` with a generator), plays come out i
 bot's order (``rl.ordering``), and the step's points are counted.
 
 Points: one per boss beaten (an ante cleared) and the win bonus (``WIN_BONUS`` unless a
-run sets its own) more for the win, so a game is worth its final ante minus one, plus the
-bonus when won.
+run sets its own) more for the win, so a game that stops at its win is worth its final ante
+minus one, plus the bonus when won. With an endless bonus a won game plays on into endless
+mode, each blind beaten or skipped there earning a third of the bonus, so a whole endless
+ante earns all of it.
 """
 
 from __future__ import annotations
@@ -26,16 +28,17 @@ from rl.ordering import put_in_order
 from rl.playback import env_view, make_env, no_legal_action
 
 WIN_BONUS = 8.0
+ENDLESS_BONUS = 0.0
+"""Points per endless ante; 0 ends each game at its win."""
 
 
-def points(t: Transition, win_bonus: float = WIN_BONUS) -> float:
-    """The points one step earns."""
+def points(t: Transition, win_bonus: float = WIN_BONUS, endless_bonus: float = ENDLESS_BONUS) -> float:
+    """The points one step earns: before the win, one per boss beaten and the win bonus on
+    the step that wins; after it, a third of ``endless_bonus`` per blind beaten or skipped."""
+    if t.prev.won:
+        passed = t.blind_beaten or t.action.action_type == ActionType.SkipBlind
+        return endless_bonus / 3 if passed else 0.0
     return float(t.boss_beaten) + (win_bonus if t.run_won else 0.0)
-
-
-def game_points(result: dict, win_bonus: float = WIN_BONUS) -> float:
-    """The points a whole game earned, from its result: the sum of its steps' ``points``."""
-    return result["ante"] - 1 + (win_bonus if result["won"] else 0.0)
 
 
 def train_seed(run: str, n: int) -> str:
@@ -88,10 +91,11 @@ class SelfPlay:
 
     def __init__(self, run: str, *, seed: int = 0, first: int = 0,
                  max_steps: int = MAX_STEPS, deck: str = DECK, stake: int = STAKE,
-                 win_bonus: float = WIN_BONUS) -> None:
+                 win_bonus: float = WIN_BONUS, endless_bonus: float = ENDLESS_BONUS) -> None:
         self.run = run
         self.max_steps = max_steps
         self.deck, self.stake, self.win_bonus = deck, stake, win_bonus
+        self.endless_bonus = endless_bonus
         self.next_seed = first
         self.generator = torch.Generator().manual_seed(seed)
         self.slots: list[dict] = []
@@ -101,7 +105,8 @@ class SelfPlay:
         if seed is None:
             seed = train_seed(self.run, self.next_seed)
             self.next_seed += 1
-        env = make_env(self.deck, self.stake, on_refusal="truncate", max_steps=self.max_steps)
+        env = make_env(self.deck, self.stake, on_refusal="truncate", max_steps=self.max_steps,
+                       end_on_win=not self.endless_bonus)
         _, _, info = env.reset(seed=seed)
         return {"seed": seed, "env": env, "info": info, "steps": 0, "points": 0.0}
 
@@ -121,7 +126,7 @@ class SelfPlay:
                     action, card_target=put_in_order(slot["info"]["game"], action.card_target))
             _, terminated, truncated, _, info = slot["env"].step(played)
             reward[k] = points(Transition.from_step(played, terminated, truncated, info),
-                               self.win_bonus)
+                               self.win_bonus, self.endless_bonus)
             slot["info"] = info
             slot["steps"] += 1
             slot["points"] += float(reward[k])
@@ -202,14 +207,16 @@ class SelfPlay:
 
 
 def _result(slot: dict, truncated: bool, info: dict, stuck: bool = False) -> dict:
+    """A game's end. A won game cut short in endless mode keeps its win and the points it
+    earned there."""
     state = info["state"]
+    won = bool(state.won)
     cut = None
-    if stuck:
+    if stuck and not won:
         cut = "no legal action"
-    elif truncated:
+    elif truncated and not won:
         cut = next((f"{k}: {info[k]}" for k in ("refused", "not_ported", "vetoed") if k in info),
                    "step limit")
-    won = bool(state.won) and cut is None
     return {"seed": slot["seed"], "won": won,
             "ante": WIN_ANTE if won else min(int(state.ante), WIN_ANTE),
             "steps": slot["steps"], "points": slot["points"], "cut": cut}
