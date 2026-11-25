@@ -40,8 +40,8 @@ MIDAS, VAMPIRE = "j_midas_mask", "j_vampire"
 KINDS = ("copy joker", "midas", "best joker", "fill slot", "off-build planet", "held tarot")
 """Tried in this order; a main line takes at most one branch per tick."""
 SHOP_CHANCE: dict[str, float] = {
-    "copy joker": 1.0, "midas": 1.0, "best joker": 0.25, "fill slot": 0.5,
-    "off-build planet": 0.5, "held tarot": 1.0,
+    "copy joker": 1.0, "midas": 1.0, "best joker": 0.1, "fill slot": 0.25,
+    "off-build planet": 0.25, "held tarot": 0.25,
 }
 """The chance each branch is tried when it comes up: once per shop visit, a held tarot
 once per blind."""
