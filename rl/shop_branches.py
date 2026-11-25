@@ -3,9 +3,12 @@ the result teaches the policy what it is worth (``rl.branch``).
 
 A proposal is the moves the branch makes in place of the main line's own (a sale or two,
 then the buy), or, for a planet bought for a hand the run does not play, a joker in
-``PASSED_OVER`` or a joker that ``CONFLICTS`` with a held one, the card the branch may not
-buy this shop visit. Joker pairs and conflicts are the rule bot's own tables; only which
-jokers go together is used, not the bot's prices for them. Jokers are judged by what Tyler asked of them: does
+``PASSED_OVER`` or a joker or voucher that conflicts with a held joker or owned voucher,
+the card the branch may not buy this shop visit. Joker pairs and conflicts are the rule
+bot's own tables; only which jokers go together is used, not the bot's prices for them.
+Voucher pairs and conflicts (``VOUCHER_PAIRS``, ``VOUCHER_CONFLICTS``) work either way
+round: a voucher on sale beside a held joker, or a joker on sale beside an owned voucher.
+Jokers are judged by what Tyler asked of them: does
 the trade raise the average score of the best play over hands dealt from the run's deck
 (``hand_score``)? The test only decides whether a trade is tried; the branch's result is
 what the policy learns from. Scaling and money jokers score little up front, so the test
@@ -15,6 +18,7 @@ passes them over, as the policy does now.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import cache
 from itertools import combinations
 
 import numpy as np
@@ -26,9 +30,12 @@ from jackdaw.env.action_space import ActionType
 from jackdaw.env.game_spec import FactoredAction
 
 import rl.ordering  # noqa: F401  (puts the bot's src on the path)
-from balatro_bot.scaling import AMPLIFICATION_PAIRS, ANTI_SYNERGY  # noqa: E402
+from balatro_bot.scaling import (  # noqa: E402
+    AMPLIFICATION_PAIRS, ANTI_SYNERGY, VOUCHER_CONFLICTS, VOUCHER_PAIRS,
+)
 
 BUY, BUY_AND_USE = int(ActionType.BuyCard), int(ActionType.BuyAndUse)
+REDEEM = int(ActionType.RedeemVoucher)
 SELL_JOKER, SELL_CONS = int(ActionType.SellJoker), int(ActionType.SellConsumable)
 USE, LEAVE = int(ActionType.UseConsumable), int(ActionType.NextRound)
 
@@ -49,11 +56,12 @@ PAIRS: list[tuple[str, frozenset[str]]] = [(e, b) for e, b, _ in AMPLIFICATION_P
 CONFLICTS: dict[str, frozenset[str]] = ANTI_SYNERGY
 """The rule bot's anti-synergy map: a joker and the held jokers it works against."""
 
-KINDS = ("copy joker", "midas", "synergy", "pass joker", "conflict", "best joker", "fill slot",
-         "off-build planet", "held tarot")
+KINDS = ("copy joker", "midas", "synergy", "voucher synergy", "pass joker", "conflict",
+         "best joker", "fill slot", "off-build planet", "held tarot")
 """Tried in this order; a main line takes at most one branch per tick."""
 SHOP_CHANCE: dict[str, float] = {
-    "copy joker": 1.0, "midas": 1.0, "synergy": 1.0, "pass joker": 1.0, "conflict": 1.0,
+    "copy joker": 1.0, "midas": 1.0, "synergy": 1.0, "voucher synergy": 1.0,
+    "pass joker": 1.0, "conflict": 1.0,
     "best joker": 0.1, "fill slot": 0.25, "off-build planet": 0.25, "held tarot": 0.25,
 }
 """The chance each branch is tried when it comes up: once per shop visit, a held tarot
@@ -134,6 +142,8 @@ def _engine(m: FactoredAction):
         return A.SellCard("jokers", m.entity_target)
     if t == SELL_CONS:
         return A.SellCard("consumables", m.entity_target)
+    if t == REDEEM:
+        return A.RedeemVoucher(m.entity_target)
     raise ValueError(f"not a shop move: {m}")
 
 
@@ -166,6 +176,22 @@ def buy_plans(game, state, mask, shop_index: int,
         if money >= card.cost:
             plans.append(moves + [FactoredAction(BUY, entity_target=shop_index)])
     return [p for p in plans if _plays(game, p)]
+
+
+def redeem_plan(game, mask, voucher_index: int) -> list[FactoredAction] | None:
+    """Redeem shop voucher ``voucher_index``, after selling consumables (from the last)
+    until it is affordable; never a joker. None when the game does not take it."""
+    cost = game.shop_vouchers[voucher_index].cost
+    sell_c = mask.entity_masks.get(ActionType.SellConsumable)
+    money, moves = float(game.dollars), []
+    for i in reversed(range(len(game.consumables))):
+        if money >= cost:
+            break
+        if sell_c is not None and sell_c[i]:
+            money += game.consumables[i].sell_cost
+            moves.append(FactoredAction(SELL_CONS, entity_target=i))
+    plan = moves + [FactoredAction(REDEEM, entity_target=voucher_index)]
+    return plan if money >= cost and _plays(game, plan) else None
 
 
 def _plays(game, moves) -> bool:
@@ -209,6 +235,31 @@ def partners(key: str, held: set[str]) -> frozenset[str]:
     return frozenset(out)
 
 
+def linked(key: str, held: set[str], table) -> frozenset[str]:
+    """What in ``held`` (joker and voucher keys) ``key`` is tied to in a voucher table
+    (``VOUCHER_PAIRS`` or ``VOUCHER_CONFLICTS``): a voucher's jokers or a joker's vouchers."""
+    out: set[str] = set()
+    for vouchers, jokers in table:
+        if key in vouchers:
+            out |= held & jokers
+        elif key in jokers:
+            out |= held & vouchers
+    return frozenset(out)
+
+
+def _listed(joker: str, table) -> bool:
+    """Whether ``joker`` is in a voucher table; owned vouchers (a game copy) are read only then."""
+    return any(joker in jokers for _, jokers in table)
+
+
+def owned_vouchers(game) -> frozenset[str]:
+    return frozenset(game.to_dict()["sets"]["used_vouchers"])
+
+
+def _redeems(move: FactoredAction, index: int) -> bool:
+    return int(move.action_type) == REDEEM and move.entity_target == index
+
+
 def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Generator,
             line: dict, gate) -> Proposal | None:
     """The ``kind`` branch for a main line at its decision (``info`` from its last step),
@@ -221,6 +272,16 @@ def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Genera
         return found if found is not None and gate() else None
     if game.phase.value != "shop":
         return None
+    owned = cache(lambda: owned_vouchers(game))
+    if kind == "voucher synergy":
+        held = {j.key for j in game.jokers}
+        for i, v in enumerate(game.shop_vouchers):
+            if _redeems(greedy, i) or not linked(v.key, held, VOUCHER_PAIRS):
+                continue
+            plan = redeem_plan(game, mask, i)
+            if plan is not None:
+                return Proposal(kind, plan) if gate() else None
+        return None
     if kind in ("copy joker", "midas", "synergy"):
         held = {j.key for j in game.jokers}
         for i in _jokers_on_sale(game):
@@ -231,8 +292,12 @@ def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Genera
                 keep = frozenset() if key in COPY_JOKERS else None
             elif kind == "midas":
                 keep = frozenset({VAMPIRE}) if key == MIDAS and VAMPIRE in held else None
+            elif key in held:
+                keep = None
             else:
-                keep = None if key in held else partners(key, held) or None
+                keep = partners(key, held)
+                if not keep and not (_listed(key, VOUCHER_PAIRS) and linked(key, owned(), VOUCHER_PAIRS)):
+                    keep = None
             if keep is None:
                 continue
             plans = buy_plans(game, state, mask, i, keep)
@@ -252,13 +317,19 @@ def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Genera
             return None
         return Proposal(kind, [], veto=card.sort_id) if gate() else None
     if kind in ("pass joker", "conflict"):
-        if int(greedy.action_type) != BUY:
+        held = {j.key for j in game.jokers}
+        if kind == "conflict" and int(greedy.action_type) == REDEEM:
+            card = game.shop_vouchers[greedy.entity_target]
+            vetoed = bool(linked(card.key, held, VOUCHER_CONFLICTS))
+        elif int(greedy.action_type) != BUY:
             return None
-        card = game.shop_jokers[greedy.entity_target]
-        if kind == "pass joker":
+        elif kind == "pass joker":
+            card = game.shop_jokers[greedy.entity_target]
             vetoed = card.key in PASSED_OVER
         else:
-            vetoed = bool(CONFLICTS.get(card.key, frozenset()) & {j.key for j in game.jokers})
+            card = game.shop_jokers[greedy.entity_target]
+            vetoed = bool(CONFLICTS.get(card.key, frozenset()) & held) or (
+                _listed(card.key, VOUCHER_CONFLICTS) and bool(linked(card.key, owned(), VOUCHER_CONFLICTS)))
         if not vetoed:
             return None
         return Proposal(kind, [], veto=card.sort_id) if gate() else None
@@ -317,13 +388,19 @@ def occasion(kind: str, line: dict) -> tuple:
 
 
 def without(view, game, sort_id: int):
-    """``view`` with the shop card ``sort_id`` out of the buys while it is on sale."""
-    at = [i for i, c in enumerate(game.shop_jokers) if c.sort_id == sort_id]
-    if not at or game.phase.value != "shop":
+    """``view`` with the shop card or voucher ``sort_id`` out of the buys while it is on sale."""
+    if game.phase.value != "shop":
+        return view
+    for area, types in ((game.shop_jokers, (ActionType.BuyCard, ActionType.BuyAndUse)),
+                        (game.shop_vouchers, (ActionType.RedeemVoucher,))):
+        at = [i for i, c in enumerate(area) if c.sort_id == sort_id]
+        if at:
+            break
+    else:
         return view
     masks = dict(view.mask.entity_masks)
     type_mask = view.mask.type_mask.copy()
-    for t in (ActionType.BuyCard, ActionType.BuyAndUse):
+    for t in types:
         m = masks.get(t)
         if m is not None:
             m = m.copy()

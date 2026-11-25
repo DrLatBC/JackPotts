@@ -450,6 +450,47 @@ ANTI_SYNERGY: dict[str, frozenset[str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Vouchers and jokers: (vouchers, jokers). A pair's vouchers feed its jokers; a
+# conflict's vouchers work against them. Either side may be the one owned.
+# ---------------------------------------------------------------------------
+
+VOUCHER_PAIRS: list[tuple[frozenset[str], frozenset[str]]] = [
+    # A consumable slot: more cards held to sell, and room for the cards these create.
+    (frozenset({"v_crystal_ball"}), frozenset({
+        "j_campfire", "j_cartomancer", "j_8_ball", "j_vagabond", "j_hallucination",
+        "j_seance", "j_sixth_sense",
+    })),
+    (frozenset({"v_wasteful", "v_recyclomancy"}), DISCARD_SCALERS | frozenset({
+        "j_banner", "j_delayed_grat", "j_faceless", "j_trading",
+    })),
+    (frozenset({"v_grabber", "v_nacho_tong"}), PLAY_SCALERS),
+    # Hand size makes up for what these jokers take away.
+    (frozenset({"v_paint_brush", "v_palette"}), frozenset({"j_stuntman", "j_merry_andy", "j_troubadour"})),
+    (frozenset({"v_reroll_surplus", "v_reroll_glut"}), frozenset({"j_flash"})),
+    # To the Moon's extra interest per $5 runs up to the raised cap.
+    (frozenset({"v_seed_money", "v_money_tree"}), frozenset({"j_to_the_moon", "j_bull", "j_bootstraps"})),
+    (frozenset({"v_planet_merchant", "v_planet_tycoon", "v_telescope"}),
+     frozenset({"j_constellation", "j_satellite", "j_astronomer"})),
+    # Perkeo's Negative planet copies each give Observatory's X1.5.
+    (frozenset({"v_observatory"}), frozenset({"j_perkeo"})),
+    (frozenset({"v_tarot_merchant", "v_tarot_tycoon"}), frozenset({"j_fortune_teller", "j_campfire"})),
+    # Shop playing cards are cards added to the deck; Illusion's may be enhanced.
+    (frozenset({"v_magic_trick", "v_illusion"}), frozenset({"j_hologram", "j_drivers_license"})),
+    # An extra slot left empty is another X1 for Stencil.
+    (frozenset({"v_antimatter"}), frozenset({"j_stencil"})),
+]
+
+VOUCHER_CONFLICTS: list[tuple[frozenset[str], frozenset[str]]] = [
+    # Bosses are already disabled.
+    (frozenset({"v_directors_cut", "v_retcon"}), frozenset({"j_chicot", "j_luchador"})),
+    # Burglar loses all discards when a blind is selected.
+    (frozenset({"v_wasteful", "v_recyclomancy"}), frozenset({"j_burglar"})),
+    (frozenset({"v_petroglyph"}), DISCARD_SCALERS),
+    (frozenset({"v_hieroglyph"}), PLAY_SCALERS),
+]
+
+
 def red_card_skip_value(ante: int) -> float:
     """Value of one Red Card pack-skip (+3 mult), scaled by remaining runway.
 

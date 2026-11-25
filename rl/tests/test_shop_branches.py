@@ -221,6 +221,93 @@ def test_a_passed_over_joker_buy_is_vetoed(shop, monkeypatch):
     assert not view.mask.entity_masks[ActionType.BuyCard][egg]
 
 
+def own(main: dict, *vouchers: str) -> None:
+    """Mark ``vouchers`` owned on the line's game."""
+    game = main["info"]["game"]
+    snapshot = game.to_dict()
+    snapshot["sets"]["used_vouchers"] = list(vouchers)
+    game.replace_state(snapshot)
+    refreshed(main)
+
+
+def test_voucher_tables_name_real_cards():
+    from jackdaw.engine.data import load
+    centers = load("centers")
+    for table in (sb.VOUCHER_PAIRS, sb.VOUCHER_CONFLICTS):
+        for vouchers, jokers in table:
+            assert all(v.startswith("v_") for v in vouchers) and all(j.startswith("j_") for j in jokers)
+            assert vouchers | jokers <= set(centers)
+
+
+def test_linked_reads_a_voucher_table_either_way_round():
+    table = [(frozenset({"v_observatory"}), frozenset({"j_perkeo"}))]
+    assert sb.linked("v_observatory", {"j_perkeo", "j_joker"}, table) == {"j_perkeo"}
+    assert sb.linked("j_perkeo", {"v_observatory"}, table) == {"v_observatory"}
+    assert sb.linked("j_perkeo", {"v_telescope"}, table) == frozenset()
+
+
+def test_a_voucher_that_feeds_a_held_joker_is_redeemed(shop, monkeypatch):
+    _, main = shop
+    monkeypatch.setattr(sb, "VOUCHER_PAIRS", [(frozenset({"v_hone"}), frozenset({"j_joker"}))])
+    game = main["info"]["game"]
+    hone = FactoredAction(sb.REDEEM, entity_target=0)
+    assert game.shop_vouchers[0].key == "v_hone"
+    assert sb.propose("voucher synergy", main["info"], LEAVE, np.random.default_rng(0), main, Gate()) is None
+    game.debug_add("j_joker")
+    refreshed(main)
+    p = sb.propose("voucher synergy", main["info"], LEAVE, np.random.default_rng(0), main, Gate())
+    assert p.moves == [hone]
+    assert sb.propose("voucher synergy", main["info"], hone, np.random.default_rng(0), main, Gate()) is None
+    main["info"]["game"].debug_set(money=9)
+    main["info"]["game"].debug_add("c_pluto")
+    refreshed(main)
+    p = sb.propose("voucher synergy", main["info"], LEAVE, np.random.default_rng(0), main, Gate())
+    assert [int(m.action_type) for m in p.moves] == [sb.SELL_CONS, sb.REDEEM]
+    main["info"]["game"].debug_set(money=0)
+    refreshed(main)
+    assert sb.propose("voucher synergy", main["info"], LEAVE, np.random.default_rng(0), main, Gate()) is None
+
+
+def test_a_joker_beside_an_owned_voucher_it_pairs_with_is_bought(shop, monkeypatch):
+    _, main = shop
+    monkeypatch.setattr(sb, "VOUCHER_PAIRS", [(frozenset({"v_hone"}), frozenset({"j_egg"}))])
+    assert sb.propose("synergy", main["info"], LEAVE, np.random.default_rng(0), main, Gate()) is None
+    own(main, "v_hone")
+    game = main["info"]["game"]
+    assert sb.owned_vouchers(game) == {"v_hone"}
+    p = sb.propose("synergy", main["info"], LEAVE, np.random.default_rng(0), main, Gate())
+    assert p.moves == [FactoredAction(sb.BUY, entity_target=index_of(game, "j_egg"))]
+
+
+def test_a_voucher_against_a_held_joker_is_vetoed(shop, monkeypatch):
+    _, main = shop
+    monkeypatch.setattr(sb, "VOUCHER_CONFLICTS", [(frozenset({"v_hone"}), frozenset({"j_joker"}))])
+    game = main["info"]["game"]
+    hone = FactoredAction(sb.REDEEM, entity_target=0)
+    assert sb.propose("conflict", main["info"], hone, np.random.default_rng(0), main, Gate()) is None
+    game.debug_add("j_joker")
+    game = refreshed(main)["info"]["game"]
+    p = sb.propose("conflict", main["info"], hone, np.random.default_rng(0), main, Gate())
+    assert p.moves == [] and p.veto == game.shop_vouchers[0].sort_id
+    view = sb.without(env_view(main["info"]), game, p.veto)
+    assert not view.mask.entity_masks[ActionType.RedeemVoucher][0]
+    assert view.mask.entity_masks[ActionType.BuyCard][index_of(game, "j_egg")]
+
+
+def test_a_joker_against_an_owned_voucher_is_vetoed(shop, monkeypatch):
+    _, main = shop
+    monkeypatch.setattr(sb, "VOUCHER_CONFLICTS", [(frozenset({"v_retcon"}), frozenset({"j_egg"}))])
+    game = main["info"]["game"]
+    buying = FactoredAction(sb.BUY, entity_target=index_of(game, "j_egg"))
+    assert sb.propose("conflict", main["info"], buying, np.random.default_rng(0), main, Gate()) is None
+    own(main, "v_retcon")
+    game = main["info"]["game"]
+    egg = index_of(game, "j_egg")
+    p = sb.propose("conflict", main["info"], FactoredAction(sb.BUY, entity_target=egg),
+                   np.random.default_rng(0), main, Gate())
+    assert p.veto == game.shop_jokers[egg].sort_id
+
+
 def test_an_open_slot_left_with_money_tries_a_joker(shop):
     _, main = shop
     game = main["info"]["game"]
@@ -290,6 +377,23 @@ def test_a_branch_makes_its_sale_then_its_buy(shop, model, monkeypatch):
     assert np.allclose(again, logp, atol=1e-5)
     assert "shop copy joker" in branch.tally([dict(line["decision"], tied=False, joined=False, cut=False,
                                                     diff=0.0, **{"ante diff": 0, "win diff": 0})])
+
+
+def test_a_voucher_branch_redeems_the_voucher(shop, model, monkeypatch):
+    bp, main = shop
+    monkeypatch.setattr(sb, "VOUCHER_PAIRS", [(frozenset({"v_hone"}), frozenset({"j_joker"}))])
+    monkeypatch.setattr(sb, "KINDS", ("voucher synergy",))
+    model = copy.deepcopy(model)
+    with torch.no_grad():
+        model.type_head.bias[sb.LEAVE] += 30.0
+    main["info"]["game"].debug_add("j_joker")
+    refreshed(main)
+    bp._tick(model)
+    line, = [l for l in bp.lines if l["role"] == "branch"]
+    assert line["decision"]["shop"] == "voucher synergy"
+    bp._tick(model)
+    assert sb.owned_vouchers(line["info"]["game"]) == {"v_hone"}
+    assert sb.owned_vouchers(main["info"]["game"]) == frozenset()
 
 
 def test_a_vetoed_branch_never_buys_the_planet(shop, model, monkeypatch):
