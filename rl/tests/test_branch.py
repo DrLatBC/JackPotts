@@ -139,7 +139,7 @@ def test_a_legal_boss_reroll_is_branched_on_once_per_ante_and_learned_like_any_m
 
     bp._tick(model)
     branches = [line for line in bp.lines if line["role"] == "branch"]
-    assert len(branches) == 1 and branches[0]["force"].action_type == branch.REROLL
+    assert len(branches) == 1 and branches[0]["force"][0].action_type == branch.REROLL
     assert branches[0]["decision"]["drawn move"] == "RerollBoss" and bp._states == []
     _, move, move_logp, alt, alt_logp = branches[0]["decision"]["pair"]
     prep = Prepared(dataset.examples_of([view]))
@@ -313,7 +313,7 @@ def test_a_play_with_sealed_cards_branches_on_the_seal_blind_play_once_per_blind
     main["forced"].clear()
     bp._tick(seal_minded)
     (line,) = [line for line in bp.lines if line["role"] == "branch"]
-    assert line["decision"]["seal"] and branch.same_move(line["force"], blind)
+    assert line["decision"]["seal"] and branch.same_move(line["force"][0], blind)
 
 
 def test_no_seal_branch_without_sealed_cards_or_where_the_seal_changes_nothing(seal_minded):

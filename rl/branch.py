@@ -32,6 +32,15 @@ sealed cards branches on the move the policy makes with the seals hidden (``SEAL
 once per blind at a play or discard, once per pack opened. In a pack with a seal
 Spectral the policy passes over, the branch takes that Spectral instead. Whichever line
 does better teaches the policy what the seal is worth there.
+
+Shop branches (``rl.shop_branches``) try buys and uses the policy under-makes, each once per
+shop visit (a held tarot once per blind) at its ``SHOP_CHANCE``: Blueprint or Brainstorm,
+Midas Mask beside Vampire, the joker that most raises the average best-hand score, a joker
+for an open slot it leaves the shop with, using an enhancing tarot held through a shop
+visit, and passing on a planet for a hand the run does not play (that branch may not buy
+it this visit). A buy that needs a sale first makes the sale on the branch and then the
+buy. Each move after the first is trained too, at its own state on the branch with the
+branch's half of the difference: the moves were one plan, so they share its result.
 """
 
 from __future__ import annotations
@@ -45,12 +54,13 @@ from jackdaw.env.action_space import ActionType
 from jackdaw.env.game_spec import FactoredAction
 from jackdaw.env.rewards import Transition
 
-from rl import dataset
+from rl import dataset, shop_branches
 from rl.evaluate import DECK, MAX_STEPS, STAKE, WIN_ANTE
 from rl.model import DISCARD, PICK, PLAY, Policy, Prepared, _complete, act, complete
 from rl.ordering import put_in_order
 from rl.playback import copy_env, env_view, make_env, no_legal_action
 from rl.selfplay import ENDLESS_BONUS, WIN_BONUS, points, train_seed
+from rl.shop_branches import SHOP_CHANCE
 
 REROLL = int(ActionType.RerollBoss)
 SKIP = int(ActionType.SkipBlind)
@@ -72,12 +82,13 @@ class Batch:
     """What one call of ``BranchPlay.play`` collected."""
 
     examples: dataset.Examples
-    """Two per untied decision, in pairs: the main line's move, then the drawn move."""
+    """Per untied decision: the main line's move, the drawn move, then any further forced
+    moves the branch made at its own states."""
     logp: np.ndarray
     """Per example, the move's log-probability when it was chosen or drawn."""
     adv: np.ndarray
     """Per example, in points: plus half the decision's difference for the main line's
-    move, minus half for the drawn one."""
+    move, minus half for the drawn one and the branch's further forced moves."""
     states: dataset.Examples
     """The main-line states draws were tried at, each with the first move drawn there."""
     state_logp: np.ndarray
@@ -139,13 +150,16 @@ class BranchPlay:
         _, _, info = env.reset(seed=seed)
         self.seeds[seed] = {"result": None, "hash": {}, "open": 0, "waiting": []}
         return {"role": "main", "seed": seed, "env": env, "info": info, "steps": 0, "points": 0.0,
-                "force": None,
+                "force": [], "veto": None,
                 "blinds": 0, "shops": 0, "forced": set()}
 
     def _tick(self, model: Policy) -> None:
         while sum(line["role"] == "main" for line in self.lines) < self.mains:
             self.lines.append(self._new_main())
         views = [env_view(line["info"]) for line in self.lines]
+        for k, line in enumerate(self.lines):
+            if line["veto"] is not None:
+                views[k] = shop_branches.without(views[k], line["info"]["game"], line["veto"])
         prep = Prepared(dataset.examples_of(views))
         greedy, glogp, _ = act(model, prep)
         tried = [k for k, line in enumerate(self.lines)
@@ -156,12 +170,19 @@ class BranchPlay:
         drawn.update(self._forced(model, prep, greedy))
         sealed = self._sealed(model, prep, greedy, set(drawn))
         drawn.update(sealed)
+        shop = self._shop(model, prep, views, greedy, set(drawn))
+        self._follow(model, prep, views)
         spawned, still = [], []
         for k, line in enumerate(self.lines):
             move = greedy[k]
-            if line["force"] is not None:
-                move, line["force"] = line["force"], None
-            if k in drawn:
+            if line["force"]:
+                move = line["force"].pop(0)
+                line["led"] = True
+            if k in shop:
+                alt, alt_logp, rest, veto, kind = shop[k]
+                spawned.append(self._branch(line, views[k], greedy[k], float(glogp[k]), alt,
+                                            alt_logp, rest=rest, veto=veto, shop=kind))
+            elif k in drawn:
                 alt, alt_logp = drawn[k]
                 spawned.append(self._branch(line, views[k], greedy[k], float(glogp[k]), alt,
                                             alt_logp, seal=k in sealed))
@@ -265,17 +286,74 @@ class BranchPlay:
         moves, logp = complete(model, prep, np.asarray(rows), [alts[k] for k in rows])
         return {k: (move, float(lp)) for k, move, lp in zip(rows, moves, logp)}
 
+    def _follow(self, model: Policy, prep: Prepared, views) -> None:
+        """Record each branch's forced move after its first, at the state it is made in,
+        with its log-probability under the policy there."""
+        rows = [k for k, line in enumerate(self.lines)
+                if line["role"] == "branch" and line["force"] and line["led"]]
+        if not rows:
+            return
+        moves, logp = complete(model, prep, np.asarray(rows), [self.lines[k]["force"][0] for k in rows])
+        for k, move, lp in zip(rows, moves, logp):
+            self.lines[k]["decision"]["follow"].append((views[k], move, float(lp)))
+
+    def _shop(self, model: Policy, prep: Prepared, views, greedy, taken: set[int]) -> dict:
+        """Per main line not in ``taken`` where a shop branch comes up (``rl.shop_branches``,
+        in ``KINDS`` order, one per line per tick): the branch's first move with its
+        log-probability under the policy, the moves after it, the card it may not buy and
+        the branch's kind."""
+        found: dict[int, object] = {}
+        for k, line in enumerate(self.lines):
+            if line["role"] != "main":
+                continue
+            shop_branches.note_held(line["info"]["game"], line)
+            if k in taken:
+                continue
+            for kind in shop_branches.KINDS:
+                occasion = shop_branches.occasion(kind, line)
+                if occasion in line["forced"]:
+                    continue
+
+                def gate(occasion=occasion, kind=kind, line=line) -> bool:
+                    line["forced"].add(occasion)
+                    return self.rng.random() < SHOP_CHANCE[kind]
+
+                p = shop_branches.propose(kind, line["info"], greedy[k], self.rng, line, gate)
+                if p is not None:
+                    found[k] = p
+                    break
+        if not found:
+            return {}
+        rows = list(found)
+        firsts = []
+        for k in rows:
+            p = found[k]
+            if p.veto is not None:
+                masked = shop_branches.without(views[k], self.lines[k]["info"]["game"], p.veto)
+                firsts.append(act(model, Prepared(dataset.examples_of([masked])))[0][0])
+            else:
+                firsts.append(p.moves[0])
+        moves, logp = complete(model, prep, np.asarray(rows), firsts)
+        out = {}
+        for k, move, lp in zip(rows, moves, logp):
+            if not same_move(move, greedy[k]):
+                p = found[k]
+                out[k] = (move, float(lp), list(p.moves[1:]), p.veto, p.kind)
+        return out
+
     def _branch(self, main: dict, view, move, move_logp: float, alt, alt_logp: float,
-                seal: bool = False) -> dict:
+                seal: bool = False, rest=(), veto: int | None = None,
+                shop: str | None = None) -> dict:
         g = main["info"]["game"]
         env, info = copy_env(main["env"])
         self.seeds[main["seed"]]["open"] += 1
         decision = {"phase": g.phase.value, "ante": int(g.ante), "round": int(g.round),
                     "main move": ActionType(move.action_type).name,
                     "drawn move": ActionType(alt.action_type).name, "seal": seal,
-                    "pair": (view, move, move_logp, alt, alt_logp)}
+                    "shop": shop, "pair": (view, move, move_logp, alt, alt_logp), "follow": []}
         return {"role": "branch", "seed": main["seed"], "env": env, "info": info, "steps": 0,
-                "points": main["points"], "force": alt, "decision": decision, "hashes": {}}
+                "points": main["points"], "force": [alt, *rest], "led": False, "veto": veto,
+                "decision": decision, "hashes": {}}
 
     def _step(self, line: dict, move: FactoredAction) -> bool:
         """Play one move; True while the line goes on."""
@@ -286,6 +364,8 @@ class BranchPlay:
         if move.action_type == ActionType.PlayHand:
             move = replace(move, card_target=put_in_order(game, move.card_target))
         _, terminated, truncated, _, info = line["env"].step(move)
+        if line["veto"] is not None and info["game"].phase.value != "shop":
+            line["veto"] = None
         line["points"] += points(Transition.from_step(move, terminated, truncated, info),
                                  self.win_bonus, self.endless_bonus)
         line["info"] = info
@@ -342,6 +422,7 @@ class BranchPlay:
 
     def _resolve(self, decision: dict, main: dict | None, branch: dict | None) -> None:
         view, move, move_logp, alt, alt_logp = decision.pop("pair")
+        follow = decision.pop("follow", [])
         if main is None:
             decision.update({"joined": True, "tied": True, "cut": False, "diff": 0.0,
                              "ante diff": 0, "win diff": 0})
@@ -354,7 +435,7 @@ class BranchPlay:
                          "win diff": int(main["won"]) - int(branch["won"])})
         self._resolved.append(decision)
         if not cut and diff != 0.0:
-            self._pairs.append((view, move, move_logp, alt, alt_logp, diff))
+            self._pairs.append((view, move, move_logp, alt, alt_logp, diff, follow))
 
 
 def _result(info: dict, truncated: bool, stuck: bool) -> dict:
@@ -382,10 +463,11 @@ def _examples(rows, deck: str, stake: int) -> dataset.Examples:
 
 def _pair_examples(pairs, deck: str, stake: int):
     rows, logp, adv = [], [], []
-    for view, move, move_logp, alt, alt_logp, diff in pairs:
-        rows += [(view, move), (view, alt)]
-        logp += [move_logp, alt_logp]
-        adv += [diff / 2, -diff / 2]
+    for view, move, move_logp, alt, alt_logp, diff, *rest in pairs:
+        follow = rest[0] if rest else []
+        rows += [(view, move), (view, alt)] + [(v, m) for v, m, _ in follow]
+        logp += [move_logp, alt_logp] + [lp for _, _, lp in follow]
+        adv += [diff / 2, -diff / 2] + [-diff / 2] * len(follow)
     return (_examples(rows, deck, stake), np.asarray(logp, np.float32),
             np.asarray(adv, np.float32))
 
@@ -393,12 +475,13 @@ def _pair_examples(pairs, deck: str, stake: int):
 def tally(decisions: list[dict]) -> dict:
     """The resolved decisions summed: how many, how many tied, rejoined or cut, and the
     main line's moves against the drawn ones in points, antes and wins; over all of them,
-    by phase, by the pair of move types ("PlayHand > Discard"), and over the seal
-    branches ("seal")."""
+    by phase, by the pair of move types ("PlayHand > Discard"), over the seal branches
+    ("seal") and by shop branch ("shop <kind>")."""
     out: dict = {}
     for d in decisions:
         for key in ("all", d["phase"], f'{d["main move"]} > {d["drawn move"]}',
-                    *(("seal",) if d.get("seal") else ())):
+                    *(("seal",) if d.get("seal") else ()),
+                    *((f"shop {d['shop']}",) if d.get("shop") else ())):
             t = out.setdefault(key, {"n": 0, "tied": 0, "joined": 0, "cut": 0, "main better": 0,
                                      "drawn better": 0, "points": 0.0, "antes": 0, "wins": 0})
             t["n"] += 1

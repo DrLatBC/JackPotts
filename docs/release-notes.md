@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Shop branches: branch training tries buys and uses the model under-makes, each once per shop visit at its own chance: Blueprint or Brainstorm, Midas Mask beside Vampire, the joker that raises the average best-hand score most (10% or more, selling a joker or consumables first if needed), a joker for an open slot it leaves the shop with, using an enhancing tarot held through a shop visit, and passing on a planet for a hand the run does not play. Every move of a branch's plan is trained at its own state with the branch's result. `decisions.jsonl` tallies each as `shop <kind>`.
 - Boss-rule mask: under The Eye and The Mouth the model can no longer play a hand the boss scores 0 (a hand type already played, or any type but the round's first) while another play still scores. It applies in training, evaluations, final checks and the stream. On the 5,000 check seeds, night5 u7 wins 56.7% with it against 52.6% without (+4.0 ± 0.3 points).
 - The model stream plays won games on into endless mode, and moves that only rearrange cards or jokers skip the delay.
 - Learning runs can score past the win: with an endless bonus, won training games play on into endless mode and each endless blind beaten or skipped earns a third of the bonus. Both lines of a branch that win no longer tie by default. The Train tab sets it (ENDLESS) along with the step-size limit (CHANGE).
