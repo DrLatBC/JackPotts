@@ -31,13 +31,14 @@ from jackdaw.env.game_spec import FactoredAction
 
 import rl.ordering  # noqa: F401  (puts the bot's src on the path)
 from balatro_bot.scaling import (  # noqa: E402
-    AMPLIFICATION_PAIRS, ANTI_SYNERGY, VOUCHER_CONFLICTS, VOUCHER_PAIRS,
+    AMPLIFICATION_PAIRS, ANTI_SYNERGY, SELL_PROTECTED, VOUCHER_CONFLICTS, VOUCHER_PAIRS,
 )
 
 BUY, BUY_AND_USE = int(ActionType.BuyCard), int(ActionType.BuyAndUse)
 REDEEM = int(ActionType.RedeemVoucher)
 SELL_JOKER, SELL_CONS = int(ActionType.SellJoker), int(ActionType.SellConsumable)
 USE, LEAVE = int(ActionType.UseConsumable), int(ActionType.NextRound)
+SWAP_LEFT, SWAP_RIGHT = int(ActionType.SwapJokersLeft), int(ActionType.SwapJokersRight)
 
 _CENTERS = load("centers")
 ENHANCING_TAROTS = frozenset(
@@ -146,6 +147,10 @@ def _engine(m: FactoredAction):
         return A.SellCard("consumables", m.entity_target)
     if t == REDEEM:
         return A.RedeemVoucher(m.entity_target)
+    if t == SWAP_LEFT:
+        return A.SwapJokersLeft(m.entity_target)
+    if t == SWAP_RIGHT:
+        return A.SwapJokersRight(m.entity_target)
     raise ValueError(f"not a shop move: {m}")
 
 
@@ -155,9 +160,10 @@ def _engine(m: FactoredAction):
 def buy_plans(game, state, mask, shop_index: int,
               keep: frozenset[str] = frozenset()) -> list[list[FactoredAction]]:
     """The ways to buy shop card ``shop_index``: as is, or after selling at most one
-    joker (never one in ``keep``) and then consumables (from the last) until it is
-    affordable. Each is checked on a copy of the game, so only ways the game takes are
-    given; empty when none is."""
+    joker (never one in ``keep`` or ``SELL_PROTECTED``) and then consumables (from the
+    last) until it is affordable. Each is checked on a copy of the game, so only ways the
+    game takes are given; empty when none is."""
+    keep = keep | SELL_PROTECTED
     card = game.shop_jokers[shop_index]
     sell_j = mask.entity_masks.get(ActionType.SellJoker)
     sell_c = mask.entity_masks.get(ActionType.SellConsumable)
@@ -212,6 +218,32 @@ def best_plan(game, plans, hands) -> list[FactoredAction]:
     if len(plans) == 1:
         return plans[0]
     return max(plans, key=lambda p: hand_score(game, hands, p))
+
+
+def _moved(at: int, to: int) -> list[FactoredAction]:
+    """The joker swaps that move the joker at ``at`` to ``to``."""
+    if to < at:
+        return [FactoredAction(SWAP_LEFT, entity_target=i) for i in range(at, to, -1)]
+    return [FactoredAction(SWAP_RIGHT, entity_target=i) for i in range(at, to)]
+
+
+def placed(game, plan, hands, sort_id: int) -> list[FactoredAction]:
+    """``plan`` followed by the joker swaps that set up the copy joker ``sort_id`` best by
+    lineup score (no swaps on a tie). Blueprint copies the joker to its right, and a bought
+    one lands on the right, where it copies nothing: it is moved to its best spot.
+    Brainstorm copies the leftmost joker: the joker moved to the left end is chosen."""
+    c = game.clone()
+    for m in plan:
+        c.step(_engine(m))
+    at = next(i for i, j in enumerate(c.jokers) if j.sort_id == sort_id)
+    if c.jokers[at].key == "j_brainstorm":
+        moves = [_moved(i, 0) for i in range(1, len(c.jokers)) if i != at]
+    else:
+        moves = [_moved(at, to) for to in range(len(c.jokers)) if to != at]
+    options = [plan] + [o for o in (plan + m for m in moves) if _plays(game, o)]
+    if len(options) == 1:
+        return plan
+    return max(options, key=lambda o: hand_score(game, hands, o))
 
 
 # -- proposals ---------------------------------------------------------------------------
@@ -306,7 +338,11 @@ def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Genera
             if plans:
                 if not gate():
                     return None
-                return Proposal(kind, best_plan(game, plans, dealt_hands(game, state, rng)))
+                hands = dealt_hands(game, state, rng)
+                plan = best_plan(game, plans, hands)
+                if kind == "copy joker":
+                    plan = placed(game, plan, hands, game.shop_jokers[i].sort_id)
+                return Proposal(kind, plan)
         return None
     if kind == "off-build planet":
         if int(greedy.action_type) not in (BUY, BUY_AND_USE):

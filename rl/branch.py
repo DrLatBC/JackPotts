@@ -35,7 +35,7 @@ does better teaches the policy what the seal is worth there.
 
 Shop branches (``rl.shop_branches``) try buys and uses the policy under-makes, each once per
 shop visit (a held tarot once per blind) at its ``SHOP_CHANCE`` (``LATE_CHANCE`` from
-ante 6): Blueprint or Brainstorm,
+ante 6): Blueprint or Brainstorm (then set up to copy the best joker),
 Midas Mask beside Vampire, a joker that pairs with a held one in the rule bot's
 amplification pairs, the joker that most raises the average best-hand score, a joker for an
 open slot it leaves the shop with while holding Madness, using an enhancing tarot held

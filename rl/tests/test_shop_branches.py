@@ -436,3 +436,35 @@ def test_a_lineup_is_scored_with_the_next_boss_disabled(shop):
     assert ahead.blind.key == "bl_final_bell"
     hands = sb.dealt_hands(game, main["info"]["state"], np.random.default_rng(0))
     assert sb.hand_score(game, hands) > 0
+
+
+def test_buy_plans_never_sell_a_protected_joker(shop):
+    _, main = shop
+    game = main["info"]["game"]
+    for key in ("j_hologram", "j_constellation", "j_joker", "j_jolly", "j_zany"):
+        game.debug_add(key)
+    refreshed(main)
+    game = main["info"]["game"]
+    plans = sb.buy_plans(game, main["info"]["state"], main["info"]["action_mask"],
+                         index_of(game, "j_egg"))
+    sold = {game.jokers[m.entity_target].key for p in plans for m in p
+            if int(m.action_type) == sb.SELL_JOKER}
+    assert sold and not sold & sb.SELL_PROTECTED
+
+
+@pytest.mark.parametrize("lineup, copier, swap", [
+    (("j_joker", "j_blueprint"), "j_blueprint", FactoredAction(sb.SWAP_LEFT, entity_target=1)),
+    (("j_egg", "j_cavendish", "j_brainstorm"), "j_brainstorm",
+     FactoredAction(sb.SWAP_LEFT, entity_target=1)),
+])
+def test_a_copy_joker_is_moved_to_where_it_copies(shop, lineup, copier, swap):
+    _, main = shop
+    game = main["info"]["game"]
+    for key in lineup:
+        game.debug_add(key)
+    refreshed(main)
+    game = main["info"]["game"]
+    sort_id = next(j.sort_id for j in game.jokers if j.key == copier)
+    hands = sb.dealt_hands(game, main["info"]["state"], np.random.default_rng(0))
+    assert sb.placed(game, [], hands, sort_id) == [swap]
+    assert sb.placed(game, [swap], hands, sort_id) == [swap]
