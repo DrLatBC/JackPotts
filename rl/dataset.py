@@ -50,6 +50,7 @@ RAGGED: dict[str, tuple[int, type]] = {
     "card_mask": (0, np.bool_),
     "emask": (0, np.bool_),
     "pre": (0, np.int16),
+    "zeroed": (0, np.int64),
 }
 
 
@@ -135,6 +136,7 @@ class ShardWriter:
             "pack_extra": view.pack_extra, "card_mask": mask.card_mask,
             "emask": np.concatenate(parts) if parts else np.zeros(0, np.bool_),
             "pre": np.asarray(pre or [], np.int16),
+            "zeroed": np.asarray(view.zeroed, np.int64),
         }
         for name, arr in rows.items():
             self._rag[name].append(np.array(arr, copy=True))
@@ -203,6 +205,9 @@ class Examples:
     def __post_init__(self) -> None:
         if "round" not in self.arrays:  # shards without the round columns read as zeros
             self.arrays["round"] = np.zeros((len(self.arrays["act_type"]), D_ROUND), np.float32)
+        if "zeroed" not in self.arrays:  # shards from before the boss-rule mask zero nothing
+            self.arrays["zeroed"] = np.zeros(0, np.int64)
+            self.arrays["zeroed_n"] = np.zeros(len(self.arrays["act_type"]), np.int32)
         self.start: dict[str, np.ndarray] = {}
         for name in RAGGED:
             n = self.arrays[name + "_n"].astype(np.int64)

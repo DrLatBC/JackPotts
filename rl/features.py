@@ -92,6 +92,9 @@ class View:
     """(n_consumables, D_CONS_EXTRA): each consumable's targeting needs."""
     round_extra: np.ndarray
     """(D_ROUND,): the boss in force and the hand types played this round."""
+    zeroed: tuple[int, ...] = ()
+    """The plays (card selections as bits) the boss would score 0 while some other play
+    scores: ``ZEROING_BOSSES`` only. A model never makes them."""
 
     def card_bounds(self, action_type: int, entity: int | None) -> tuple[int, int] | None:
         """How many hand cards the action selects: ``(min, max)``, or ``None`` when it
@@ -166,7 +169,31 @@ def view_from(game, obs: Observation, mask: ActionMask, state: GameState, splits
     cons = np.zeros((n_cons, D_CONS_EXTRA), np.float32)
     for i, item in enumerate(item_ids(obs.consumables[:, 0])):
         cons[i] = _targets(game, "consumables", i, item)
-    return View(obs, mask, state, tuple(splits), extra, cons, round_facts(game))
+    return View(obs, mask, state, tuple(splits), extra, cons, round_facts(game),
+                zeroed_plays(game, mask))
+
+
+ZEROING_BOSSES = frozenset({"bl_eye", "bl_mouth"})
+"""Bosses that score a play 0 by its hand type: The Eye (a type already played this
+round), The Mouth (any type but the round's first)."""
+
+
+def zeroed_plays(game, mask: ActionMask) -> tuple[int, ...]:
+    """The legal plays the boss in force scores 0, as card bits, when at least one legal
+    play still scores; otherwise none. The engine's own preview judges each play, so a
+    disabled boss or a joker that changes hand types is accounted for."""
+    if not mask.type_mask[ActionType.PlayHand]:
+        return ()
+    blind = game._view("blind")
+    if not blind or blind.get("key") not in ZEROING_BOSSES or blind.get("disabled"):
+        return ()
+    if not any(h.get("played_this_round", 0) for h in game._view("hands").values()):
+        return ()
+    forced = mask.forced_card
+    sets = card_sets(mask.card_mask, mask.min_card_select, mask.max_card_select, forced)
+    zeroed = tuple(sum(1 << c for c in cards) for cards in sets
+                   if game.preview_play(list(cards)).debuffed)
+    return zeroed if len(zeroed) < len(sets) else ()
 
 
 def round_facts(game) -> np.ndarray:

@@ -187,6 +187,7 @@ class Prepared:
         self.act_entity = a["act_entity"].astype(np.int64)
         self.act_cards = a["act_cards"].astype(np.int64)
         self.forced = a["forced"].astype(np.int64)
+        self.zeroed, self.zeroed_at = a["zeroed"].astype(np.int64), ex.start["zeroed"]
 
     # -- per batch ---------------------------------------------------------------
 
@@ -348,7 +349,8 @@ def widen_optimizer(opt: torch.optim.Optimizer) -> None:
 
 def set_groups(prep: Prepared, idx, rows, types, entities):
     """The card-selecting examples among ``rows`` (positions in the batch), grouped by
-    hand size: ``(rows, subsets, legal)`` per group."""
+    hand size: ``(rows, subsets, legal)`` per group. A play's legal selections leave out
+    the ones the boss would score 0 (``rl.features.zeroed_plays``)."""
     has, low, high, selectable = prep.card_query(idx[rows], types[rows], entities[rows])
     rows, low, high, selectable = rows[has], low[has], high[has], selectable[has]
     sizes = prep.n_hand[idx[rows]]
@@ -356,6 +358,11 @@ def set_groups(prep: Prepared, idx, rows, types, entities):
         pick = sizes == n
         subsets = Subsets.of(int(n))
         legal = subsets.legal(low[pick], high[pick], selectable[pick], prep.forced[idx[rows[pick]]])
+        for k, (row, example) in enumerate(zip(rows[pick], idx[rows[pick]])):
+            if types[row] == PLAY:
+                zeroed = prep.zeroed[prep.zeroed_at[example]:prep.zeroed_at[example + 1]]
+                if len(zeroed):
+                    legal[k] &= ~np.isin(subsets.bits, zeroed)
         yield rows[pick], subsets, legal
 
 
