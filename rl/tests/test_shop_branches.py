@@ -308,9 +308,12 @@ def test_a_joker_against_an_owned_voucher_is_vetoed(shop, monkeypatch):
     assert p.veto == game.shop_jokers[egg].sort_id
 
 
-def test_an_open_slot_left_with_money_tries_a_joker(shop):
+def test_an_open_slot_beside_madness_tries_a_joker(shop):
     _, main = shop
     game = main["info"]["game"]
+    assert sb.propose("fill slot", main["info"], LEAVE, np.random.default_rng(0), main, Gate()) is None
+    game.debug_add("j_madness")
+    refreshed(main)
     p = sb.propose("fill slot", main["info"], LEAVE, np.random.default_rng(0), main, Gate())
     assert p.moves == [FactoredAction(sb.BUY, entity_target=index_of(game, "j_egg"))]
     stay = FactoredAction(int(ActionType.Reroll))

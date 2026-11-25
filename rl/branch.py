@@ -38,8 +38,8 @@ shop visit (a held tarot once per blind) at its ``SHOP_CHANCE`` (``LATE_CHANCE``
 ante 6): Blueprint or Brainstorm,
 Midas Mask beside Vampire, a joker that pairs with a held one in the rule bot's
 amplification pairs, the joker that most raises the average best-hand score, a joker for an
-open slot it leaves the shop with, using an enhancing tarot held through a shop visit, and
-passing on a planet for a hand the run does not play, on a Campfire buy, or on a joker that
+open slot it leaves the shop with while holding Madness, using an enhancing tarot held
+through a shop visit, and passing on a planet for a hand the run does not play, on a Campfire buy, or on a joker that
 works against a held one in the rule bot's anti-synergy map (that branch may not buy the
 card this visit). A pair buy never sells the partner it pairs with. A buy that needs a sale first makes the sale on the branch and then the
 buy. Each move after the first is trained too, at its own state on the branch with the

@@ -48,6 +48,8 @@ PLANET_HAND = {k: c["config"]["hand_type"] for k, c in _CENTERS.items()
                if c.get("set") == "Planet" and "hand_type" in (c.get("config") or {})}
 COPY_JOKERS = frozenset({"j_blueprint", "j_brainstorm"})
 MIDAS, VAMPIRE = "j_midas_mask", "j_vampire"
+MADNESS = "j_madness"
+"""Destroys a random joker at each non-boss blind, so an open slot beside it wants fodder."""
 PASSED_OVER = frozenset({"j_campfire"})
 """Jokers the policy buys more than they are worth (Tyler: Campfire kind of sucks); a
 branch passes on the buy."""
@@ -334,7 +336,8 @@ def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Genera
             return None
         return Proposal(kind, [], veto=card.sort_id) if gate() else None
     if kind == "fill slot":
-        if int(greedy.action_type) != LEAVE or len(game.jokers) >= int(state.joker_slots):
+        if (int(greedy.action_type) != LEAVE or len(game.jokers) >= int(state.joker_slots)
+                or MADNESS not in {j.key for j in game.jokers}):
             return None
         legal = mask.entity_masks.get(ActionType.BuyCard)
         options = [i for i in _jokers_on_sale(game) if legal is not None and legal[i]]
