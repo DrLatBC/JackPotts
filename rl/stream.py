@@ -7,8 +7,9 @@ panel's Stream tab starts that. Each move goes through ``jackdaw.bridge.LiveAdap
 the shadow takes it first (a move the live game would refuse stops there), then the
 live game, then the two views are compared. The model reads the shadow, the same
 input it trained on. Plays go in the bot's left-to-right order, as single moves the
-live game shows. A divergence ends that game (its repro bundle is kept) and the next
-one starts.
+live game shows. A won game plays on into endless mode until it is lost, as evaluation
+plays it (``rl.evaluate.play(..., endless=True)``): the fork dismisses the win screen
+itself. A divergence ends that game (its repro bundle is kept) and the next one starts.
 
 Writes ``bot_log/model_stream/now.json`` (the game being played, totals, recent games) after
 every move, appends each finished game to ``bot_log/model_stream/games.jsonl``, and stops
@@ -99,6 +100,9 @@ MOVES = {
     ActionType.SortHandRank: "Sort by rank", ActionType.SortHandSuit: "Sort by suit",
     ActionType.RerollBoss: "Reroll boss", ActionType.BuyAndUse: "Buy and use",
 }
+REARRANGE = {ActionType.SwapJokersLeft, ActionType.SwapJokersRight, ActionType.SwapHandLeft,
+             ActionType.SwapHandRight, ActionType.SortHandRank, ActionType.SortHandSuit}
+"""Moves that only rearrange cards or jokers: played without the delay."""
 SUITS = {"Spades": "♠", "Hearts": "♥", "Clubs": "♣", "Diamonds": "♦"}
 RANKS = {"Jack": "J", "Queen": "Q", "King": "K", "Ace": "A"}
 # Where each item list sits on the game; the shop's list is cards, vouchers, boosters.
@@ -291,13 +295,14 @@ class Player:
         result = {"seed": seed, "deck": self.deck, "stake": self.stake, "checkpoint": self.checkpoint}
         started = time.time()
         free_run, streak, refused = 0, 0, set()
+        won = False
         try:
             self.adapter.start(self.deck, self.stake, seed)
             self.write_now(**self.game_numbers())
             while True:
-                if self.adapter.won:
-                    result["outcome"] = "won"
-                    break
+                if not won and self.adapter.won:
+                    won = True
+                    self.write_now(won=True)
                 if self.adapter.done:
                     result["outcome"] = "lost"
                     break
@@ -308,7 +313,7 @@ class Player:
                 if factored is None:
                     result["outcome"] = "stuck"
                     break
-                if self.delay:  # the overlay shows what was weighed before the move lands
+                if self.delay and factored.action_type not in REARRANGE:  # the overlay shows what was weighed before the move lands
                     time.sleep(self.delay)
                 try:
                     self.move(factored)
@@ -336,9 +341,13 @@ class Player:
             result["outcome"], result["error"] = "not ported", str(e)
         except (RPCError, OSError) as e:  # the live game refused or went away
             result["outcome"], result["error"] = "error", f"{type(e).__name__}: {e}"
+        if won:  # still a win, whatever ended the endless part; ``endless cut`` says what did, if not a loss
+            cut, result["outcome"] = result["outcome"], "won"
+            result["endless ante"] = int(self.adapter.game.ante)
+            result["endless cut"] = None if cut == "lost" else cut
         if self.adapter.started:
             g = self.adapter.game
-            result["ante"] = WIN_ANTE if result["outcome"] == "won" else min(int(g.ante), WIN_ANTE)
+            result["ante"] = WIN_ANTE if won else min(int(g.ante), WIN_ANTE)
             result["round"] = int(g.round)
         result["steps"] = self.now["steps"]
         result["hands"] = self.now["hands played"]
@@ -351,7 +360,7 @@ class Player:
         if result["outcome"] != "stopped":
             self.totals["games"] += 1
             self.totals["wins"] += result["outcome"] == "won"
-            self.totals["divergences"] += result["outcome"] == "divergence"
+            self.totals["divergences"] += "divergence" in (result["outcome"], result.get("endless cut"))
             if "ante" in result:
                 self.antes.append(result["ante"])
             self.out.mkdir(parents=True, exist_ok=True)

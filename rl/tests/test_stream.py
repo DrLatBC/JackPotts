@@ -111,6 +111,65 @@ def test_the_stream_plays_as_evaluation_does(tmp_path):
     assert {r["seed"]: r["ante"] for r in p.recent} == evaluated
 
 
+WON = ["RLE-000013", "RLE-000016"]
+"""Seeds the b187 copy wins, played on into endless mode to ante 9 and 10."""
+
+
+def test_a_won_game_plays_on_into_endless_mode_as_evaluation_does(tmp_path):
+    model, _ = load_model(COPY)
+    model.eval()
+    evaluated = {r["seed"]: r for r in play(model, [(s, DECK, STAKE) for s in WON], endless=True)}
+    p = player(tmp_path, seeds=WON)
+    shown = []
+
+    def move(factored, original=p.move):
+        original(factored)
+        shown.append((p.now.get("won", False), p.now["ante"]))
+
+    p.move = move
+    p.run(len(WON))
+    games = [json.loads(line) for line in (tmp_path / "games.jsonl").read_text().splitlines()]
+    for g in games:
+        e = evaluated[g["seed"]]
+        assert g["outcome"] == "won" and g["ante"] == 9 and g["endless cut"] is None
+        assert g["endless ante"] == e["endless ante"] and g["steps"] > e["steps"]
+    assert {g["endless ante"] for g in games} == {9, 10}
+    now = json.loads((tmp_path / "now.json").read_text())
+    assert now["wins"] == now["games"] == 2 and now["mean ante"] == 9
+    assert now["game"]["won"] and now["recent"][0]["endless ante"] == games[-1]["endless ante"]
+    assert any(w for w, _ in shown) and all(a >= 9 for w, a in shown if w)
+
+
+def test_a_stop_in_endless_mode_keeps_the_win(tmp_path):
+    p = player(tmp_path, seeds=WON[:1])
+
+    def move(factored, original=p.move):
+        original(factored)
+        if p.now.get("won"):
+            p.job.ask("stop")
+
+    p.move = move
+    assert p.run() == 1
+    g = json.loads((tmp_path / "games.jsonl").read_text())
+    assert g["outcome"] == "won" and g["endless cut"] == "stopped" and g["endless ante"] == 9
+    assert json.loads((tmp_path / "now.json").read_text())["wins"] == 1
+
+
+def test_a_divergence_in_endless_mode_keeps_the_win_and_is_counted(tmp_path):
+    p = player(tmp_path, seeds=WON[:1])
+
+    def move(factored, original=p.move):
+        if p.now.get("won"):
+            raise stream.DivergenceError("views differ")
+        original(factored)
+
+    p.move = move
+    p.run(1)
+    g = p.recent[0]
+    assert g["outcome"] == "won" and g["endless cut"] == "divergence" and "bundle" in g
+    assert p.totals == {**p.totals, "games": 1, "wins": 1, "divergences": 1}
+
+
 def test_a_stop_ends_the_game_between_moves(tmp_path):
     p = player(tmp_path)
     steps = []
@@ -349,6 +408,20 @@ def test_the_wait_comes_between_showing_a_move_and_making_it(tmp_path, monkeypat
     p.move = move_then_stop
     p.run(1)
     assert events == ["show", "wait", "move"] * 3
+
+
+def test_moves_that_only_rearrange_cards_skip_the_wait(tmp_path, monkeypatch):
+    from jackdaw.env.game_spec import FactoredAction
+
+    p = stream.Player(SimBackend(), COPY, delay=1.5, out=tmp_path, seeds=SEEDS[:1])
+    waits = []
+    monkeypatch.setattr(stream.time, "sleep", lambda s: waits.append(s))
+    moves = iter([FactoredAction(int(ActionType.SelectBlind)),
+                  FactoredAction(int(ActionType.SwapHandLeft), entity_target=1)])
+    pick = p.pick
+    p.pick = lambda *a: (pick(*a), next(moves, None))[1]
+    p.run(1)
+    assert waits == [1.5]
 
 
 def test_option_names_the_cards_hand_and_item(tmp_path):

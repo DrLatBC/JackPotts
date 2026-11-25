@@ -1481,7 +1481,10 @@ class RecentStream(tk.Canvas):
             r = px(4)
             self.create_oval(px(16) - r, mid - r, px(16) + r, mid + r,
                              fill=OUTCOME_COLOURS.get(g["outcome"], MUTED), outline="")
-            where = "won" if g["outcome"] == "won" else f"{g['outcome']}, ante {g.get('ante', '?')}"
+            if g["outcome"] != "won":
+                where = f"{g['outcome']}, ante {g.get('ante', '?')}"
+            else:
+                where = f"won, endless ante {g['endless ante']}" if "endless ante" in g else "won"
             self.create_text(cols[0], mid, text=where, anchor="w", fill=TEXT, font=(FONT, 10))
             self.create_text(cols[1], mid, text=g.get("seed", ""), anchor="w", fill=MUTED, font=(FONT, 9))
             self.create_text(cols[2], mid, text=g.get("checkpoint", ""), anchor="w", fill=MUTED, font=(FONT, 9))
@@ -1494,6 +1497,8 @@ class RecentStream(tk.Canvas):
         if 0 <= i < len(self.games) and e.y >= px(32):
             g = self.games[i]
             text = g.get("error") or f"{g['outcome']} in {g.get('seconds', 0):.0f}s"
+            if g.get("endless cut") and not g.get("error"):
+                text += f", endless part ended: {g['endless cut']}"
             if g.get("bundle"):
                 text += f"\n{g['bundle']}"
             self.tooltip.show(text, e.x_root, e.y_root)
@@ -1735,7 +1740,8 @@ class StreamTab(tk.Frame):
         last = (now.get("recent") or [{}])[0]
         counted = last.get("seed") == game.get("seed") and last.get("outcome") != "stopped"
         number = now.get("games", 0) + (0 if counted else 1)
-        self.game_title.set(f"Game {number}   ·   Ante {game.get('ante', '?')}   ·   Round {game.get('round', '?')}")
+        ante = f"Ante {game.get('ante', '?')}" + (" (won, endless)" if game.get("won") else "")
+        self.game_title.set(f"Game {number}   ·   {ante}   ·   Round {game.get('round', '?')}")
         blind = game.get("blind") or 0
         line = f"${game.get('money', 0)}"
         if blind:
@@ -1759,7 +1765,7 @@ class StreamTab(tk.Frame):
         game = now.get("game") or {}
         text = f"Stream {self.phase}"
         if game:
-            text += f"   ante {game.get('ante', '?')}   {now.get('wins', 0)} / {now.get('games', 0)} won"
+            text += f"   ante {game.get('ante', '?')}{' endless' if game.get('won') else ''}   {now.get('wins', 0)} / {now.get('games', 0)} won"
         return STREAM_COLOURS.get(self.phase, MUTED), text
 
 

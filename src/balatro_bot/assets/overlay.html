@@ -122,6 +122,7 @@ h2 + .row { border-top: 0; margin-top: 6px; }
 .figure .what { display: block; font-size: 16px; color: var(--dim); }
 .figure .num { display: block; font-size: 48px; line-height: 1; font-weight: 700; margin-top: 2px; }
 .figure .num small { font-family: "Archivo", sans-serif; font-size: 18px; font-weight: 600; color: var(--dim); }
+#ante.endless { color: var(--lean); }
 #blind-figure { grid-column: 1 / -1; }
 #blind-name { color: var(--text); font-weight: 700; }
 
@@ -321,8 +322,8 @@ function drawModel(d) {
   recent.replaceChildren();
   (d.recent || []).filter((r) => r.outcome !== "stopped").slice().reverse().forEach((r) => {
     const cls = r.outcome === "won" ? "won" : r.outcome === "lost" ? "lost" : "other";
-    const dot = el("div", "game " + cls, r.outcome === "won" ? "W" : (r.ante ?? "–"));
-    dot.title = r.outcome;
+    const dot = el("div", "game " + cls, r.outcome === "won" ? (r["endless ante"] ?? "W") : (r.ante ?? "–"));
+    dot.title = r["endless ante"] ? `won, ended at ante ${r["endless ante"]}` : r.outcome;
     recent.append(dot);
   });
 }
@@ -330,7 +331,8 @@ function drawModel(d) {
 function draw(d) {
   const g = d.game || {};
   document.body.classList.remove("idle");
-  $("ante").innerHTML = g.ante ? `${g.ante}<small> of 8</small>` : "–";
+  $("ante").innerHTML = !g.ante ? "–" : g.won ? `${g.ante}<small> endless</small>` : `${g.ante}<small> of 8</small>`;
+  $("ante").classList.toggle("endless", !!g.won);
   $("hands-run").textContent = g["hands played"] ?? "–";
   $("blind-name").textContent = g["blind title"] || "";
   $("blind").innerHTML = g["blind title"] ? `${Number(g.blind).toLocaleString()}<small> to beat</small>` : "";
