@@ -130,6 +130,91 @@ def test_a_planet_for_a_hand_the_run_does_not_play_is_vetoed(shop, monkeypatch):
     assert sb.propose("off-build planet", main["info"], buying, np.random.default_rng(0), main, Gate()) is None
 
 
+def test_best_joker_is_tried_more_often_late():
+    assert sb.chance("best joker", sb.LATE_ANTE - 1) == sb.SHOP_CHANCE["best joker"] == 0.1
+    assert sb.chance("best joker", sb.LATE_ANTE) == sb.chance("best joker", 8) == 0.5
+    assert sb.chance("fill slot", 8) == sb.SHOP_CHANCE["fill slot"]
+
+
+def test_partners_pair_either_way_round(monkeypatch):
+    monkeypatch.setattr(sb, "PAIRS", [("j_pareidolia", frozenset({"j_smiley", "j_photograph"}))])
+    assert sb.partners("j_pareidolia", {"j_smiley", "j_joker"}) == {"j_smiley"}
+    assert sb.partners("j_smiley", {"j_pareidolia"}) == {"j_pareidolia"}
+    assert sb.partners("j_smiley", {"j_photograph"}) == frozenset()
+
+
+def test_bot_tables_name_real_jokers():
+    from jackdaw.engine.data import load
+    centers = load("centers")
+    keys = {k for e, b in sb.PAIRS for k in (e, *b)}
+    keys |= set(sb.CONFLICTS) | {k for v in sb.CONFLICTS.values() for k in v}
+    assert keys <= set(centers)
+
+
+@pytest.mark.parametrize("pairs", [
+    [("j_egg", frozenset({"j_joker"}))],
+    [("j_joker", frozenset({"j_egg"}))],
+])
+def test_a_joker_that_pairs_with_a_held_one_is_bought(shop, monkeypatch, pairs):
+    _, main = shop
+    monkeypatch.setattr(sb, "PAIRS", pairs)
+    game = main["info"]["game"]
+    assert sb.propose("synergy", main["info"], LEAVE, np.random.default_rng(0), main, Gate()) is None
+    game.debug_add("j_joker")
+    refreshed(main)
+    egg = index_of(game, "j_egg")
+    p = sb.propose("synergy", main["info"], LEAVE, np.random.default_rng(0), main, Gate())
+    assert p.moves == [FactoredAction(sb.BUY, entity_target=egg)]
+    buying = FactoredAction(sb.BUY, entity_target=egg)
+    assert sb.propose("synergy", main["info"], buying, np.random.default_rng(0), main, Gate()) is None
+
+
+@pytest.mark.parametrize("kind", ["synergy", "midas"])
+def test_a_pair_buy_never_sells_the_partner(shop, monkeypatch, kind):
+    _, main = shop
+    monkeypatch.setattr(sb, "PAIRS", [("j_egg", frozenset({"j_vampire"}))])
+    monkeypatch.setattr(sb, "MIDAS", "j_egg")
+    game = main["info"]["game"]
+    for key in ("j_vampire", "j_joker", "j_jolly", "j_zany", "j_mad"):
+        game.debug_add(key)
+    refreshed(main)
+    p = sb.propose(kind, main["info"], LEAVE, np.random.default_rng(0), main, Gate())
+    sold = [game.jokers[m.entity_target].key for m in p.moves if int(m.action_type) == sb.SELL_JOKER]
+    assert len(sold) == 1 and sold != ["j_vampire"]
+    assert int(p.moves[-1].action_type) == sb.BUY
+
+
+def test_a_buy_against_a_held_joker_is_vetoed(shop, monkeypatch):
+    _, main = shop
+    monkeypatch.setattr(sb, "CONFLICTS", {"j_egg": frozenset({"j_joker"})})
+    game = main["info"]["game"]
+    buying = FactoredAction(sb.BUY, entity_target=index_of(game, "j_egg"))
+    assert sb.propose("conflict", main["info"], buying, np.random.default_rng(0), main, Gate()) is None
+    game.debug_add("j_joker")
+    refreshed(main)
+    egg = index_of(game, "j_egg")
+    buying = FactoredAction(sb.BUY, entity_target=egg)
+    p = sb.propose("conflict", main["info"], buying, np.random.default_rng(0), main, Gate())
+    assert p.moves == [] and p.veto == game.shop_jokers[egg].sort_id
+
+
+def test_a_passed_over_joker_buy_is_vetoed(shop, monkeypatch):
+    _, main = shop
+    game = main["info"]["game"]
+    egg = index_of(game, "j_egg")
+    buying = FactoredAction(sb.BUY, entity_target=egg)
+    assert sb.propose("pass joker", main["info"], buying, np.random.default_rng(0), main, Gate()) is None
+    monkeypatch.setattr(sb, "PASSED_OVER", frozenset({"j_egg"}))
+    assert sb.propose("pass joker", main["info"], LEAVE, np.random.default_rng(0), main, Gate()) is None
+    closed = Gate(False)
+    assert sb.propose("pass joker", main["info"], buying, np.random.default_rng(0), main, closed) is None
+    assert closed.asked == 1
+    p = sb.propose("pass joker", main["info"], buying, np.random.default_rng(0), main, Gate())
+    assert p.moves == [] and p.veto == game.shop_jokers[egg].sort_id
+    view = sb.without(env_view(main["info"]), game, p.veto)
+    assert not view.mask.entity_masks[ActionType.BuyCard][egg]
+
+
 def test_an_open_slot_left_with_money_tries_a_joker(shop):
     _, main = shop
     game = main["info"]["game"]

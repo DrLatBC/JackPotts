@@ -2,7 +2,7 @@
 
 The sell-then-buy branch must evaluate the shop candidate against the
 post-sell roster so the buyer doesn't inherit synergy from the joker
-we're about to sell. Otherwise _AMPLIFICATION_PAIRS credits the
+we're about to sell. Otherwise AMPLIFICATION_PAIRS credits the
 seller's enabler boost to the buyer — e.g. selling Shortcut to buy The
 Order while The Order's value is still scored with Shortcut in the roster.
 """
@@ -75,7 +75,7 @@ def test_non_enabler_sell_preserves_order_value() -> None:
     post_sell = owned[:splash_idx] + owned[splash_idx + 1:]
     post = _value("j_order", post_sell)
 
-    # Splash isn't in any _AMPLIFICATION_PAIRS row with The Order, doesn't
+    # Splash isn't in any AMPLIFICATION_PAIRS row with The Order, doesn't
     # add scoring to Straight, so removing it shouldn't shift the buyer's value.
     # Tolerance scales with pre so this stays stable as synergy signals evolve.
     # (Splash does still affect the scoring sim via its "all cards score"

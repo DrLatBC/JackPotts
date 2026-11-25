@@ -2,8 +2,10 @@
 the result teaches the policy what it is worth (``rl.branch``).
 
 A proposal is the moves the branch makes in place of the main line's own (a sale or two,
-then the buy), or, for a planet bought for a hand the run does not play, the card the
-branch may not buy this shop visit. Jokers are judged by what Tyler asked of them: does
+then the buy), or, for a planet bought for a hand the run does not play, a joker in
+``PASSED_OVER`` or a joker that ``CONFLICTS`` with a held one, the card the branch may not
+buy this shop visit. Joker pairs and conflicts are the rule bot's own tables; only which
+jokers go together is used, not the bot's prices for them. Jokers are judged by what Tyler asked of them: does
 the trade raise the average score of the best play over hands dealt from the run's deck
 (``hand_score``)? The test only decides whether a trade is tried; the branch's result is
 what the policy learns from. Scaling and money jokers score little up front, so the test
@@ -23,6 +25,9 @@ from jackdaw.engine.data import load
 from jackdaw.env.action_space import ActionType
 from jackdaw.env.game_spec import FactoredAction
 
+import rl.ordering  # noqa: F401  (puts the bot's src on the path)
+from balatro_bot.scaling import AMPLIFICATION_PAIRS, ANTI_SYNERGY  # noqa: E402
+
 BUY, BUY_AND_USE = int(ActionType.BuyCard), int(ActionType.BuyAndUse)
 SELL_JOKER, SELL_CONS = int(ActionType.SellJoker), int(ActionType.SellConsumable)
 USE, LEAVE = int(ActionType.UseConsumable), int(ActionType.NextRound)
@@ -36,15 +41,33 @@ PLANET_HAND = {k: c["config"]["hand_type"] for k, c in _CENTERS.items()
                if c.get("set") == "Planet" and "hand_type" in (c.get("config") or {})}
 COPY_JOKERS = frozenset({"j_blueprint", "j_brainstorm"})
 MIDAS, VAMPIRE = "j_midas_mask", "j_vampire"
+PASSED_OVER = frozenset({"j_campfire"})
+"""Jokers the policy buys more than they are worth (Tyler: Campfire kind of sucks); a
+branch passes on the buy."""
+PAIRS: list[tuple[str, frozenset[str]]] = [(e, b) for e, b, _ in AMPLIFICATION_PAIRS]
+"""The rule bot's amplification pairs: an enabler and the jokers it boosts, either way round."""
+CONFLICTS: dict[str, frozenset[str]] = ANTI_SYNERGY
+"""The rule bot's anti-synergy map: a joker and the held jokers it works against."""
 
-KINDS = ("copy joker", "midas", "best joker", "fill slot", "off-build planet", "held tarot")
+KINDS = ("copy joker", "midas", "synergy", "pass joker", "conflict", "best joker", "fill slot",
+         "off-build planet", "held tarot")
 """Tried in this order; a main line takes at most one branch per tick."""
 SHOP_CHANCE: dict[str, float] = {
-    "copy joker": 1.0, "midas": 1.0, "best joker": 0.1, "fill slot": 0.25,
-    "off-build planet": 0.25, "held tarot": 0.25,
+    "copy joker": 1.0, "midas": 1.0, "synergy": 1.0, "pass joker": 1.0, "conflict": 1.0,
+    "best joker": 0.1, "fill slot": 0.25, "off-build planet": 0.25, "held tarot": 0.25,
 }
 """The chance each branch is tried when it comes up: once per shop visit, a held tarot
 once per blind."""
+LATE_ANTE = 6
+LATE_CHANCE: dict[str, float] = {"best joker": 0.5}
+"""Chances from ``LATE_ANTE`` on. Tyler: jokers like Smiley Face clear blinds early but
+fall off; past ante 6 you look to swap them for something better, which is the trade the
+best-joker branch tries."""
+
+
+def chance(kind: str, ante: int) -> float:
+    """The chance a ``kind`` branch is tried at ``ante``."""
+    return LATE_CHANCE.get(kind, SHOP_CHANCE[kind]) if ante >= LATE_ANTE else SHOP_CHANCE[kind]
 HANDS = 10
 """Hands dealt from the run's deck to score a lineup on."""
 GAIN = 0.10
@@ -117,14 +140,17 @@ def _engine(m: FactoredAction):
 # -- buying, with sales if needed --------------------------------------------------------
 
 
-def buy_plans(game, state, mask, shop_index: int) -> list[list[FactoredAction]]:
+def buy_plans(game, state, mask, shop_index: int,
+              keep: frozenset[str] = frozenset()) -> list[list[FactoredAction]]:
     """The ways to buy shop card ``shop_index``: as is, or after selling at most one
-    joker and then consumables (from the last) until it is affordable. Each is checked on a
-    copy of the game, so only ways the game takes are given; empty when none is."""
+    joker (never one in ``keep``) and then consumables (from the last) until it is
+    affordable. Each is checked on a copy of the game, so only ways the game takes are
+    given; empty when none is."""
     card = game.shop_jokers[shop_index]
     sell_j = mask.entity_masks.get(ActionType.SellJoker)
     sell_c = mask.entity_masks.get(ActionType.SellConsumable)
-    jokers = [i for i in range(len(game.jokers)) if sell_j is not None and sell_j[i]]
+    jokers = [i for i in range(len(game.jokers))
+              if sell_j is not None and sell_j[i] and game.jokers[i].key not in keep]
     cons = [i for i in range(len(game.consumables)) if sell_c is not None and sell_c[i]]
     full = (card.key.startswith("j_") and card.edition != "negative"
             and len(game.jokers) >= int(state.joker_slots))
@@ -171,6 +197,18 @@ def _buys(move: FactoredAction, index: int) -> bool:
     return int(move.action_type) in (BUY, BUY_AND_USE) and move.entity_target == index
 
 
+def partners(key: str, held: set[str]) -> frozenset[str]:
+    """The held jokers ``key`` pairs with in ``PAIRS``, either as their enabler or as one
+    of the jokers an enabler boosts."""
+    out: set[str] = set()
+    for enabler, boosted in PAIRS:
+        if key == enabler:
+            out |= held & boosted
+        elif key in boosted and enabler in held:
+            out.add(enabler)
+    return frozenset(out)
+
+
 def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Generator,
             line: dict, gate) -> Proposal | None:
     """The ``kind`` branch for a main line at its decision (``info`` from its last step),
@@ -183,16 +221,25 @@ def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Genera
         return found if found is not None and gate() else None
     if game.phase.value != "shop":
         return None
-    if kind in ("copy joker", "midas"):
-        wanted = COPY_JOKERS if kind == "copy joker" else (
-            {MIDAS} if any(j.key == VAMPIRE for j in game.jokers) else set())
+    if kind in ("copy joker", "midas", "synergy"):
+        held = {j.key for j in game.jokers}
         for i in _jokers_on_sale(game):
-            if game.shop_jokers[i].key in wanted and not _buys(greedy, i):
-                plans = buy_plans(game, state, mask, i)
-                if plans:
-                    if not gate():
-                        return None
-                    return Proposal(kind, best_plan(game, plans, dealt_hands(game, state, rng)))
+            key = game.shop_jokers[i].key
+            if _buys(greedy, i):
+                continue
+            if kind == "copy joker":
+                keep = frozenset() if key in COPY_JOKERS else None
+            elif kind == "midas":
+                keep = frozenset({VAMPIRE}) if key == MIDAS and VAMPIRE in held else None
+            else:
+                keep = None if key in held else partners(key, held) or None
+            if keep is None:
+                continue
+            plans = buy_plans(game, state, mask, i, keep)
+            if plans:
+                if not gate():
+                    return None
+                return Proposal(kind, best_plan(game, plans, dealt_hands(game, state, rng)))
         return None
     if kind == "off-build planet":
         if int(greedy.action_type) not in (BUY, BUY_AND_USE):
@@ -202,6 +249,17 @@ def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Genera
         played = {n: int(h.played) for n, h in game.hand_levels.items()}
         total = sum(played.values())
         if hand is None or total < MIN_PLAYS or played.get(hand, 0) / total >= OFF_BUILD:
+            return None
+        return Proposal(kind, [], veto=card.sort_id) if gate() else None
+    if kind in ("pass joker", "conflict"):
+        if int(greedy.action_type) != BUY:
+            return None
+        card = game.shop_jokers[greedy.entity_target]
+        if kind == "pass joker":
+            vetoed = card.key in PASSED_OVER
+        else:
+            vetoed = bool(CONFLICTS.get(card.key, frozenset()) & {j.key for j in game.jokers})
+        if not vetoed:
             return None
         return Proposal(kind, [], veto=card.sort_id) if gate() else None
     if kind == "fill slot":

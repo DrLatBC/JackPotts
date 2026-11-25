@@ -34,11 +34,14 @@ Spectral the policy passes over, the branch takes that Spectral instead. Whichev
 does better teaches the policy what the seal is worth there.
 
 Shop branches (``rl.shop_branches``) try buys and uses the policy under-makes, each once per
-shop visit (a held tarot once per blind) at its ``SHOP_CHANCE``: Blueprint or Brainstorm,
-Midas Mask beside Vampire, the joker that most raises the average best-hand score, a joker
-for an open slot it leaves the shop with, using an enhancing tarot held through a shop
-visit, and passing on a planet for a hand the run does not play (that branch may not buy
-it this visit). A buy that needs a sale first makes the sale on the branch and then the
+shop visit (a held tarot once per blind) at its ``SHOP_CHANCE`` (``LATE_CHANCE`` from
+ante 6): Blueprint or Brainstorm,
+Midas Mask beside Vampire, a joker that pairs with a held one in the rule bot's
+amplification pairs, the joker that most raises the average best-hand score, a joker for an
+open slot it leaves the shop with, using an enhancing tarot held through a shop visit, and
+passing on a planet for a hand the run does not play, on a Campfire buy, or on a joker that
+works against a held one in the rule bot's anti-synergy map (that branch may not buy the
+card this visit). A pair buy never sells the partner it pairs with. A buy that needs a sale first makes the sale on the branch and then the
 buy. Each move after the first is trained too, at its own state on the branch with the
 branch's half of the difference: the moves were one plan, so they share its result.
 """
@@ -60,7 +63,6 @@ from rl.model import DISCARD, PICK, PLAY, Policy, Prepared, _complete, act, comp
 from rl.ordering import put_in_order
 from rl.playback import copy_env, env_view, make_env, no_legal_action
 from rl.selfplay import ENDLESS_BONUS, WIN_BONUS, points, train_seed
-from rl.shop_branches import SHOP_CHANCE
 
 REROLL = int(ActionType.RerollBoss)
 SKIP = int(ActionType.SkipBlind)
@@ -316,7 +318,7 @@ class BranchPlay:
 
                 def gate(occasion=occasion, kind=kind, line=line) -> bool:
                     line["forced"].add(occasion)
-                    return self.rng.random() < SHOP_CHANCE[kind]
+                    return self.rng.random() < shop_branches.chance(kind, line["info"]["game"].ante)
 
                 p = shop_branches.propose(kind, line["info"], greedy[k], self.rng, line, gate)
                 if p is not None:

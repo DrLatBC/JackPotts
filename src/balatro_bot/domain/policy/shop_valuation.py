@@ -37,6 +37,7 @@ from balatro_bot.joker_effects.scoring_phase import (
     PHASE_MULT, PHASE_XMULT,
 )
 from balatro_bot.scaling import (
+    AMPLIFICATION_PAIRS,
     SCALING_REGISTRY,
 )
 from balatro_bot.strategy import (
@@ -1391,39 +1392,6 @@ def _scoring_delta_legacy(
 # Layer 2: Synergy multiplier
 # ---------------------------------------------------------------------------
 
-# Data-driven amplification pairs: (enabler_key, boosted_keys, multiplier)
-# Bidirectional: if candidate is enabler and owned has boosted (or vice versa)
-_AMPLIFICATION_PAIRS: list[tuple[str, frozenset[str], float]] = [
-    ("j_pareidolia", frozenset({
-        "j_photograph", "j_scary_face", "j_smiley",
-        "j_triboulet", "j_sock_and_buskin",
-    }), 2.5),
-    ("j_smeared", frozenset({
-        "j_greedy_joker", "j_lusty_joker", "j_wrathful_joker",
-        "j_gluttenous_joker", "j_arrowhead", "j_onyx_agate",
-        "j_bloodstone", "j_rough_gem",
-        "j_tribe", "j_droll", "j_crafty",
-    }), 1.5),
-    ("j_four_fingers", frozenset({
-        "j_order", "j_tribe", "j_crazy", "j_droll",
-        "j_crafty", "j_devious",
-    }), 1.5),
-    ("j_shortcut", frozenset({
-        "j_order", "j_crazy", "j_devious", "j_runner",
-    }), 1.5),
-    ("j_splash", frozenset({
-        "j_hiker", "j_fibonacci", "j_hack",
-        "j_even_steven", "j_odd_todd",
-    }), 1.5),
-    ("j_oops", frozenset({
-        "j_bloodstone", "j_lucky_cat", "j_8_ball", "j_space",
-    }), 1.5),
-    ("j_ride_the_bus", frozenset({
-        "j_even_steven", "j_odd_todd", "j_hack",
-        "j_fibonacci", "j_wee",
-    }), 1.3),
-]
-
 # Blueprint/Brainstorm copy targets
 _COPY_JOKERS = frozenset({"j_blueprint", "j_brainstorm"})
 _PROBABILITY_JOKERS = frozenset({
@@ -1537,7 +1505,7 @@ def _synergy_multiplier(
     mult = 1.0
 
     # --- Amplification pairs (data-driven) ---
-    for enabler, boosted, factor in _AMPLIFICATION_PAIRS:
+    for enabler, boosted, factor in AMPLIFICATION_PAIRS:
         # Candidate is boosted, enabler is owned
         if candidate_key in boosted and enabler in owned_keys:
             mult *= factor
