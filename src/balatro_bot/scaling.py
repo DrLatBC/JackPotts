@@ -382,6 +382,10 @@ AMPLIFICATION_PAIRS: list[tuple[str, frozenset[str], float]] = [
         "j_even_steven", "j_odd_todd", "j_hack",
         "j_fibonacci", "j_wee",
     }), 1.3),
+    # +3 discards feed the discard scalers.
+    ("j_merry_andy", DISCARD_SCALERS, 1.5),
+    # Each Stone card Marble adds grows Stone Joker's chips and is a card added for Hologram.
+    ("j_marble", frozenset({"j_stone", "j_hologram"}), 1.5),
 ]
 
 
@@ -394,7 +398,24 @@ _DISCARD_SCALERS_SET = {"j_castle", "j_yorick", "j_hit_the_road"}
 _FACE_JOKERS_SET = {"j_photograph", "j_scary_face", "j_smiley", "j_triboulet"}
 _PLAY_SCALERS_SET = {"j_green_joker", "j_supernova", "j_ride_the_bus"}
 
+# Jokers Madness should not be bought beside: it destroys a random Joker on each Small and
+# Big Blind. Chosen by Tyler from a check of every joker against card.lua: the jokers that
+# store value on themselves (kept all run, or reset on their own), plus copy jokers and
+# legendaries. Jokers whose value comes from the run (Fortune Teller, Throwback, Steel, ...)
+# or that decay are not here: losing them costs only the joker.
+MADNESS_CONFLICTS = frozenset({
+    # kept all run
+    "j_caino", "j_constellation", "j_glass", "j_hologram", "j_lucky_cat", "j_vampire",
+    "j_yorick", "j_ceremonial", "j_flash", "j_red_card", "j_trousers", "j_green_joker",
+    "j_castle", "j_runner", "j_square", "j_wee", "j_egg", "j_rocket", "j_invisible",
+    # reset on their own
+    "j_campfire", "j_hit_the_road", "j_ride_the_bus", "j_obelisk",
+    # copy jokers and legendaries
+    "j_blueprint", "j_brainstorm", "j_chicot", "j_perkeo", "j_triboulet",
+})
+
 ANTI_SYNERGY: dict[str, frozenset[str]] = {
+    "j_madness":        MADNESS_CONFLICTS,
     # Discard resource conflicts
     "j_banner":         frozenset({"j_mystic_summit"} | _DISCARD_SCALERS_SET),
     "j_mystic_summit":  frozenset({"j_banner"}),

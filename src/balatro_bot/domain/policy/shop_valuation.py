@@ -1480,11 +1480,6 @@ def _utility_synergy_bonus(key: str, owned_keys: set[str], strat: Strategy) -> f
             bonus += 1.0  # Oops explicitly doubles this joker's proc rate
     elif key == "j_space" and strat.top_hand():
         bonus += 1.0
-    elif key == "j_merry_andy":
-        discard_jokers = {"j_castle", "j_yorick", "j_hit_the_road"}
-        bonus += len(owned_keys & discard_jokers) * 2.0
-    elif key == "j_marble" and "j_stone" in owned_keys:
-        bonus += 2.0
     elif key == "j_splash":
         per_card = {"j_hiker", "j_selzer", "j_hanging_chad"}
         bonus += len(owned_keys & per_card) * 1.5

@@ -151,6 +151,12 @@ def test_bot_tables_name_real_jokers():
     assert keys <= set(centers)
 
 
+def test_madness_conflicts_with_jokers_that_store_value():
+    held = sb.CONFLICTS["j_madness"]
+    assert {"j_hologram", "j_campfire", "j_blueprint", "j_perkeo", "j_egg"} <= held
+    assert not {"j_fortune_teller", "j_throwback", "j_steel_joker", "j_ice_cream"} & held
+
+
 @pytest.mark.parametrize("pairs", [
     [("j_egg", frozenset({"j_joker"}))],
     [("j_joker", frozenset({"j_egg"}))],
