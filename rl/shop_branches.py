@@ -106,9 +106,10 @@ class Proposal:
 
 
 def dealt_hands(game, state, rng: np.random.Generator, n: int = HANDS) -> list[list[int]]:
-    """``n`` hands of the run's hand size, as positions in its deck sorted by sort id."""
+    """``n`` hands of the run's hand size, as positions in its deck sorted by sort id.
+    Hand-size penalties can push the size below zero; such hands are empty and score 0."""
     size = len(game.deck) + len(game.hand) + len(game.discard_pile)
-    k = min(int(state.hand_size), size)
+    k = max(0, min(int(state.hand_size), size))
     return [sorted(rng.choice(size, k, replace=False).tolist()) for _ in range(n)]
 
 

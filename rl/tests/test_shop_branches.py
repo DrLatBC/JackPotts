@@ -65,6 +65,15 @@ def test_a_joker_that_adds_mult_raises_the_hand_score(shop):
     assert sb.hand_score(game, hands) > base > 0
 
 
+def test_a_hand_size_below_zero_deals_empty_hands_that_score_nothing(shop):
+    _, main = shop
+    game = main["info"]["game"]
+    state = copy.replace(main["info"]["state"], hand_size=-1)
+    hands = sb.dealt_hands(game, state, np.random.default_rng(0))
+    assert hands and all(h == [] for h in hands)
+    assert sb.hand_score(game, hands) == 0.0
+
+
 def test_buy_plans_sell_what_a_buy_needs(shop):
     _, main = shop
 
