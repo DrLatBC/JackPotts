@@ -73,7 +73,8 @@ def play(model: Policy, games: list[tuple[str, str, int]], *, parallel: int = 64
     (``rl.ordering``); without it they score in hand order.
     ``record`` adds ``packs`` (each pack pick or skip: step, ante, the cards on offer,
     the card taken or None for a skip, hand levels above 1; a card is its key, a playing
-    card its front plus any enhancement, as ``"H_7"`` or ``"H_7 m_bonus"``) and ``plays`` (each hand
+    card its front plus any enhancement, seal and edition, as ``"H_7"`` or
+    ``"H_7 m_bonus red_seal foil"``) and ``plays`` (each hand
     played: ``[step, hand type]``)."""
     results: list[dict] = []
     waiting = list(reversed(games))
@@ -146,7 +147,10 @@ def _played(game) -> dict[str, int]:
 def _card_name(card) -> str:
     if not card.front:
         return card.key
-    return card.front if card.key == "c_base" else f"{card.front} {card.key}"
+    parts = [card.front, *([card.key] if card.key != "c_base" else []),
+             *([f"{card.seal.lower()}_seal"] if card.seal else []),
+             *([card.edition] if card.edition else [])]
+    return " ".join(parts)
 
 
 def _note_pack(slot: dict, action) -> dict[str, int] | None:

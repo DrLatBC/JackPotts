@@ -17,4 +17,6 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -e ".[dev,runtime]"
+      - name: Build the scoring kernel
+        run: pip install ./kernel/py
       - run: pytest -v

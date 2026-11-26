@@ -468,3 +468,47 @@ def test_a_copy_joker_is_moved_to_where_it_copies(shop, lineup, copier, swap):
     hands = sb.dealt_hands(game, main["info"]["state"], np.random.default_rng(0))
     assert sb.placed(game, [], hands, sort_id) == [swap]
     assert sb.placed(game, [swap], hands, sort_id) == [swap]
+
+
+def card(front="H_7", key="c_base", seal=None, edition=None, face_down=False):
+    from types import SimpleNamespace
+    return SimpleNamespace(front=front, key=key, seal=seal, edition=edition, face_down=face_down)
+
+
+def test_a_red_seal_is_taken_over_any_other_pick():
+    rng = np.random.default_rng(0)
+    cards = [card(), card(key="m_glass", seal="Gold"), card(seal="Red")]
+    assert sb.upgraded_pick("red seal", cards, 1, rng) == 2
+    assert sb.upgraded_pick("red seal", cards, 2, rng) is None
+    assert sb.upgraded_pick("red seal", [card(), card(seal="Red", face_down=True)], 0, rng) is None
+
+
+def test_a_plain_pick_tries_a_sealed_card_first():
+    rng = np.random.default_rng(0)
+    cards = [card(), card(key="m_steel"), card(seal="Blue"), card(edition="foil")]
+    assert sb.upgraded_pick("upgraded card", cards, 0, rng) == 2
+    assert sb.upgraded_pick("upgraded card", [card(), card(key="m_steel"), None], 0, rng) == 1
+    assert sb.upgraded_pick("upgraded card", cards, 1, rng) is None
+    assert sb.upgraded_pick("upgraded card", [card(), card()], 0, rng) is None
+    assert sb.upgraded_pick("upgraded card", [card(front=""), card(seal="Red")], 0, rng) is None
+
+
+def test_a_plain_card_from_a_standard_pack_branches_on_an_upgraded_one(shop):
+    from jackdaw.engine import actions as A
+    _, main = shop
+    game = main["info"]["game"]
+    game.debug_set(money=100)
+    game.debug_add("p_standard_mega_1")
+    refreshed(main)
+    game = main["info"]["game"]
+    at = [b.key for b in game.shop_boosters].index("p_standard_mega_1")
+    main["env"].step(FactoredAction(int(ActionType.OpenBooster), entity_target=at))
+    refreshed(main)
+    game = main["info"]["game"]
+    plain = [i for i, c in enumerate(game.pack_cards) if not sb.upgraded(c)]
+    better = {i for i, c in enumerate(game.pack_cards) if sb.upgraded(c)}
+    assert plain and better
+    pick = FactoredAction(sb.PICK, entity_target=plain[0])
+    p = sb.propose("upgraded card", main["info"], pick, np.random.default_rng(0), main, Gate())
+    assert int(p.moves[0].action_type) == sb.PICK and p.moves[0].entity_target in better
+    assert sb.occasion("upgraded card", main)[-1] == tuple(c.sort_id for c in game.pack_cards)

@@ -39,6 +39,9 @@ REDEEM = int(ActionType.RedeemVoucher)
 SELL_JOKER, SELL_CONS = int(ActionType.SellJoker), int(ActionType.SellConsumable)
 USE, LEAVE = int(ActionType.UseConsumable), int(ActionType.NextRound)
 SWAP_LEFT, SWAP_RIGHT = int(ActionType.SwapJokersLeft), int(ActionType.SwapJokersRight)
+PICK = int(ActionType.PickPackCard)
+RED_SEAL = "Red"
+"""Tyler: seals are very strong, and a Red Seal (the card retriggers) is the best of them."""
 
 _CENTERS = load("centers")
 ENHANCING_TAROTS = frozenset(
@@ -60,15 +63,16 @@ CONFLICTS: dict[str, frozenset[str]] = ANTI_SYNERGY
 """The rule bot's anti-synergy map: a joker and the held jokers it works against."""
 
 KINDS = ("copy joker", "midas", "synergy", "voucher synergy", "pass joker", "conflict",
-         "best joker", "fill slot", "off-build planet", "held tarot")
+         "best joker", "fill slot", "off-build planet", "held tarot", "red seal", "upgraded card")
 """Tried in this order; a main line takes at most one branch per tick."""
 SHOP_CHANCE: dict[str, float] = {
     "copy joker": 1.0, "midas": 1.0, "synergy": 1.0, "voucher synergy": 1.0,
     "pass joker": 1.0, "conflict": 1.0,
     "best joker": 0.1, "fill slot": 0.25, "off-build planet": 0.25, "held tarot": 0.25,
+    "red seal": 1.0, "upgraded card": 0.5,
 }
 """The chance each branch is tried when it comes up: once per shop visit, a held tarot
-once per blind."""
+once per blind, a playing card pick once per pick."""
 LATE_ANTE = 6
 LATE_CHANCE: dict[str, float] = {"best joker": 0.5}
 """Chances from ``LATE_ANTE`` on. Tyler: jokers like Smiley Face clear blinds early but
@@ -304,6 +308,14 @@ def propose(kind: str, info: dict, greedy: FactoredAction, rng: np.random.Genera
     if kind == "held tarot":
         found = _held_tarot(game, mask, greedy, line)
         return found if found is not None and gate() else None
+    if kind in ("red seal", "upgraded card"):
+        if game.phase.value != "pack_opening" or int(greedy.action_type) != PICK:
+            return None
+        legal = mask.entity_masks.get(ActionType.PickPackCard)
+        cards = [c if legal is not None and legal[i] else None
+                 for i, c in enumerate(game.pack_cards)]
+        i = upgraded_pick(kind, cards, greedy.entity_target, rng)
+        return Proposal(kind, [FactoredAction(PICK, entity_target=i)]) if i is not None and gate() else None
     if game.phase.value != "shop":
         return None
     owned = cache(lambda: owned_vouchers(game))
@@ -421,8 +433,35 @@ def _held_tarot(game, mask, greedy: FactoredAction, line: dict) -> Proposal | No
     return None
 
 
+def upgraded(card) -> bool:
+    """A playing card with an enhancement, a seal or an edition."""
+    return card.key != "c_base" or bool(card.seal) or bool(card.edition)
+
+
+def upgraded_pick(kind: str, cards: list, picked: int, rng: np.random.Generator) -> int | None:
+    """The pack card a ``kind`` branch takes in place of the line's pick ``picked``
+    (``cards`` holds None where the pick is not legal), or None when it does not come up:
+    for "red seal", a Red Seal card when the pick is not one; for "upgraded card", when the
+    pick is a plain card, a sealed card if there is one, else one with an enhancement or an
+    edition. Ties are drawn at random."""
+    pick = cards[picked] if picked is not None and picked < len(cards) else None
+    if pick is None or not pick.front:
+        return None
+    shown = [(i, c) for i, c in enumerate(cards) if c is not None and c.front and not c.face_down]
+    if kind == "red seal":
+        pool = [] if pick.seal == RED_SEAL else [i for i, c in shown if c.seal == RED_SEAL]
+    else:
+        pool = [] if upgraded(pick) else (
+            [i for i, c in shown if c.seal] or [i for i, c in shown if upgraded(c)])
+    return int(rng.choice(pool)) if pool else None
+
+
 def occasion(kind: str, line: dict) -> tuple:
-    """What a branch of ``kind`` is tried once in: a shop visit, or for a held tarot a blind."""
+    """What a branch of ``kind`` is tried once in: a shop visit, for a held tarot a blind,
+    for a playing card pick the pack's cards as offered at that pick."""
+    if kind in ("red seal", "upgraded card"):
+        cards = line["info"]["game"].pack_cards
+        return (kind, line["shops"], line["blinds"], tuple(c.sort_id for c in cards))
     return (kind, line["blinds"] if kind == "held tarot" else line["shops"])
 
 

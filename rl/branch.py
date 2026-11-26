@@ -39,7 +39,7 @@ ante 6): Blueprint or Brainstorm (then set up to copy the best joker),
 Midas Mask beside Vampire, a joker that pairs with a held one in the rule bot's
 amplification pairs, the joker that most raises the average best-hand score, a joker for an
 open slot it leaves the shop with while holding Madness, using an enhancing tarot held
-through a shop visit, and passing on a planet for a hand the run does not play, on a Campfire buy, or on a joker that
+through a shop visit, a Red Seal card or a sealed or enhanced one over a plain pack pick, and passing on a planet for a hand the run does not play, on a Campfire buy, or on a joker that
 works against a held one in the rule bot's anti-synergy map (that branch may not buy the
 card this visit). A pair buy never sells the partner it pairs with. A buy that needs a sale first makes the sale on the branch and then the
 buy. Each move after the first is trained too, at its own state on the branch with the
