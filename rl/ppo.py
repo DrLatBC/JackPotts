@@ -20,8 +20,11 @@ points, each step's loss carries ``beta`` times an estimate of how far the polic
 from its start on those states (``one_step``'s ``pull``).
 
 ``--deck`` and ``--stake`` (the panel's names) set what the run plays and is evaluated on;
-``--win-bonus`` the points a win adds on top of one per boss beaten; ``--endless-bonus``
-(above 0) plays won games on into endless mode at that many points per endless ante.
+``--win-bonus`` the points a win adds on top of a third per blind beaten; ``--endless-bonus``
+(above 0) plays won games on into endless mode at that many points per endless ante;
+``--overkill`` adds that many points per natural log of a beaten blind's score over target.
+With ``--start-share`` that share of new main lines start from the big-starts pool
+(``rl.starts``, ``--start-pool`` entries, saved with the run).
 
 Each step's points (``rl.selfplay.points``) are reduced by the drift penalty: ``beta``
 times how much more likely the playing policy found its move than the copy does
@@ -54,7 +57,8 @@ from rl.branch import BranchPlay, tally
 from rl.evaluate import (DECK, DECK_NAMES, STAKE, STAKE_NAMES, eval_seed, game_setup, model_file,
                          play, playstyle, summary)
 from rl.model import VALUE_SCALE, Policy, Prepared, act, widen_optimizer
-from rl.selfplay import ENDLESS_BONUS, WIN_BONUS, SelfPlay, advantages, same_seed_scores
+from rl.selfplay import ENDLESS_BONUS, OVERKILL, WIN_BONUS, SelfPlay, advantages, same_seed_scores
+from rl.starts import SIZE, StartPool
 from rl.train import heads, load_model, save_model
 
 from balatro_bot.eval_compare import compare, describe  # noqa: E402  (src is on the path once rl is imported)
@@ -258,6 +262,9 @@ def starting_point(args, out: Path):
     return model, {**meta, "copy": args.start}
 
 
+POOL_FILE = "starts.json.gz"
+
+
 def train(args) -> int:
     out = PPO / args.run
     log_path = out / "log.jsonl"
@@ -283,20 +290,31 @@ def train(args) -> int:
         widen_optimizer(opt)
     setup = game_setup(args.deck, args.stake)
     deck, stake = setup
+    pool = None
     if args.branch_rate:
+        if args.start_share:
+            pool = StartPool(args.start_pool)
+            if args.resume:
+                pool.load(out / POOL_FILE)
         games = BranchPlay(args.run, seed=args.seed + state["updates"], first=state["next_seed"],
                            deck=deck, stake=stake, win_bonus=args.win_bonus,
-                           endless_bonus=args.endless_bonus, rate=args.branch_rate, draws=args.draws)
+                           endless_bonus=args.endless_bonus, overkill=args.overkill,
+                           rate=args.branch_rate, draws=args.draws, pool=pool,
+                           start_share=args.start_share)
+        games.next_start = state.get("next_start", 0)
     else:
         games = SelfPlay(args.run, seed=args.seed + state["updates"], first=state["next_seed"],
                          deck=deck, stake=stake, win_bonus=args.win_bonus,
-                         endless_bonus=args.endless_bonus)
+                         endless_bonus=args.endless_bonus, overkill=args.overkill)
     rng = np.random.default_rng(args.seed + state["updates"])
     eval_seeds = [(eval_seed(i), deck, stake) for i in range(1, args.eval_games + 1)]
     report(status, phase="running", copy=meta["copy"], beta=state["beta"], doing="playing",
            method="BRANCHES" if args.branch_rate else "SAME SEED", deck=args.deck, stake=args.stake,
            decisions=args.decisions_per_step if args.branch_rate else None,
-           **{"win bonus": args.win_bonus, "endless bonus": args.endless_bonus}, **progress(state, args), **last_numbers(log_path),
+           **{"win bonus": args.win_bonus, "endless bonus": args.endless_bonus,
+              "overkill": args.overkill,
+              **({"start share": args.start_share, "start pool": args.start_pool}
+                 if args.branch_rate else {})}, **progress(state, args), **last_numbers(log_path),
            **last_eval(out))
     if not args.resume and args.eval_every:
         save_model(out / "latest.pt", model, model.config, {**meta, "updates": 0})
@@ -321,6 +339,8 @@ def train(args) -> int:
             pull = (start_logp, beta)
             drift = batch.state_logp - start_logp
             adv, old_logp, finished = batch.adv, batch.logp, batch.finished
+            restarts = [g for g in finished if g.get("start")]
+            finished = [g for g in finished if not g.get("start")]
             counts = tally(batch.decisions)
             whole = counts["all"]
             extra = {"tied share": whole["tied"] / max(whole["n"], 1),
@@ -356,6 +376,8 @@ def train(args) -> int:
         state["updates"] += 1
         state["seconds"] = time.perf_counter() - began
         state["next_seed"] = games.next_seed
+        if pool is not None:
+            state["next_start"] = games.next_start
         state["steps"] += prep.n
         state["games"] += len(finished)
         line = {
@@ -375,6 +397,9 @@ def train(args) -> int:
         if args.branch_rate:
             line.update({"decisions": whole["n"], "untied": whole["main better"] + whole["drawn better"],
                          "main better": whole["main better"], "drawn better": whole["drawn better"]})
+        if pool is not None:
+            line.update({"restarts finished": len(restarts),
+                         "restarts won": int(sum(g["won"] for g in restarts)), **pool.stats()})
         with log_path.open("a") as f:
             f.write(json.dumps(line) + "\n")
         shown = " ".join(f"{k.split()[0]} {v:.2f}" for k, v in extra.items())
@@ -384,9 +409,12 @@ def train(args) -> int:
               f"{line['points per finished game'] or 0:5.2f}  drift {line['drift']:.3f}  "
               f"agree {line['agreement with copy']:.3f}  {shown}  "
               f"ent {stats['entropy']:.2f}  {moved}  "
-              f"play {line['play s']:.0f}s learn {line['learn s']:.0f}s", flush=True)
+              + (f"starts {line['restarts finished']} pool {line['pool']}  " if pool is not None else "")
+              + f"play {line['play s']:.0f}s learn {line['learn s']:.0f}s", flush=True)
         save_model(out / "latest.pt", model, model.config, {**meta, "updates": state["updates"]})
         torch.save(opt.state_dict(), out / "optim.pt")
+        if pool is not None:
+            pool.save(out / POOL_FILE)
         write_json(state_path, state)
         report(status, **progress(state, args), **latest_numbers(line))
         if args.eval_every and state["seconds"] >= state["next_eval"]:
@@ -609,6 +637,13 @@ def main() -> int:
                     help="points a win adds on top of one per boss beaten")
     tr.add_argument("--endless-bonus", type=float, default=ENDLESS_BONUS,
                     help="points per endless ante, a third per blind (0: games end at the win)")
+    tr.add_argument("--overkill", type=float, default=OVERKILL,
+                    help="points per natural log of a beaten blind's score over target")
+    tr.add_argument("--start-share", type=float, default=0.0,
+                    help="with --branch-rate: share of new games started from the big-starts pool "
+                         "(rl.starts; 0: off)")
+    tr.add_argument("--start-pool", type=int, default=SIZE,
+                    help="with --start-share: the big-starts pool's size")
     tr.add_argument("--resume", action="store_true")
     tr.add_argument("--beta", type=float, default=0.1, help="starting drift penalty")
     tr.add_argument("--fade", type=float, default=0.5,

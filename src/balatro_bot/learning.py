@@ -30,6 +30,9 @@ METHODS = list(METHOD_FIXED)
 DECISIONS = 2000
 CHANGE = 0.005
 ENDLESS = 0.0
+OVERKILL = 0.0
+STARTS = 0.0
+POOL = 200
 TRAIN_ACTIVE = jobs.LIVE
 RUN_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 # A run with no status file whose log changed this recently may still be playing from
@@ -112,15 +115,19 @@ def start_choice(start: str) -> tuple[str, str]:
 
 def train_command(settings: dict) -> list[str]:
     """A new run: the panel's fields, then the fixed flags of every run and of its method.
-    Decisions per step is a branch run's own field; the change limit is every run's."""
+    Decisions per step and big starts are a branch run's own fields; the change limit and
+    overkill are every run's."""
     method = settings["train_method"]
-    branch = (["--decisions-per-step", str(settings.get("train_decisions", DECISIONS))]
+    branch = (["--decisions-per-step", str(settings.get("train_decisions", DECISIONS)),
+               "--start-share", str(settings.get("train_starts", STARTS)),
+               "--start-pool", str(settings.get("train_pool", POOL))]
               if method == "BRANCHES" else [])
     return [str(RL_PYTHONW), "-m", "rl.ppo", "train", "--run", settings["train_run"],
             "--start", settings["train_copy"], "--hours", str(settings["train_hours"]),
             "--beta", str(settings["train_beta"]),
             "--target-change", str(settings.get("train_change", CHANGE)), "--win-bonus", str(settings["train_bonus"]),
             "--endless-bonus", str(settings.get("train_endless", ENDLESS)),
+            "--overkill", str(settings.get("train_overkill", OVERKILL)),
             "--deck", settings["train_deck"], "--stake", settings["train_stake"],
             *TRAIN_FIXED, *METHOD_FIXED[method], *branch]
 
@@ -134,14 +141,18 @@ def _fixed_args() -> dict:
 
 
 def run_settings(args: dict) -> dict:
-    """A run's method, deck, stake, win and endless bonuses, change limit and (a branch
-    run's) decisions per step from the args its state.json saved; a run from before those
-    options played same-seed on Blue/White with bonus 8 and stopped at its win."""
+    """A run's method, deck, stake, win and endless bonuses, overkill, change limit and (a
+    branch run's) decisions per step and big starts from the args its state.json saved; a
+    run from before those options played same-seed on Blue/White with bonus 8 and stopped
+    at its win."""
     branch = bool(args.get("branch_rate"))
     return {"method": "BRANCHES" if branch else "SAME SEED",
             "deck": args.get("deck", "BLUE"), "stake": args.get("stake", "WHITE"),
             "win bonus": args.get("win_bonus", 8.0), "endless bonus": args.get("endless_bonus", ENDLESS), "change": args.get("target_change", CHANGE),
-            "decisions": args.get("decisions_per_step", DECISIONS) if branch else None}
+            "overkill": args.get("overkill", OVERKILL),
+            "decisions": args.get("decisions_per_step", DECISIONS) if branch else None,
+            "start share": args.get("start_share", STARTS) if branch else None,
+            "start pool": args.get("start_pool", POOL) if branch else None}
 
 
 def resume_command(saved_args: dict, hours: float | None = None) -> list[str]:

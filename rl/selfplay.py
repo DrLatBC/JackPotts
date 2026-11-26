@@ -4,15 +4,19 @@ Many games run side by side. At each tick every game takes one step: the policy
 samples an action for each (``rl.model.act`` with a generator), plays come out in the
 bot's order (``rl.ordering``), and the step's points are counted.
 
-Points: one per boss beaten (an ante cleared) and the win bonus (``WIN_BONUS`` unless a
-run sets its own) more for the win, so a game that stops at its win is worth its final ante
-minus one, plus the bonus when won. With an endless bonus a won game plays on into endless
-mode, each blind beaten or skipped there earning a third of the bonus, so a whole endless
-ante earns all of it.
+Points: a third of a point per blind beaten or skipped (a whole ante earns one) and the
+win bonus (``WIN_BONUS`` unless a run sets its own) more for the win, so a game that stops
+at its win is worth about its final ante minus one, plus the bonus when won. With an
+endless bonus a won game plays on into endless mode, each blind beaten or skipped there
+earning a third of the bonus. With ``overkill`` above 0, a beaten blind also earns
+``overkill`` times the natural log of its score over target, the log capped at
+``OVERKILL_CAP``: a small, ever-growing pull toward bigger engines that never outweighs
+the blind itself.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -30,15 +34,33 @@ from rl.playback import env_view, make_env, no_legal_action
 WIN_BONUS = 8.0
 ENDLESS_BONUS = 0.0
 """Points per endless ante; 0 ends each game at its win."""
+OVERKILL = 0.0
+OVERKILL_CAP = 24.0
+"""The most the log of a blind's score over target counts for (endless scores reach
+infinity)."""
 
 
-def points(t: Transition, win_bonus: float = WIN_BONUS, endless_bonus: float = ENDLESS_BONUS) -> float:
-    """The points one step earns: before the win, one per boss beaten and the win bonus on
-    the step that wins; after it, a third of ``endless_bonus`` per blind beaten or skipped."""
-    if t.prev.won:
-        passed = t.blind_beaten or t.action.action_type == ActionType.SkipBlind
-        return endless_bonus / 3 if passed else 0.0
-    return float(t.boss_beaten) + (win_bonus if t.run_won else 0.0)
+def points(t: Transition, win_bonus: float = WIN_BONUS, endless_bonus: float = ENDLESS_BONUS,
+           overkill: float = OVERKILL) -> float:
+    """The points one step earns: before the win, a third per blind beaten or skipped and
+    the win bonus on the step that wins; after it, a third of ``endless_bonus`` per blind
+    beaten or skipped. A beaten blind adds ``overkill`` times the log of its score over
+    target."""
+    passed = t.blind_beaten or t.action.action_type == ActionType.SkipBlind
+    earned = (endless_bonus if t.prev.won else 1.0) / 3 if passed else 0.0
+    if not t.prev.won and t.run_won:
+        earned += win_bonus
+    if overkill and t.blind_beaten:
+        earned += overkill * overkill_log(t.curr.chips, t.prev.blind_chips)
+    return earned
+
+
+def overkill_log(chips: float, target: float) -> float:
+    """The natural log of a beaten blind's score over its target, from 0 (a blind only
+    just beaten, or saved by Mr. Bones) to ``OVERKILL_CAP``."""
+    if not target > 0 or not chips > target:
+        return 0.0
+    return min(math.log(chips / target), OVERKILL_CAP)
 
 
 def train_seed(run: str, n: int) -> str:
@@ -91,8 +113,10 @@ class SelfPlay:
 
     def __init__(self, run: str, *, seed: int = 0, first: int = 0,
                  max_steps: int = MAX_STEPS, deck: str = DECK, stake: int = STAKE,
-                 win_bonus: float = WIN_BONUS, endless_bonus: float = ENDLESS_BONUS) -> None:
+                 win_bonus: float = WIN_BONUS, endless_bonus: float = ENDLESS_BONUS,
+                 overkill: float = OVERKILL) -> None:
         self.run = run
+        self.overkill = overkill
         self.max_steps = max_steps
         self.deck, self.stake, self.win_bonus = deck, stake, win_bonus
         self.endless_bonus = endless_bonus
@@ -126,7 +150,7 @@ class SelfPlay:
                     action, card_target=put_in_order(slot["info"]["game"], action.card_target))
             _, terminated, truncated, _, info = slot["env"].step(played)
             reward[k] = points(Transition.from_step(played, terminated, truncated, info),
-                               self.win_bonus, self.endless_bonus)
+                               self.win_bonus, self.endless_bonus, self.overkill)
             slot["info"] = info
             slot["steps"] += 1
             slot["points"] += float(reward[k])

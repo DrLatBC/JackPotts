@@ -43,10 +43,11 @@ def test_train_command_passes_the_fields_and_the_fixed_flags():
     settings = {**SETTINGS, "train_run": "r1", "train_copy": "b187", "train_hours": 2.5, "train_beta": 0.03}
     cmd = learning.train_command(settings)
     assert cmd[0].endswith("pythonw.exe") and ".venv-rl" in cmd[0]
-    assert cmd[1:22] == ["-m", "rl.ppo", "train", "--run", "r1", "--start", "b187",
+    assert cmd[1:24] == ["-m", "rl.ppo", "train", "--run", "r1", "--start", "b187",
                          "--hours", "2.5", "--beta", "0.03", "--target-change", "0.005", "--win-bonus", "8.0",
-                         "--endless-bonus", "0.0", "--deck", "BLUE", "--stake", "WHITE"]
-    assert cmd[22:] == learning.TRAIN_FIXED + learning.METHOD_FIXED["SAME SEED"]
+                         "--endless-bonus", "0.0", "--overkill", "0.0", "--deck", "BLUE", "--stake", "WHITE"]
+    assert cmd[24:] == learning.TRAIN_FIXED + learning.METHOD_FIXED["SAME SEED"]
+    assert "--start-share" not in cmd
     assert "--games-per-step" in cmd and cmd[cmd.index("--fade") + 1] == "0"
     assert "--branch-rate" not in cmd
 
@@ -69,16 +70,29 @@ def test_a_branch_run_takes_its_decisions_per_step_from_the_panel():
     assert "--decisions-per-step" not in same_seed
 
 
+def test_a_branch_run_takes_overkill_and_big_starts_from_the_panel():
+    cmd = learning.train_command({**SETTINGS, "train_method": "BRANCHES", "train_overkill": 0.01,
+                                  "train_starts": 0.25, "train_pool": 300})
+    flags = dict(zip(cmd[4::2], cmd[5::2]))
+    assert (flags["--overkill"], flags["--start-share"], flags["--start-pool"]) == ("0.01", "0.25", "300")
+    old = dict(zip(*(lambda c: (c[4::2], c[5::2]))(learning.train_command({**SETTINGS, "train_method": "BRANCHES"}))))
+    assert (old["--overkill"], old["--start-share"], old["--start-pool"]) == ("0.0", "0.0", "200")
+
+
 def test_a_runs_settings_come_from_its_saved_args_with_the_old_defaults():
     got = learning.run_settings({"branch_rate": 0.05, "deck": "RED", "stake": "GOLD", "win_bonus": 16.0,
                                  "decisions_per_step": 6000})
     assert got == {"method": "BRANCHES", "deck": "RED", "stake": "GOLD", "win bonus": 16.0, "decisions": 6000,
-                   "change": 0.005, "endless bonus": 0.0}
+                   "change": 0.005, "endless bonus": 0.0, "overkill": 0.0, "start share": 0.0,
+                   "start pool": 200}
     got = learning.run_settings({"branch_rate": 0.05})
     assert got["decisions"] == 2000
     got = learning.run_settings({"plays": 4, "branch_rate": 0.0})
     assert got == {"method": "SAME SEED", "deck": "BLUE", "stake": "WHITE", "win bonus": 8.0, "decisions": None,
-                   "change": 0.005, "endless bonus": 0.0}
+                   "change": 0.005, "endless bonus": 0.0, "overkill": 0.0, "start share": None,
+                   "start pool": None}
+    got = learning.run_settings({"branch_rate": 0.05, "overkill": 0.01, "start_share": 0.25, "start_pool": 300})
+    assert (got["overkill"], got["start share"], got["start pool"]) == (0.01, 0.25, 300)
     assert learning.run_settings({"target_change": 0.01})["change"] == 0.01
     assert learning.run_settings({"endless_bonus": 4.0})["endless bonus"] == 4.0
     cmd = learning.train_command({**SETTINGS, "train_endless": 4.0})

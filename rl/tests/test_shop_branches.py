@@ -141,7 +141,7 @@ def test_a_planet_for_a_hand_the_run_does_not_play_is_vetoed(shop, monkeypatch):
 
 def test_best_joker_is_tried_more_often_late():
     assert sb.chance("best joker", sb.LATE_ANTE - 1) == sb.SHOP_CHANCE["best joker"] == 0.1
-    assert sb.chance("best joker", sb.LATE_ANTE) == sb.chance("best joker", 8) == 0.5
+    assert sb.chance("best joker", sb.LATE_ANTE) == sb.chance("best joker", 8) == 0.2
     assert sb.chance("fill slot", 8) == sb.SHOP_CHANCE["fill slot"]
 
 

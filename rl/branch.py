@@ -57,12 +57,12 @@ from jackdaw.env.action_space import ActionType
 from jackdaw.env.game_spec import FactoredAction
 from jackdaw.env.rewards import Transition
 
-from rl import dataset, shop_branches
+from rl import dataset, shop_branches, starts
 from rl.evaluate import DECK, MAX_STEPS, STAKE, WIN_ANTE
 from rl.model import DISCARD, PICK, PLAY, Policy, Prepared, _complete, act, complete
 from rl.ordering import put_in_order
-from rl.playback import copy_env, env_view, make_env, no_legal_action
-from rl.selfplay import ENDLESS_BONUS, WIN_BONUS, points, train_seed
+from rl.playback import copy_env, env_from_game, env_view, make_env, no_legal_action
+from rl.selfplay import ENDLESS_BONUS, OVERKILL, WIN_BONUS, points, train_seed
 
 REROLL = int(ActionType.RerollBoss)
 SKIP = int(ActionType.SkipBlind)
@@ -114,9 +114,12 @@ class BranchPlay:
     def __init__(self, run: str, *, seed: int = 0, first: int = 0, deck: str = DECK,
                  stake: int = STAKE, win_bonus: float = WIN_BONUS, rate: float = 0.05,
                  draws: int = 4, mains: int = 64, max_steps: int = MAX_STEPS,
-                 endless_bonus: float = ENDLESS_BONUS) -> None:
+                 endless_bonus: float = ENDLESS_BONUS, overkill: float = OVERKILL,
+                 pool: starts.StartPool | None = None, start_share: float = 0.0) -> None:
         self.run, self.deck, self.stake, self.win_bonus = run, deck, stake, win_bonus
-        self.endless_bonus = endless_bonus
+        self.endless_bonus, self.overkill = endless_bonus, overkill
+        self.pool, self.start_share = pool, start_share
+        self.next_start = 0
         self.rate, self.draws, self.mains, self.max_steps = rate, draws, mains, max_steps
         self.next_seed = first
         self.generator = torch.Generator().manual_seed(seed)
@@ -145,14 +148,24 @@ class BranchPlay:
     # -- one tick ------------------------------------------------------------------
 
     def _new_main(self) -> dict:
-        seed = train_seed(self.run, self.next_seed)
-        self.next_seed += 1
-        env = make_env(self.deck, self.stake, on_refusal="truncate", max_steps=self.max_steps,
-                       end_on_win=not self.endless_bonus)
-        _, _, info = env.reset(seed=seed)
+        """A main line on the next training seed, or at the start share from a big-starts
+        pool copy (``rl.starts``) under its own key, so its branches rejoin only it."""
+        kw = {"on_refusal": "truncate", "max_steps": self.max_steps,
+              "end_on_win": not self.endless_bonus}
+        restart = (self.pool is not None and self.pool.ready
+                   and self.rng.random() < self.start_share)
+        if restart:
+            seed = f"start-{self.run}-{self.next_start:07d}"
+            self.next_start += 1
+            env, info = env_from_game(self.pool.draw(self.rng), self.deck, self.stake, **kw)
+        else:
+            seed = train_seed(self.run, self.next_seed)
+            self.next_seed += 1
+            env = make_env(self.deck, self.stake, **kw)
+            _, _, info = env.reset(seed=seed)
         self.seeds[seed] = {"result": None, "hash": {}, "open": 0, "waiting": []}
         return {"role": "main", "seed": seed, "env": env, "info": info, "steps": 0, "points": 0.0,
-                "force": [], "veto": None,
+                "force": [], "veto": None, "start": restart, "kept": starts.history(),
                 "blinds": 0, "shops": 0, "forced": set()}
 
     def _tick(self, model: Policy) -> None:
@@ -363,13 +376,20 @@ class BranchPlay:
         if line["role"] == "main":
             line["blinds"] += move.action_type in (ActionType.SelectBlind, ActionType.SkipBlind)
             line["shops"] += move.action_type == ActionType.CashOut
+            if self.pool is not None:
+                starts.note_decision(game, line["kept"])
         if move.action_type == ActionType.PlayHand:
             move = replace(move, card_target=put_in_order(game, move.card_target))
         _, terminated, truncated, _, info = line["env"].step(move)
         if line["veto"] is not None and info["game"].phase.value != "shop":
             line["veto"] = None
         line["points"] += points(Transition.from_step(move, terminated, truncated, info),
-                                 self.win_bonus, self.endless_bonus)
+                                 self.win_bonus, self.endless_bonus, self.overkill)
+        if (self.pool is not None and line["role"] == "main"
+                and move.action_type == ActionType.PlayHand):
+            target, scored = info["prev_state"].blind_chips, info["game"].last_score
+            if target > 0 and scored is not None:
+                self.pool.offer(scored.total / target, line["kept"])
         line["info"] = info
         line["steps"] += 1
         stuck = not (terminated or truncated) and no_legal_action(info)
@@ -399,7 +419,7 @@ class BranchPlay:
         seed = self.seeds[line["seed"]]
         result = {**result, "points": line["points"]}
         if line["role"] == "main":
-            result = {**result, "seed": line["seed"], "steps": line["steps"]}
+            result = {**result, "seed": line["seed"], "steps": line["steps"], "start": line["start"]}
             seed["result"] = result
             self._finished.append(result)
             for decision, branch in seed["waiting"]:

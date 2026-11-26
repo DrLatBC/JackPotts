@@ -66,7 +66,7 @@ KINDS = ("copy joker", "midas", "synergy", "voucher synergy", "pass joker", "con
          "best joker", "fill slot", "off-build planet", "held tarot", "red seal", "upgraded card")
 """Tried in this order; a main line takes at most one branch per tick."""
 SHOP_CHANCE: dict[str, float] = {
-    "copy joker": 1.0, "midas": 1.0, "synergy": 1.0, "voucher synergy": 1.0,
+    "copy joker": 1.0, "midas": 1.0, "synergy": 0.2, "voucher synergy": 0.2,
     "pass joker": 1.0, "conflict": 1.0,
     "best joker": 0.1, "fill slot": 0.25, "off-build planet": 0.25, "held tarot": 0.25,
     "red seal": 1.0, "upgraded card": 0.5,
@@ -74,7 +74,7 @@ SHOP_CHANCE: dict[str, float] = {
 """The chance each branch is tried when it comes up: once per shop visit, a held tarot
 once per blind, a playing card pick once per pick."""
 LATE_ANTE = 6
-LATE_CHANCE: dict[str, float] = {"best joker": 0.5}
+LATE_CHANCE: dict[str, float] = {"best joker": 0.2}
 """Chances from ``LATE_ANTE`` on. Tyler: jokers like Smiley Face clear blinds early but
 fall off; past ante 6 you look to swap them for something better, which is the trade the
 best-joker branch tries."""

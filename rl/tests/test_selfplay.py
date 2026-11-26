@@ -6,6 +6,8 @@ from __future__ import annotations
 import dataclasses
 from argparse import Namespace
 
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -63,29 +65,49 @@ def test_most_likely_play_is_unchanged_by_sampling_support(model, rollout):
     assert np.isfinite(logp).all()
 
 
-def test_a_game_is_worth_its_antes_cleared_plus_the_win_bonus(model):
+def test_a_game_is_worth_its_blinds_cleared_plus_the_win_bonus(model):
     games = SelfPlay("test-whole", seed=2).whole_games(model, total=3, parallel=2)
     assert len(games.results) == 3 and all(r is not None for r in games.results)
     to_go = games.points_to_go()
     for g, result in enumerate(games.results):
         steps = np.flatnonzero(games.game == g)
         assert len(steps) == result["steps"]
-        expected = result["ante"] - 1 + (WIN_BONUS if result["won"] else 0.0)
-        assert result["points"] == expected == games.reward[steps].sum() == to_go[steps[0]]
+        assert result["points"] == pytest.approx(games.reward[steps].sum()) == pytest.approx(to_go[steps[0]])
+        # A third per blind: whole antes cleared, plus up to two blinds of the last one.
+        blinds = (result["points"] - (WIN_BONUS if result["won"] else 0.0)) * 3
+        assert round(blinds) == pytest.approx(blinds, abs=1e-4)
+        assert 0 <= round(blinds) - 3 * (result["ante"] - 1) <= (0 if result["won"] else 2)
     assert len(games.examples) == len(games.reward)
 
 
-def _step(won_before, *, beaten=False, boss=False, won_now=None, move=ActionType.PlayHand):
+def _step(won_before, *, beaten=False, boss=False, won_now=None, move=ActionType.PlayHand,
+          chips=0.0, target=300):
     from types import SimpleNamespace
-    return SimpleNamespace(prev=SimpleNamespace(won=won_before), blind_beaten=beaten,
+    return SimpleNamespace(prev=SimpleNamespace(won=won_before, blind_chips=target),
+                           curr=SimpleNamespace(chips=chips), blind_beaten=beaten,
                            boss_beaten=boss, run_won=bool(won_now) and not won_before,
                            action=SimpleNamespace(action_type=move))
 
 
+def test_every_blind_before_the_win_earns_a_third():
+    assert points(_step(False, beaten=True), 8.0, 4.0) == pytest.approx(1 / 3)
+    assert points(_step(False, beaten=True, boss=True), 8.0, 4.0) == pytest.approx(1 / 3)
+    assert points(_step(False, move=ActionType.SkipBlind), 8.0, 4.0) == pytest.approx(1 / 3)
+    assert points(_step(False), 8.0, 4.0) == 0.0
+    assert points(_step(False, beaten=True, boss=True, won_now=True), 8.0, 4.0) == pytest.approx(8 + 1 / 3)
+    assert points(_step(False, beaten=True, boss=True, won_now=True), 0.0, 1.0) == pytest.approx(1 / 3)
+
+
+def test_overkill_pays_the_log_of_score_over_target_capped():
+    assert points(_step(False, beaten=True, chips=300 * math.e ** 3), 0.0, 1.0, 0.01) == pytest.approx(1 / 3 + 0.03)
+    assert points(_step(True, beaten=True, chips=300 * math.e ** 2), 0.0, 1.0, 0.01) == pytest.approx(1 / 3 + 0.02)
+    assert points(_step(False, beaten=True, chips=math.inf), 0.0, 1.0, 0.01) == pytest.approx(1 / 3 + 0.24)
+    assert points(_step(False, beaten=True, chips=200), 0.0, 1.0, 0.01) == pytest.approx(1 / 3)
+    assert points(_step(False, move=ActionType.SkipBlind, chips=9000), 0.0, 1.0, 0.01) == pytest.approx(1 / 3)
+    assert points(_step(False, beaten=True, chips=9000), 0.0, 1.0) == pytest.approx(1 / 3)
+
+
 def test_endless_blinds_earn_a_third_of_the_endless_bonus_each():
-    assert points(_step(False, beaten=True, boss=True), 8.0, 4.0) == 1.0
-    assert points(_step(False, beaten=True, boss=True, won_now=True), 8.0, 4.0) == 9.0
-    assert points(_step(False, beaten=True), 8.0, 4.0) == 0.0
     assert points(_step(True, beaten=True), 8.0, 4.0) == points(_step(True, beaten=True, boss=True), 8.0, 4.0)         == pytest.approx(4.0 / 3)
     assert points(_step(True, move=ActionType.SkipBlind), 8.0, 4.0) == pytest.approx(4.0 / 3)
     assert points(_step(True), 8.0, 4.0) == 0.0

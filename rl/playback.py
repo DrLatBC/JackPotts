@@ -54,15 +54,27 @@ def copy_env(env: BalatroEnvironment) -> tuple[BalatroEnvironment, dict]:
         max_steps=env._max_steps, end_on_win=env._end_on_win,
         max_free_moves=env.max_free_moves, on_refusal=env.on_refusal,
     )
-    new._adapter._game = env._adapter.game.clone()
     new._step_count, new._free_moves = env._step_count, env._free_moves
     new.episode_length, new.episode_won, new.episode_ante = (
         env.episode_length, env.episode_won, env.episode_ante)
-    game = new._adapter.game
-    obs, mask, state, splits = _rust_view(game._g.env_view(new._legality(), new._free_moves_allowed()))
-    new._state = state
-    return new, {"game": game, "state": state, "shop_splits": splits, "observation": obs,
-                 "action_mask": mask}
+    return new, _hold(new, env._adapter.game.clone())
+
+
+def env_from_game(game, deck: str, stake: int, **kw) -> tuple[BalatroEnvironment, dict]:
+    """An environment ``make_env(deck, stake, **kw)`` would give, playing on from ``game``
+    (which it takes over) as a new episode, and its step info. Built from the same private
+    fields as ``copy_env``."""
+    env = make_env(deck, stake, **kw)
+    env.episode_won, env.episode_ante = bool(game.won), int(game.ante)
+    return env, _hold(env, game)
+
+
+def _hold(env: BalatroEnvironment, game) -> dict:
+    env._adapter._game = game
+    obs, mask, state, splits = _rust_view(game._g.env_view(env._legality(), env._free_moves_allowed()))
+    env._state = state
+    return {"game": game, "state": state, "shop_splits": splits, "observation": obs,
+            "action_mask": mask}
 
 
 def no_legal_action(info: dict) -> bool:
