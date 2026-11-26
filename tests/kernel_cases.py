@@ -377,13 +377,17 @@ _BREAKDOWN_KEYS = ("pre_joker_chips", "pre_joker_mult", "joker_contributions",
 
 
 def _floats(value):
-    """The value with every number a float, so 115 and 115.0 hash alike."""
+    """The value with every number a float to 12 significant digits, so 115 and 115.0
+    hash alike and builds that differ in the last bit of a product (CI's kernel against
+    a local one) give the same answer."""
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
-        return float(value)
+        return float(f"{value:.12g}")
     if isinstance(value, (list, tuple)):
         return [_floats(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _floats(v) for k, v in value.items()}
     return value
 
 
@@ -413,5 +417,5 @@ def kernel_answer(name: str, case: Case, typed: bool, plays: int = 3) -> dict:
     return json.loads(json.dumps({
         "name": name, "count": len(every),
         "digest": hashlib.sha256(json.dumps(_floats(every)).encode()).hexdigest()[:16],
-        "best": best, "scores": scores,
+        "best": _floats(best), "scores": _floats(scores),
     }))
