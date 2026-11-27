@@ -74,6 +74,15 @@ def test_a_hand_size_below_zero_deals_empty_hands_that_score_nothing(shop):
     assert sb.hand_score(game, hands) == 0.0
 
 
+def test_a_lineup_with_no_hand_size_scores_nothing(shop):
+    _, main = shop
+    game = main["info"]["game"].clone()
+    for _ in range(4):
+        game.debug_add("j_stuntman")
+    hands = sb.dealt_hands(game, main["info"]["state"], np.random.default_rng(0))
+    assert sb.hand_score(game, hands) == 0.0
+
+
 def test_buy_plans_sell_what_a_buy_needs(shop):
     _, main = shop
 

@@ -116,12 +116,15 @@ def dealt_hands(game, state, rng: np.random.Generator, n: int = HANDS) -> list[l
 def hand_score(game, hands: list[list[int]], moves=()) -> float:
     """The average score of the best play over ``hands`` on a copy of ``game``, after the
     shop ``moves`` and the start of the next blind. A boss there is disabled on the copy:
-    the test is of the lineup, not of the boss."""
+    the test is of the lineup, not of the boss. A lineup whose hand size draws no cards
+    ends the run on blind select and scores 0."""
     c = game.clone()
     for m in moves:
         c.step(_engine(m))
     c.step(A.NextRound())
     c.step(A.SelectBlind())
+    if c.phase.value != "selecting_hand":
+        return 0.0
     if c.blind.boss:
         c.debug_set_blind_disabled(True)
     ids = sorted(x.sort_id for x in (*c.hand, *c.deck, *c.discard_pile))
