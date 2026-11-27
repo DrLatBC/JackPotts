@@ -33,6 +33,7 @@ ENDLESS = 0.0
 OVERKILL = 0.0
 STARTS = 0.0
 POOL = 200
+WORKERS = 1
 TRAIN_ACTIVE = jobs.LIVE
 RUN_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 # A run with no status file whose log changed this recently may still be playing from
@@ -115,12 +116,13 @@ def start_choice(start: str) -> tuple[str, str]:
 
 def train_command(settings: dict) -> list[str]:
     """A new run: the panel's fields, then the fixed flags of every run and of its method.
-    Decisions per step and big starts are a branch run's own fields; the change limit and
+    Decisions per step, big starts and play workers are a branch run's own fields; the change limit and
     overkill are every run's."""
     method = settings["train_method"]
     branch = (["--decisions-per-step", str(settings.get("train_decisions", DECISIONS)),
                "--start-share", str(settings.get("train_starts", STARTS)),
-               "--start-pool", str(settings.get("train_pool", POOL))]
+               "--start-pool", str(settings.get("train_pool", POOL)),
+               "--workers", str(settings.get("train_workers", WORKERS))]
               if method == "BRANCHES" else [])
     return [str(RL_PYTHONW), "-m", "rl.ppo", "train", "--run", settings["train_run"],
             "--start", settings["train_copy"], "--hours", str(settings["train_hours"]),
@@ -142,7 +144,7 @@ def _fixed_args() -> dict:
 
 def run_settings(args: dict) -> dict:
     """A run's method, deck, stake, win and endless bonuses, overkill, change limit and (a
-    branch run's) decisions per step and big starts from the args its state.json saved; a
+    branch run's) decisions per step, big starts and play workers from the args its state.json saved; a
     run from before those options played same-seed on Blue/White with bonus 8 and stopped
     at its win."""
     branch = bool(args.get("branch_rate"))
@@ -152,7 +154,8 @@ def run_settings(args: dict) -> dict:
             "overkill": args.get("overkill", OVERKILL),
             "decisions": args.get("decisions_per_step", DECISIONS) if branch else None,
             "start share": args.get("start_share", STARTS) if branch else None,
-            "start pool": args.get("start_pool", POOL) if branch else None}
+            "start pool": args.get("start_pool", POOL) if branch else None,
+            "workers": args.get("workers", WORKERS) if branch else None}
 
 
 def resume_command(saved_args: dict, hours: float | None = None) -> list[str]:

@@ -108,18 +108,19 @@ def same_move(a: FactoredAction, b: FactoredAction) -> bool:
 
 
 class BranchPlay:
-    """Main lines on the training seeds ``train_seed(run, first), ...`` and their branches.
-    Lines carry over from one ``play`` call to the next."""
+    """Main lines on the training seeds ``train_seed(run, first)``, then every ``stride``-th
+    after it, and their branches. Lines carry over from one ``play`` call to the next."""
 
     def __init__(self, run: str, *, seed: int = 0, first: int = 0, deck: str = DECK,
                  stake: int = STAKE, win_bonus: float = WIN_BONUS, rate: float = 0.05,
                  draws: int = 4, mains: int = 64, max_steps: int = MAX_STEPS,
                  endless_bonus: float = ENDLESS_BONUS, overkill: float = OVERKILL,
-                 pool: starts.StartPool | None = None, start_share: float = 0.0) -> None:
+                 pool: starts.StartPool | None = None, start_share: float = 0.0,
+                 stride: int = 1, first_start: int = 0) -> None:
         self.run, self.deck, self.stake, self.win_bonus = run, deck, stake, win_bonus
         self.endless_bonus, self.overkill = endless_bonus, overkill
         self.pool, self.start_share = pool, start_share
-        self.next_start = 0
+        self.next_start, self.stride = first_start, stride
         self.rate, self.draws, self.mains, self.max_steps = rate, draws, mains, max_steps
         self.next_seed = first
         self.generator = torch.Generator().manual_seed(seed)
@@ -156,11 +157,11 @@ class BranchPlay:
                    and self.rng.random() < self.start_share)
         if restart:
             seed = f"start-{self.run}-{self.next_start:07d}"
-            self.next_start += 1
+            self.next_start += self.stride
             env, info = env_from_game(self.pool.draw(self.rng), self.deck, self.stake, **kw)
         else:
             seed = train_seed(self.run, self.next_seed)
-            self.next_seed += 1
+            self.next_seed += self.stride
             env = make_env(self.deck, self.stake, **kw)
             _, _, info = env.reset(seed=seed)
         self.seeds[seed] = {"result": None, "hash": {}, "open": 0, "waiting": []}

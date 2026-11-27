@@ -54,6 +54,7 @@ DEFAULTS = {"instances": 6, "games": 2000, "deck": "BLUE", "stake": "WHITE",
             "train_method": "BRANCHES", "train_bonus": 0.0, "train_endless": 1.0, "train_deck": "BLUE", "train_stake": "WHITE",
             "train_decisions": learning.DECISIONS, "train_change": learning.CHANGE,
             "train_overkill": 0.01, "train_starts": 0.25, "train_pool": 200,
+            "train_workers": 4,
             "stream_source": "", "stream_checkpoint": "latest", "stream_deck": "BLUE",
             "stream_stake": "WHITE", "stream_delay": 1.5}
 
@@ -1017,6 +1018,7 @@ class TrainTab(tk.Frame):
             "train_overkill": tk.DoubleVar(value=s["train_overkill"]),
             "train_starts": tk.DoubleVar(value=s["train_starts"]),
             "train_pool": tk.IntVar(value=s["train_pool"]),
+            "train_workers": tk.IntVar(value=s["train_workers"]),
         }
         # The lists are read again each time one opens: runs and their saves appear while the panel is open.
         self.source_input = ttk.Combobox(controls, values=learning.start_sources(), state="readonly", width=14,
@@ -1035,7 +1037,7 @@ class TrainTab(tk.Frame):
                                   textvariable=self.vars["train_bonus"])
         endless_input = ttk.Spinbox(controls, from_=0, to=100, increment=1, width=5,
                                     textvariable=self.vars["train_endless"])
-        self.decisions_input = ttk.Spinbox(controls, from_=500, to=50000, increment=500, width=6,
+        self.decisions_input = ttk.Spinbox(controls, from_=500, to=500000, increment=500, width=7,
                                            textvariable=self.vars["train_decisions"])
         change_input = ttk.Spinbox(controls, from_=0.001, to=0.1, increment=0.001, width=6,
                                    textvariable=self.vars["train_change"])
@@ -1045,6 +1047,8 @@ class TrainTab(tk.Frame):
                                    textvariable=self.vars["train_starts"])
         pool_input = ttk.Spinbox(controls, from_=128, to=5000, increment=50, width=6,
                                  textvariable=self.vars["train_pool"])
+        workers_input = ttk.Spinbox(controls, from_=1, to=8, increment=1, width=4,
+                                    textvariable=self.vars["train_workers"])
         rows = [
             [("RUN", ttk.Entry(controls, width=14, textvariable=self.vars["train_run"])),
              ("START", self.source_input), ("SAVE", self.save_input), ("HOURS", self.hours_input),
@@ -1054,7 +1058,8 @@ class TrainTab(tk.Frame):
                                     textvariable=self.vars["train_stake"]))],
             [("METHOD", method_input), ("DECISIONS", self.decisions_input), ("CHANGE", change_input),
              ("BETA", self.beta_input), ("WIN BONUS", bonus_input), ("ENDLESS", endless_input)],
-            [("OVERKILL", overkill_input), ("STARTS", starts_input), ("POOL", pool_input)],
+            [("OVERKILL", overkill_input), ("STARTS", starts_input), ("POOL", pool_input),
+             ("WORKERS", workers_input)],
         ]
         self.inputs = []
         for r, fields in enumerate(rows):
@@ -1163,7 +1168,7 @@ class TrainTab(tk.Frame):
             self.vars["train_save"].set(save)
             for key in ("train_hours", "train_beta", "train_method", "train_bonus", "train_deck", "train_stake",
                         "train_decisions", "train_change", "train_endless", "train_overkill",
-                        "train_starts", "train_pool"):
+                        "train_starts", "train_pool", "train_workers"):
                 self.vars[key].set(s[key])
         self.refresh()
 
@@ -1196,6 +1201,7 @@ class TrainTab(tk.Frame):
                 "train_overkill": float(self.vars["train_overkill"].get()),
                 "train_starts": float(self.vars["train_starts"].get()),
                 "train_pool": int(self.vars["train_pool"].get()),
+                "train_workers": int(self.vars["train_workers"].get()),
             }
         except (tk.TclError, ValueError):
             raise ValueError("Hours, beta, change, bonuses and decisions must be numbers.")
@@ -1222,6 +1228,8 @@ class TrainTab(tk.Frame):
             raise ValueError("Overkill can't be negative.")
         if not 0 <= settings["train_starts"] <= 1:
             raise ValueError("Starts is a share from 0 to 1.")
+        if not 1 <= settings["train_workers"] <= 8:
+            raise ValueError("Workers is 1 to 8, each playing on 2 threads.")
         if settings["train_pool"] < 128:
             raise ValueError("Pool must hold at least 128: big starts begin once it does.")
         if (settings["train_method"] not in learning.METHODS or settings["train_deck"] not in DECKS
@@ -1337,7 +1345,8 @@ class TrainTab(tk.Frame):
             fields = {"method": "train_method", "win bonus": "train_bonus", "endless bonus": "train_endless",
                       "deck": "train_deck", "stake": "train_stake", "decisions": "train_decisions",
                       "change": "train_change", "overkill": "train_overkill",
-                      "start share": "train_starts", "start pool": "train_pool"}
+                      "start share": "train_starts", "start pool": "train_pool",
+                      "workers": "train_workers"}
             shown += [(var, row[key]) for key, var in fields.items() if row.get(key) is not None]
             # Hours follow the run while it plays; on a run that has stopped they are the
             # new total Resume gives it, so a refresh leaves what was typed.

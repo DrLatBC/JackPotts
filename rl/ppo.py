@@ -58,6 +58,7 @@ from rl.evaluate import (DECK, DECK_NAMES, STAKE, STAKE_NAMES, eval_seed, game_s
                          play, playstyle, summary)
 from rl.model import VALUE_SCALE, Policy, Prepared, act, widen_optimizer
 from rl.selfplay import ENDLESS_BONUS, OVERKILL, WIN_BONUS, SelfPlay, advantages, same_seed_scores
+from rl.parallel import ParallelPlay
 from rl.starts import SIZE, StartPool
 from rl.train import heads, load_model, save_model
 
@@ -296,11 +297,12 @@ def train(args) -> int:
             pool = StartPool(args.start_pool)
             if args.resume:
                 pool.load(out / POOL_FILE)
-        games = BranchPlay(args.run, seed=args.seed + state["updates"], first=state["next_seed"],
-                           deck=deck, stake=stake, win_bonus=args.win_bonus,
-                           endless_bonus=args.endless_bonus, overkill=args.overkill,
-                           rate=args.branch_rate, draws=args.draws, pool=pool,
-                           start_share=args.start_share)
+        branch_kw = dict(seed=args.seed + state["updates"], first=state["next_seed"], deck=deck,
+                         stake=stake, win_bonus=args.win_bonus, endless_bonus=args.endless_bonus,
+                         overkill=args.overkill, rate=args.branch_rate, draws=args.draws,
+                         pool=pool, start_share=args.start_share)
+        games = (ParallelPlay(args.run, workers=args.workers, threads=args.worker_threads, **branch_kw)
+                 if args.workers > 1 else BranchPlay(args.run, **branch_kw))
         games.next_start = state.get("next_start", 0)
     else:
         games = SelfPlay(args.run, seed=args.seed + state["updates"], first=state["next_seed"],
@@ -313,7 +315,8 @@ def train(args) -> int:
            decisions=args.decisions_per_step if args.branch_rate else None,
            **{"win bonus": args.win_bonus, "endless bonus": args.endless_bonus,
               "overkill": args.overkill,
-              **({"start share": args.start_share, "start pool": args.start_pool}
+              **({"start share": args.start_share, "start pool": args.start_pool,
+                  "workers": args.workers}
                  if args.branch_rate else {})}, **progress(state, args), **last_numbers(log_path),
            **last_eval(out))
     if not args.resume and args.eval_every:
@@ -323,6 +326,8 @@ def train(args) -> int:
     learn_args = replace_ns(args, value_coef=0.0) if args.plays > 1 else args
     while state["seconds"] < args.hours * 3600:
         if jobs.learning_run(args.run).asked("stop"):
+            if isinstance(games, ParallelPlay):
+                games.close()
             report(status, phase="stopped", doing="")
             jobs.learning_run(args.run).clear()
             return 0
@@ -421,6 +426,8 @@ def train(args) -> int:
             state["next_eval"] = state["seconds"] + args.eval_every * 3600
             evaluate_and_report(model, out, state, eval_seeds, status)
             write_json(state_path, state)
+    if isinstance(games, ParallelPlay):
+        games.close()
     evaluate_and_report(model, out, state, eval_seeds, status)
     if args.final_check:
         final_check(model, copy, out, state, args.final_check, status, setup)
@@ -629,6 +636,9 @@ def main() -> int:
                          "drawn move is tried at (0: same-seed or value training)")
     tr.add_argument("--decisions-per-step", type=int, default=2000,
                     help="with --branch-rate: untied decisions behind each optimiser step")
+    tr.add_argument("--workers", type=int, default=1,
+                    help="processes a branch run's play is split over (1: in this one)")
+    tr.add_argument("--worker-threads", type=int, default=2, help="torch threads per play worker")
     tr.add_argument("--draws", type=int, default=4,
                     help="with --branch-rate: draws per tried step looking for another move")
     tr.add_argument("--deck", default="BLUE", choices=DECK_NAMES, type=str.upper)

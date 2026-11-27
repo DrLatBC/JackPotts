@@ -79,18 +79,25 @@ def test_a_branch_run_takes_overkill_and_big_starts_from_the_panel():
     assert (old["--overkill"], old["--start-share"], old["--start-pool"]) == ("0.0", "0.0", "200")
 
 
+def test_a_branch_run_takes_its_play_workers_from_the_panel():
+    cmd = learning.train_command({**SETTINGS, "train_method": "BRANCHES", "train_workers": 4})
+    assert cmd[cmd.index("--workers") + 1] == "4"
+    assert "--workers" not in learning.train_command(SETTINGS)
+    assert learning.run_settings({"branch_rate": 0.05, "workers": 4})["workers"] == 4
+
+
 def test_a_runs_settings_come_from_its_saved_args_with_the_old_defaults():
     got = learning.run_settings({"branch_rate": 0.05, "deck": "RED", "stake": "GOLD", "win_bonus": 16.0,
                                  "decisions_per_step": 6000})
     assert got == {"method": "BRANCHES", "deck": "RED", "stake": "GOLD", "win bonus": 16.0, "decisions": 6000,
                    "change": 0.005, "endless bonus": 0.0, "overkill": 0.0, "start share": 0.0,
-                   "start pool": 200}
+                   "start pool": 200, "workers": 1}
     got = learning.run_settings({"branch_rate": 0.05})
     assert got["decisions"] == 2000
     got = learning.run_settings({"plays": 4, "branch_rate": 0.0})
     assert got == {"method": "SAME SEED", "deck": "BLUE", "stake": "WHITE", "win bonus": 8.0, "decisions": None,
                    "change": 0.005, "endless bonus": 0.0, "overkill": 0.0, "start share": None,
-                   "start pool": None}
+                   "start pool": None, "workers": None}
     got = learning.run_settings({"branch_rate": 0.05, "overkill": 0.01, "start_share": 0.25, "start_pool": 300})
     assert (got["overkill"], got["start share"], got["start pool"]) == (0.01, 0.25, 300)
     assert learning.run_settings({"target_change": 0.01})["change"] == 0.01

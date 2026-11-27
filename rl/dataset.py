@@ -271,6 +271,11 @@ def load_shards(paths) -> Examples:
     shards = [load_shard(p).arrays for p in paths]
     if not shards:
         raise ValueError("no shards to load")
+    return join(shards)
+
+
+def join(shards: list[dict[str, np.ndarray]]) -> Examples:
+    """Shards' arrays joined into one set of examples, games renumbered in order."""
     stamps = {(str(s["jackdaw"]), int(s["action_version"])) for s in shards}
     if len(stamps) != 1:
         raise ValueError(f"shards were made on different simulator versions: {sorted(stamps)}")
